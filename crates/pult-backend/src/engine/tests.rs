@@ -1026,6 +1026,7 @@ mod flows {
         FlowNode {
             name: None,
             due_at: None,
+            disabled: None,
             id: Uuid::new_v4(),
             flow_id,
             kind,
@@ -2285,6 +2286,7 @@ mod watching_playback {
         let node = |kind| FlowNode {
             name: None,
             due_at: None,
+            disabled: None,
             id: Uuid::new_v4(),
             flow_id: flow.id,
             kind,
@@ -2387,6 +2389,7 @@ mod watching_playback {
         let node = |kind| FlowNode {
             name: None,
             due_at: None,
+            disabled: None,
             id: Uuid::new_v4(),
             flow_id: flow.id,
             kind,
@@ -2514,6 +2517,7 @@ mod watching_playback {
         let source = FlowNode {
             name: None,
             due_at: None,
+            disabled: None,
             id: Uuid::new_v4(),
             flow_id: flow.id,
             kind: FlowNodeKind::Source(TriggerSource::Parameter {
@@ -5114,6 +5118,7 @@ async fn a_peers_station_row_is_seen_without_its_create() {
         total_fixtures: 0,
         frame_costs: Vec::new(),
         machine: Default::default(),
+        audio_cache: Default::default(),
         net_received: 0,
         net_sent: 0,
         net_window_ms: 0,

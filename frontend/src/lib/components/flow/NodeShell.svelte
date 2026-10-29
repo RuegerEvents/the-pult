@@ -3,7 +3,7 @@
 	import type { Snippet } from 'svelte';
 	import type { FlowNode } from '$lib/generated/index.js';
 	import { getDataContext } from '$lib/ws/context.js';
-	import { inputPorts, nodeCategory, outputPorts } from '$lib/flow.js';
+	import { inputPorts, namesItsInputs, nodeCategory, outputPorts, portHelp } from '$lib/flow.js';
 	import { uuid } from '$lib/uuid.js';
 	import { canEdit } from '$lib/stores/showLock.js';
 
@@ -43,6 +43,10 @@
 	const ins = $derived(inputPorts(node.kind));
 	const outs = $derived(outputPorts(node.kind));
 	const category = $derived(nodeCategory(node.kind));
+	const labeled = $derived(namesItsInputs(node.kind));
+	/** Only an action can be switched off: it is the one place a pulse does something. */
+	const off = $derived(category === 'action' && node.disabled === true);
+	const toggleOff = () => void data.flow_nodes.byId(node.id).disabled!.set(off ? null : true);
 
 	/**
 	 * Its own name in place of what its kind is called, given by double-clicking the
@@ -64,20 +68,26 @@
 			y: node.y + 90,
 			active: false,
 			last_fired_at: null,
-			pulsed_at: null
+			pulsed_at: null,
+			due_at: null
 		});
 	}
 </script>
 
-<div class="node {category}" class:lit={node.active} class:flash={flashing} onanimationend={() => (flashing = false)}>
+<div class="node {category}" class:lit={node.active && !off} class:off class:flash={flashing && !off} onanimationend={() => (flashing = false)}>
 	{#each ins as port, i (i)}
+		{@const help = portHelp(node.kind, 'in', i)}
 		<Handle
 			type="target"
 			position={Position.Left}
 			id={`in-${i}`}
 			class={port.toLowerCase()}
 			style={`top: ${28 + i * 18}px`}
+			title={help.help}
 		/>
+		{#if labeled}
+			<span class="port-label in" style={`top: ${28 + i * 18}px`} title={help.help}>{help.label}</span>
+		{/if}
 	{/each}
 
 	<header>
@@ -103,7 +113,18 @@
 				ondblclick={() => $canEdit && (renaming = true)}>{node.name || title}</span
 			>
 		{/if}
-		{#if live}<span class="live" class:on={live.on}>{live.text}</span>{/if}
+		{#if off}
+			<span class="live">off</span>
+		{:else if live}<span class="live" class:on={live.on}>{live.text}</span>{/if}
+		{#if category === 'action' && $canEdit}
+			<button
+				class="remove power nodrag"
+				class:is-off={off}
+				title={off ? 'Switched off: a pulse stops here and nothing fires. Click to switch it on.' : 'Switch off: a pulse stops here and nothing fires, and the wires stay'}
+				aria-pressed={off}
+				onclick={toggleOff}>⏻</button
+			>
+		{/if}
 		<button class="remove" title="Duplicate node: the same settings, unconnected, just below" onclick={duplicate}
 			>⧉</button
 		>
@@ -125,12 +146,14 @@
 			id={`out-${i}`}
 			class={port.toLowerCase()}
 			style={`top: ${28 + i * 18}px`}
+			title={portHelp(node.kind, 'out', i).help}
 		/>
 	{/each}
 </div>
 
 <style>
 	.node {
+		position: relative;
 		/* Fixed rather than shrink-to-fit: a graph whose boxes are all one width
 		   reads as a diagram, and the layout can then space them without guessing. */
 		width: 184px;
@@ -147,6 +170,10 @@
 	.node.timing { border-left-color: #fbbf24; }
 	.node.action { border-left-color: #22c55e; }
 
+	/* Selected: what a copy, a delete or a drag will take. Outside the box, so it
+	   never fights the lit glow or a pulse's flash for the border. */
+	:global(.svelte-flow__node.selected) > .node { outline: 2px solid #4a9eff; outline-offset: 2px; }
+
 	/* What makes the graph an instrument rather than a diagram: a signal passing
 	   through lights the node it passed through. */
 	.node.lit { border-color: #4a9eff; box-shadow: 0 0 0 1px #4a9eff55, 0 0 12px #4a9eff33; }
@@ -156,6 +183,26 @@
 		0% { box-shadow: 0 0 0 2px #fbbf24, 0 0 18px #fbbf24aa; border-color: #fbbf24; }
 		100% { box-shadow: 0 0 0 0 #fbbf2400, 0 0 0 #fbbf2400; }
 	}
+	/* Switched off: still where it was and still wired, plainly not taking part. */
+	.node.off { opacity: 0.55; border-style: dashed; border-left-style: solid; border-left-color: #555; }
+	.power.is-off { color: #e0a055; }
+	.power:hover { color: #22c55e; }
+	.power.is-off:hover { color: #22c55e; }
+
+	/* The word for an input that means something its neighbor does not, outside the
+	   box beside its handle, so it never sits over the node's own fields. */
+	.port-label {
+		position: absolute;
+		right: calc(100% + 9px);
+		transform: translateY(-50%);
+		font-size: 9px;
+		line-height: 1;
+		color: #888;
+		white-space: nowrap;
+		pointer-events: auto;
+		cursor: help;
+	}
+
 	.live {
 		margin-left: auto;
 		font-size: 10px;

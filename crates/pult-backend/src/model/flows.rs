@@ -598,6 +598,8 @@ impl Flows {
                         self.pending.push((target.id, due));
                         effects.push(FlowEffect::Counting { node_id: target.id, ms: Some(*ms) });
                     }
+                    // Switched off in the editor: the pulse stops here, unlit.
+                    FlowNodeKind::Action(_) if target.disabled == Some(true) => {}
                     FlowNodeKind::Action(action) => {
                         lit.insert(target.id);
                         effects.push(FlowEffect::Fire {

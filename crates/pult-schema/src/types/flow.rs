@@ -239,6 +239,14 @@ pub struct FlowNode {
     #[ts(optional = nullable)]
     #[pult(lifecycle = SYNCED)]
     pub due_at: Option<u64>,
+    /// Switched off: a pulse reaching it stops there, and nothing fires. For an action
+    /// that would be a nuisance while the rest of a maze is being tried — the fog, the
+    /// air cannon — without unwiring it and losing where it went. `None` is on, so a
+    /// show from before this field opens with every node doing what it did.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    #[pult(lifecycle = PERSISTED)]
+    pub disabled: Option<bool>,
 }
 
 /// One connection, from an output port to an input port.

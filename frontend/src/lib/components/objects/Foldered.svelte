@@ -7,10 +7,17 @@
 	 * hands that over as `item`; this decides only where each one goes. A folder's header
 	 * is an object of its own: a tap opens or closes it (remembered on this screen), a
 	 * right-click or a long-press opens the one context menu with Rename, New folder
-	 * inside, Move to folder… and Delete. Dropping an object of this pool's kind on a
-	 * header files it there, and on the pool outside every folder takes it out — one
-	 * write each, so one Ctrl-Z. A header can be dragged onto another to nest it. The
-	 * Show lock hides all of the editing and leaves the opening and closing.
+	 * inside, Move to folder… and Delete. Dropping an object of this pool's kind
+	 * anywhere on a folder — its header or what is inside it — files it there, and on
+	 * the pool outside every folder takes it out — one write each, so one Ctrl-Z. A
+	 * header can be dragged onto another to nest it. While something is dragged, a
+	 * dashed outline goes round wherever it would land, the innermost folder under the
+	 * pointer or the whole pool. The Show lock hides all of the editing and leaves the
+	 * opening and closing.
+	 *
+	 * Only the header used to take a drop. Let go over the objects inside an open
+	 * folder, and the drop fell through to the pool and took the object *out* of every
+	 * folder — the opposite of what was meant, and nothing on screen said so.
 	 */
 
 	import type { Snippet } from 'svelte';
@@ -43,14 +50,21 @@
 
 	const tree = $derived(buildTree($folders, kind, rows));
 
-	/** The header a drag is over, to light it. */
+	/** Where a drop would land: a folder's id, `ROOT` for the pool, or nowhere. */
+	const ROOT = '';
 	let over = $state<string | null>(null);
+
+	/** Leaving an element for one of its own children is not leaving it. */
+	const left = (event: DragEvent) =>
+		!(event.relatedTarget instanceof Node && (event.currentTarget as HTMLElement).contains(event.relatedTarget));
 
 	const accepts = (event: DragEvent) => !!event.dataTransfer?.types.includes(OBJECT_MIME) && $canEdit;
 
 	async function dropInto(event: DragEvent, folder: string | null) {
 		const ref = readDropped(event);
 		over = null;
+		// The innermost folder under the pointer takes it; the ones round it do not.
+		event.stopPropagation();
 		if (!ref || !$canEdit) return;
 		if (ref.kind === kind) {
 			event.preventDefault();
@@ -98,21 +112,26 @@
 {#snippet folderNode(node: FolderNode<Row>)}
 	{@const id = node.folder.id}
 	{@const open = !$closedFolders.has(id)}
-	<section class="folder" class:open>
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<section
+		class="folder"
+		class:open
+		class:over={over === id}
+		ondragover={(e) => {
+			if (accepts(e)) {
+				e.preventDefault();
+				e.stopPropagation();
+				over = id;
+			}
+		}}
+		ondragleave={(e) => left(e) && over === id && (over = null)}
+		ondrop={(e) => dropInto(e, id)}
+	>
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div
 			class="header"
-			class:over={over === id}
 			draggable={$canEdit && !isRenaming(id)}
 			ondragstart={(e) => dragFolder(e, id)}
-			ondragover={(e) => {
-				if (accepts(e)) {
-					e.preventDefault();
-					over = id;
-				}
-			}}
-			ondragleave={() => over === id && (over = null)}
-			ondrop={(e) => dropInto(e, id)}
 			oncontextmenu={(e) => {
 				e.preventDefault();
 				openMenu({ kind: 'folder', id }, e.clientX, e.clientY);
@@ -148,12 +167,19 @@
 	</section>
 {/snippet}
 
+<svelte:window ondragend={() => (over = null)} ondrop={() => (over = null)} />
+
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
 	class="pool"
+	class:over={over === ROOT}
 	ondragover={(e) => {
-		if (accepts(e) && tree.folders.length > 0) e.preventDefault();
+		if (accepts(e) && tree.folders.length > 0) {
+			e.preventDefault();
+			over = ROOT;
+		}
 	}}
+	ondragleave={(e) => left(e) && over === ROOT && (over = null)}
 	ondrop={(e) => dropInto(e, null)}
 >
 	{#each tree.folders as node (node.folder.id)}{@render folderNode(node)}{/each}
@@ -198,9 +224,13 @@
 		user-select: none;
 		touch-action: manipulation;
 	}
-	.header.over {
+	/* Where a drop lands: the whole folder, its contents included, or the whole pool. */
+	.folder.over,
+	.pool.over {
 		background: var(--bg-hover, #2a2a2a);
 		outline: 1px dashed var(--text-dim, #888);
+		outline-offset: 2px;
+		border-radius: 4px;
 	}
 	.toggle {
 		display: inline-flex;

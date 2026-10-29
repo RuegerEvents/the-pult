@@ -10,7 +10,8 @@
 		type Connection,
 		type Edge,
 		type Node,
-		type NodeTypes
+		type NodeTypes,
+		type useSvelteFlow
 	} from '@xyflow/svelte';
 	import '@xyflow/svelte/dist/style.css';
 
@@ -28,7 +29,23 @@
 		Timeline,
 		Variable
 	} from '$lib/generated/index.js';
-	import { canConnect, graphOf, nextNodePosition, nodeTag } from '$lib/flow.js';
+	import {
+		NODE_SIZE,
+		NUDGE,
+		canConnect,
+		clipOrigin,
+		copyNodes,
+		graphOf,
+		nextNodePosition,
+		nodeTag,
+		pasteClip,
+		placeNear,
+		type FlowClip
+	} from '$lib/flow.js';
+	import { renaming } from '$lib/objects.js';
+	import { beginGesture, endGesture } from '$lib/stores/gesture.js';
+	import { keepView, showsAny, viewOf } from '$lib/stores/flowViews.js';
+	import FlowBridge from './FlowBridge.svelte';
 
 	import { setFlowContext } from './context.js';
 	import { canEdit } from '$lib/stores/showLock.js';
@@ -55,13 +72,21 @@
 	let selectedId = $state<string | null>(null);
 	// A flow's name is how an operator finds it in a list of twenty, so renaming is
 	// behind the lock along with deleting: both are edits to the show, done rarely.
-	let renaming = $state<string | null>(null);
+	// Which row is being renamed is the console's one `renaming`, so the context
+	// menu's Rename and a double-click open the same field.
+	const renamingId = $derived($renaming?.kind === 'flow' ? $renaming.id : null);
 	let draftName = $state('');
+	$effect(() => {
+		const id = renamingId;
+		if (id) draftName = untrack(() => flows.find((f) => f.id === id)?.name ?? '');
+	});
 
 	async function saveName(id: string) {
+		// Enter submits and the field then loses focus: only the first of the two saves.
+		if (renamingId !== id) return;
+		renaming.set(null);
 		const trimmed = draftName.trim();
 		if (trimmed) await data.flows.byId(id).name.set(trimmed);
-		renaming = null;
 	}
 	let creating = $state(false);
 
@@ -102,6 +127,19 @@
 	let canvasEdges = $state.raw<Edge[]>([]);
 	let dragging = $state.raw<Set<string>>(new Set());
 
+	/**
+	 * Where a node was let go, until the show says so too.
+	 *
+	 * Letting go hands the position back to the show, and the show still holds the old
+	 * one until the write has been round the station: taken from it at once, the node
+	 * jumped back to where the drag began and then on to where it was dropped. So the
+	 * dropped position is kept until the show agrees with it, or for a few seconds if a
+	 * write never lands — after which the show is the truth again.
+	 */
+	const settling = new Map<string, { x: number; y: number; until: number }>();
+	/** Nodes to be selected when they arrive, which is what a paste leaves selected. */
+	let selectOnArrival = new Set<string>();
+
 	$effect(() => {
 		const held = dragging;
 		const incoming = graph.nodes;
@@ -111,11 +149,20 @@
 		const previous = untrack(() => new Map(canvasNodes.map((n) => [n.id, n])));
 		canvasNodes = incoming.map((node) => {
 			const before = previous.get(node.id);
+			let position = { x: node.x, y: node.y };
+			const settled = settling.get(node.id);
+			if (before && held.has(node.id)) {
+				position = before.position;
+			} else if (settled) {
+				const agrees = Math.abs(settled.x - node.x) < 0.5 && Math.abs(settled.y - node.y) < 0.5;
+				if (!agrees && Date.now() < settled.until) position = { x: settled.x, y: settled.y };
+				else settling.delete(node.id);
+			}
 			return {
 				id: node.id,
 				type: nodeTag(node.kind),
-				position: before && held.has(node.id) ? before.position : { x: node.x, y: node.y },
-				selected: before?.selected ?? false,
+				position,
+				selected: before ? (before.selected ?? false) : selectOnArrival.has(node.id),
 				data: { node }
 			};
 		});
@@ -164,15 +211,47 @@
 			(e) => gone.some((n) => n.id === e.from_node || n.id === e.to_node)
 		);
 		const edgeIds = new Set([...cut.map((e) => e.id), ...orphaned.map((e) => e.id)]);
-		await Promise.all([...edgeIds].map((id) => data.flow_edges.byId(id).delete()));
-		await Promise.all(gone.map((n) => data.flow_nodes.byId(n.id).delete()));
+		// One act, however many rows: a selection of six deleted is one Ctrl-Z.
+		beginGesture();
+		try {
+			await Promise.all([...edgeIds].map((id) => data.flow_edges.byId(id).delete()));
+			await Promise.all(gone.map((n) => data.flow_nodes.byId(n.id).delete()));
+		} finally {
+			endGesture();
+		}
 	}
 
-	async function addNode(kind: FlowNodeKind) {
+	// ── The board's own controls ─────────────────────────────────────────────
+
+	let api = $state.raw<ReturnType<typeof useSvelteFlow> | null>(null);
+	let board = $state<HTMLDivElement | null>(null);
+
+	/** The part of the drawing on screen, in the drawing's own coordinates. */
+	function viewRect(): { x: number; y: number; w: number; h: number } | null {
+		if (!api || !board) return null;
+		const r = board.getBoundingClientRect();
+		if (r.width === 0 || r.height === 0) return null;
+		const a = api.screenToFlowPosition({ x: r.left, y: r.top });
+		const b = api.screenToFlowPosition({ x: r.right, y: r.bottom });
+		return { x: a.x, y: a.y, w: b.x - a.x, h: b.y - a.y };
+	}
+
+	/**
+	 * A new node: where it was dropped, or in the middle of the view — a step off any
+	 * node already there, and always somewhere on screen. Arrives selected.
+	 */
+	async function addNode(kind: FlowNodeKind, at?: { x: number; y: number }) {
 		if (!selectedId) return;
-		const { x, y } = nextNodePosition(graph.nodes);
+		const view = viewRect();
+		const middle = view
+			? { x: view.x + view.w / 2 - NODE_SIZE.w / 2, y: view.y + view.h / 2 - NODE_SIZE.h / 2 }
+			: nextNodePosition(graph.nodes);
+		const { x, y } = at ?? placeNear(middle, graph.nodes, view);
+		const id = uuid();
+		deselectAll();
+		selectOnArrival = new Set([id]);
 		await data.flow_nodes.create({
-			id: uuid(),
+			id,
 			flow_id: selectedId,
 			kind,
 			x,
@@ -180,6 +259,209 @@
 			active: false,
 			last_fired_at: null
 		});
+	}
+
+	function deselectAll() {
+		if (canvasNodes.some((n) => n.selected)) canvasNodes = canvasNodes.map((n) => ({ ...n, selected: false }));
+	}
+
+	// ── Dragging ─────────────────────────────────────────────────────────────
+
+	function startDrag(moving: Node[]) {
+		dragging = new Set([...dragging, ...moving.map((n) => n.id)]);
+	}
+
+	/** Every node the drag carried, written as one act, and held where it was let go. */
+	function stopDrag(moving: Node[]) {
+		const until = Date.now() + 3000;
+		const moved = moving.filter((n) => {
+			const was = graph.nodes.find((g) => g.id === n.id);
+			return was && (was.x !== n.position.x || was.y !== n.position.y);
+		});
+		for (const n of moved) settling.set(n.id, { x: n.position.x, y: n.position.y, until });
+		if (moved.length > 0) {
+			beginGesture();
+			for (const n of moved) {
+				void data.flow_nodes.byId(n.id).x.set(n.position.x);
+				void data.flow_nodes.byId(n.id).y.set(n.position.y);
+			}
+			endGesture();
+		}
+		const next = new Set(dragging);
+		for (const n of moving) next.delete(n.id);
+		dragging = next;
+	}
+
+	/**
+	 * No text is selected while anything on the board is being dragged — a node, a
+	 * wire, the selection box, the view. Turned off for the whole page and not only
+	 * the board, because the pointer leaves the board in most drags and the rail's
+	 * names and the palette were what got selected. A press in a field is somebody
+	 * selecting text in it, and is left alone.
+	 */
+	function holdSelection(event: PointerEvent) {
+		boardActive = true;
+		if (event.target instanceof HTMLElement && event.target.closest('input, textarea, select, [contenteditable]')) return;
+		const root = document.documentElement;
+		root.classList.add('flow-dragging');
+		window.getSelection()?.removeAllRanges();
+		const done = () => {
+			root.classList.remove('flow-dragging');
+			window.removeEventListener('pointerup', done);
+			window.removeEventListener('pointercancel', done);
+		};
+		window.addEventListener('pointerup', done);
+		window.addEventListener('pointercancel', done);
+	}
+
+	// ── Copy, cut and paste ──────────────────────────────────────────────────
+	//
+	// Kept in `localStorage` rather than the system clipboard, which a page off
+	// `localhost` cannot read without asking: a copy in one flow pastes into any other,
+	// in this tab or another one on the same browser.
+
+	const CLIP_KEY = 'pult.flowClipboard';
+
+	/** Whether the keys are the board's: the last press on the page was on it. */
+	let boardActive = false;
+
+	const selectedNodeIds = () => new Set(canvasNodes.filter((n) => n.selected).map((n) => n.id));
+
+	function copySelected(): boolean {
+		const ids = selectedNodeIds();
+		if (ids.size === 0) return false;
+		const clip = copyNodes(graph.nodes, graph.edges, ids);
+		try {
+			localStorage.setItem(CLIP_KEY, JSON.stringify(clip));
+		} catch {
+			return false;
+		}
+		return true;
+	}
+
+	async function cutSelected() {
+		if (!copySelected()) return;
+		await remove({ nodes: canvasNodes.filter((n) => n.selected), edges: [] });
+	}
+
+	/**
+	 * What was copied, new, in the middle of the view — stepped down and right for as
+	 * long as it would land on nodes already there, so pasting twice gives two visible
+	 * copies. One act, and what arrives is what is selected.
+	 */
+	async function paste() {
+		if (!selectedId) return;
+		let clip: FlowClip | null = null;
+		try {
+			clip = JSON.parse(localStorage.getItem(CLIP_KEY) ?? 'null');
+		} catch {
+			clip = null;
+		}
+		if (!clip?.nodes?.length) return;
+		const origin = clipOrigin(clip);
+		const width = Math.max(...clip.nodes.map((n) => n.x)) - origin.x + NODE_SIZE.w;
+		const height = Math.max(...clip.nodes.map((n) => n.y)) - origin.y + NODE_SIZE.h;
+		const view = viewRect();
+		let at = view
+			? { x: view.x + (view.w - width) / 2, y: view.y + (view.h - height) / 2 }
+			: { x: origin.x + NUDGE, y: origin.y + NUDGE };
+		const lands = (p: { x: number; y: number }) =>
+			clip!.nodes.some((n) =>
+				graph.nodes.some(
+					(g) => Math.abs(p.x + n.x - origin.x - g.x) < NUDGE && Math.abs(p.y + n.y - origin.y - g.y) < NUDGE
+				)
+			);
+		for (let i = 0; i < 50 && lands(at); i++) at = { x: at.x + NUDGE, y: at.y + NUDGE };
+		const fresh = pasteClip(clip, selectedId, at, uuid);
+		deselectAll();
+		selectOnArrival = new Set(fresh.nodes.map((n) => n.id));
+		beginGesture();
+		try {
+			await Promise.all(fresh.nodes.map((n) => data.flow_nodes.create(n)));
+			await Promise.all(fresh.edges.map((e) => data.flow_edges.create(e)));
+		} finally {
+			endGesture();
+		}
+	}
+
+	function onKey(event: KeyboardEvent) {
+		if (!boardActive || !selectedId || !(event.metaKey || event.ctrlKey) || event.altKey) return;
+		if (event.target instanceof HTMLElement && event.target.closest('input, textarea, select, [contenteditable]')) return;
+		switch (event.key.toLowerCase()) {
+			case 'c':
+				if (copySelected()) event.preventDefault();
+				break;
+			case 'x':
+				if ($canEdit && selectedNodeIds().size > 0) {
+					event.preventDefault();
+					void cutSelected();
+				}
+				break;
+			case 'v':
+				if ($canEdit) {
+					event.preventDefault();
+					void paste();
+				}
+				break;
+			case 'a':
+				event.preventDefault();
+				canvasNodes = canvasNodes.map((n) => ({ ...n, selected: true }));
+				break;
+		}
+	}
+
+	function onPagePress(event: PointerEvent) {
+		boardActive = !!board && event.target instanceof Node && board.contains(event.target);
+	}
+
+	// ── Dragging a node out of the palette ───────────────────────────────────
+
+	const PALETTE_MIME = 'application/x-pult-flow-node';
+
+	function dropFromPalette(event: DragEvent) {
+		const label = event.dataTransfer?.getData(PALETTE_MIME);
+		const item = palette.find((p) => p.label === label && p.ready);
+		if (!item || !api) return;
+		event.preventDefault();
+		const at = api.screenToFlowPosition({ x: event.clientX, y: event.clientY });
+		// Held by the middle of its title bar, which is where it was picked up from.
+		void addNode(item.kind, { x: at.x - NODE_SIZE.w / 2, y: at.y - 14 });
+	}
+
+	// ── The view, per flow ───────────────────────────────────────────────────
+	//
+	// Each flow opens where this browser last left it — unless that view shows none
+	// of its nodes, which is a view nobody wants back, and then the whole flow is
+	// fitted. A flow never looked at here is fitted too.
+
+	let nodesLoaded = $state(false);
+	let viewedFor: string | null = null;
+
+	$effect(() => {
+		const id = selectedId;
+		const flowApi = api;
+		if (!flowApi || !id || !nodesLoaded || viewedFor === id) return;
+		viewedFor = id;
+		// After the canvas has taken the new flow's nodes and measured them, which a
+		// fit needs: a timer rather than an animation frame, which a backgrounded tab
+		// is never given.
+		setTimeout(() => {
+			if (selectedId !== id) return;
+			const here = graph.nodes.map((n) => ({ x: n.x, y: n.y }));
+			const saved = viewOf(id);
+			const r = board?.getBoundingClientRect();
+			if (saved && r && (here.length === 0 || showsAny(saved, here, r.width, r.height))) {
+				void flowApi.setViewport(saved);
+			} else if (here.length > 0) {
+				void flowApi.fitView({ padding: 0.2, maxZoom: 1.2 });
+			} else {
+				void flowApi.setViewport({ x: 0, y: 0, zoom: 1 });
+			}
+		}, 60);
+	});
+
+	function keepThisView(viewport: { x: number; y: number; zoom: number }) {
+		if (selectedId && viewedFor === selectedId) keepView(selectedId, viewport);
 	}
 
 	async function createFlow(name: string) {
@@ -242,7 +524,10 @@
 				flows = v;
 				if (!selectedId || !v.some((f) => f.id === selectedId)) selectedId = v[0]?.id ?? null;
 			}),
-			data.flow_nodes.subscribeDeep((v) => { nodes = v; }),
+			data.flow_nodes.subscribeDeep((v) => {
+				nodes = v;
+				nodesLoaded = true;
+			}),
 			data.flow_edges.subscribeDeep((v) => { edges = v; }),
 			data.fixtures.subscribeDeep((v) => { fixtures = v; }),
 			data.fixture_types.subscribeDeep((v) => { types = v; }),
@@ -254,6 +539,8 @@
 		return () => stops.forEach((stop) => stop());
 	});
 </script>
+
+<svelte:window onkeydown={onKey} onpointerdowncapture={onPagePress} />
 
 <div class="holder"><div class="flows">
 	<aside class="rail">
@@ -277,7 +564,7 @@
 			<Foldered kind="flow" rows={flows} layout="column">
 				{#snippet item(flow)}
 					<div class="flow-row" use:objectHandle={{ kind: 'flow', id: flow.id }}>
-						{#if renaming === flow.id && $canEdit}
+						{#if renamingId === flow.id && $canEdit}
 							<form
 								class="rename"
 								onsubmit={(e) => { e.preventDefault(); saveName(flow.id); }}
@@ -287,7 +574,10 @@
 									bind:value={draftName}
 									use:focusOnMount
 									onblur={() => saveName(flow.id)}
-									onkeydown={(e) => { if (e.key === 'Escape') renaming = null; }}
+									onkeydown={(e) => {
+										if (e.key === 'Escape') renaming.set(null);
+										e.stopPropagation();
+									}}
 								/>
 							</form>
 						{:else}
@@ -298,9 +588,7 @@
 								title={$canEdit ? 'Click to open, double-click to rename' : undefined}
 								onclick={() => (selectedId = flow.id)}
 								ondblclick={() => {
-									if (!$canEdit) return;
-									renaming = flow.id;
-									draftName = flow.name;
+									if ($canEdit) renaming.set({ kind: 'flow', id: flow.id });
 								}}
 							>
 								{flow.name}
@@ -336,35 +624,64 @@
 					<button
 						class="ghost"
 						disabled={!item.ready}
-						title={item.ready ? '' : 'Needs something in the show to point at first'}
+						draggable={item.ready}
+						title={item.ready ? 'Click to add in the middle of the view, or drag onto the board' : 'Needs something in the show to point at first'}
 						onclick={() => addNode(item.kind)}
+						ondragstart={(e) => {
+							if (!e.dataTransfer) return;
+							e.dataTransfer.setData(PALETTE_MIME, item.label);
+							e.dataTransfer.effectAllowed = 'copy';
+						}}
 					>
 						{item.label}
 					</button>
 				{/each}
 			</nav>
-			<div class="board">
+			<!-- Selecting and moving the view, one way for each hand:
+			     trackpad — one finger drags a lasso, two fingers move the view, a pinch zooms;
+			     mouse — the left button drags a lasso, the middle one moves the view, and
+			     Option (or Space) with the left one moves it too; ⌘ or Ctrl with the wheel zooms. -->
+			<!-- svelte-ignore a11y_no_static_element_interactions -->
+			<div
+				class="board"
+				bind:this={board}
+				onpointerdowncapture={holdSelection}
+				onscrollcapture={(e) => {
+					// The board's container clips and never scrolls; a browser scrolling it to
+					// show a focused field slid the whole drawing out from under the pointer.
+					const target = e.target as HTMLElement;
+					if (target.classList?.contains('svelte-flow')) target.scrollTop = target.scrollLeft = 0;
+				}}
+				ondragover={(e) => {
+					if (e.dataTransfer?.types.includes(PALETTE_MIME)) {
+						e.preventDefault();
+						e.dataTransfer.dropEffect = 'copy';
+					}
+				}}
+				ondrop={dropFromPalette}
+			>
 				<SvelteFlow
 					bind:nodes={canvasNodes}
 					bind:edges={canvasEdges}
 					{nodeTypes}
 					colorMode="dark"
-					fitView
+					deleteKey={['Backspace', 'Delete']}
+					selectionOnDrag
+					panOnDrag={[1]}
+					panActivationKey={['Alt', 'Space']}
+					panOnScroll
+					zoomActivationKey={['Meta', 'Control']}
+					multiSelectionKey={['Meta', 'Control', 'Shift']}
 					isValidConnection={validConnection}
 					onconnect={connect}
 					ondelete={remove}
-					onnodedragstart={({ targetNode }) => {
-						if (targetNode) dragging = new Set([...dragging, targetNode.id]);
-					}}
-					onnodedragstop={({ targetNode }) => {
-						if (!targetNode) return;
-						data.flow_nodes.byId(targetNode.id).x.set(targetNode.position.x);
-						data.flow_nodes.byId(targetNode.id).y.set(targetNode.position.y);
-						const next = new Set(dragging);
-						next.delete(targetNode.id);
-						dragging = next;
-					}}
+					onnodedragstart={({ nodes: moving }) => startDrag(moving)}
+					onnodedragstop={({ nodes: moving }) => stopDrag(moving)}
+					onselectiondragstart={(_, moving) => startDrag(moving)}
+					onselectiondragstop={(_, moving) => stopDrag(moving)}
+					onmoveend={(_, viewport) => keepThisView(viewport)}
 				>
+					<FlowBridge onready={(flowApi) => (api = flowApi)} />
 					<Background bgColor="#1a1a1a" patternColor="#2e2e2e" />
 					<Controls />
 				</SvelteFlow>
@@ -387,6 +704,9 @@
 	/* Dragging a node or a wire must not select the labels it passes over; the
 	   fields inside a node stay selectable, since they are typed into. */
 	.board { user-select: none; -webkit-user-select: none; }
+	/* While a drag on the board is under way, nothing on the page is selectable. */
+	:global(html.flow-dragging),
+	:global(html.flow-dragging *) { user-select: none !important; -webkit-user-select: none !important; }
 	.board :global(input),
 	.board :global(textarea) { user-select: text; -webkit-user-select: text; }
 	.rail { width: 200px; flex: none; border-right: 1px solid #2a2a2a; padding: 16px 12px; display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }

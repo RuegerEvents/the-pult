@@ -1716,6 +1716,16 @@ impl FlowNodeEntity {
         self.at.field("due_at")
     }
 
+    /// Switched off: a pulse reaching it stops there, and nothing fires. For an action
+    /// that would be a nuisance while the rest of a maze is being tried — the fog, the
+    /// air cannon — without unwiring it and losing where it went. `None` is on, so a
+    /// show from before this field opens with every node doing what it did.
+    ///
+    /// PERSISTED.
+    pub fn disabled(&self) -> Field<Option<bool>> {
+        self.at.field("disabled")
+    }
+
     /// Press a button node.
     ///
     /// The press is this timestamp changing, and nothing else. That makes it an
@@ -5430,6 +5440,15 @@ impl StationEntity {
     /// SYNCED.
     pub fn machine(&self) -> Field<MachineStats> {
         self.at.field("machine")
+    }
+
+    /// How much decoded sound this station is holding, against what it may hold.
+    ///
+    /// Defaulted, and a `budget` of zero is a station on an older build that cannot say.
+    ///
+    /// SYNCED.
+    pub fn audio_cache(&self) -> Field<AudioCacheStats> {
+        self.at.field("audio_cache")
     }
 
     /// What this machine's network interfaces carried over the window just reported,

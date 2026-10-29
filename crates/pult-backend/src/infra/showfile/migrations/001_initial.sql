@@ -92,7 +92,8 @@ CREATE TABLE IF NOT EXISTS flow_nodes (
     "kind" TEXT NOT NULL,
     "name" TEXT,
     "x" REAL NOT NULL,
-    "y" REAL NOT NULL
+    "y" REAL NOT NULL,
+    "disabled" TEXT
 );
 
 CREATE TABLE IF NOT EXISTS folders (

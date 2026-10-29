@@ -707,6 +707,7 @@ async fn a_pir_counting_into_a_variable_writes_no_history() {
     let node = |kind: FlowNodeKind| FlowNode {
         name: None,
         due_at: None,
+        disabled: None,
         id: Uuid::new_v4(),
         flow_id: flow,
         kind,

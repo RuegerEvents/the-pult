@@ -551,6 +551,7 @@ pub fn plan_import(
         last_fired_at: None,
         pulsed_at: None,
         due_at: None,
+        disabled: None,
     };
     let play = node(
         "play",

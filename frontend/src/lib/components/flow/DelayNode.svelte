@@ -61,9 +61,6 @@
 	{:else if node.active}
 		<span class="waiting">waiting…</span>
 	{/if}
-	<!-- The two inputs, top to bottom: start (again from the top if it is already
-	     counting), and reset, which stops it with nothing coming out. -->
-	<span class="ports">in: start, then reset</span>
 </NodeShell>
 
 <style>
@@ -75,5 +72,4 @@
 	.bar { flex: 1; height: 6px; border-radius: 3px; background: #171717; border: 1px solid #3a3a3a; overflow: hidden; }
 	.fill { height: 100%; background: #fbbf24; }
 	.time { color: #fbbf24; font-size: 10px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-	.ports { display: block; color: #777; font-size: 10px; }
 </style>

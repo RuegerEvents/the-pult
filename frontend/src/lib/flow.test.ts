@@ -3,6 +3,12 @@ import type { FlowEdge, FlowNode, FlowNodeKind, VariableOp } from './generated/i
 import {
 	actionOf,
 	canConnect,
+	copyNodes,
+	namesItsInputs,
+	pasteClip,
+	placeNear,
+	portHelp,
+	NUDGE,
 	conditionOf,
 	delayMsOf,
 	sourceOf,
@@ -215,6 +221,86 @@ describe('layout', () => {
 	it('puts the next one to the right of the rightmost', () => {
 		const nodes = [{ ...node('a', SOURCE), x: 40 }, { ...node('b', CONDITION), x: 260, y: 90 }];
 		expect(nextNodePosition(nodes)).toEqual({ x: 500, y: 90 });
+	});
+});
+
+describe('placeNear', () => {
+	const view = { x: 0, y: 0, w: 1000, h: 600 };
+
+	it('takes the spot asked for when it is free', () => {
+		expect(placeNear({ x: 100, y: 100 }, [], view)).toEqual({ x: 100, y: 100 });
+	});
+
+	it('steps down and right past nodes already there', () => {
+		const nodes = [{ x: 100, y: 100 }, { x: 100 + NUDGE, y: 100 + NUDGE }];
+		expect(placeNear({ x: 100, y: 100 }, nodes, view)).toEqual({ x: 100 + 2 * NUDGE, y: 100 + 2 * NUDGE });
+	});
+
+	it('never steps out of the view', () => {
+		// Asked for the bottom-right corner, which is taken: the next step would leave the
+		// view, so it starts again along the top.
+		const at = { x: 1000 - 184, y: 600 - 90 };
+		const p = placeNear(at, [at], view);
+		expect(p.x).toBeGreaterThanOrEqual(0);
+		expect(p.y).toBeGreaterThanOrEqual(0);
+		expect(p.x + 184).toBeLessThanOrEqual(1000);
+		expect(p.y + 90).toBeLessThanOrEqual(600);
+		expect(p).not.toEqual(at);
+	});
+});
+
+describe('copy and paste', () => {
+	const a = { ...node('a', SOURCE), x: 100, y: 50, active: true };
+	const b = { ...node('b', CONDITION), x: 300, y: 80 };
+	const c = node('c', ACTION);
+	const edges: FlowEdge[] = [
+		{ id: 'ab', flow_id: 'f1', from_node: 'a', from_port: 0, to_node: 'b', to_port: 0 },
+		{ id: 'bc', flow_id: 'f1', from_node: 'b', from_port: 0, to_node: 'c', to_port: 0 }
+	];
+
+	it('takes the wires between the copied nodes and none that leave them', () => {
+		const clip = copyNodes([a, b, c], edges, new Set(['a', 'b']));
+		expect(clip.nodes.map((n) => n.id)).toEqual(['a', 'b']);
+		expect(clip.edges.map((e) => e.id)).toEqual(['ab']);
+	});
+
+	it('pastes new ids into another flow, wired the same, moved together and at rest', () => {
+		let n = 0;
+		const clip = copyNodes([a, b, c], edges, new Set(['a', 'b']));
+		const pasted = pasteClip(clip, 'f2', { x: 0, y: 0 }, () => `new${++n}`);
+		const [pa, pb] = pasted.nodes;
+		expect(pa.id).not.toBe('a');
+		expect(pa.flow_id).toBe('f2');
+		expect([pa.x, pa.y, pb.x, pb.y]).toEqual([0, 0, 200, 30]);
+		expect(pa.active).toBe(false);
+		expect(pasted.edges).toHaveLength(1);
+		expect(pasted.edges[0]).toMatchObject({ flow_id: 'f2', from_node: pa.id, to_node: pb.id });
+		expect(pasted.edges[0].id).not.toBe('ab');
+	});
+});
+
+describe('portHelp', () => {
+	it('tells a wait\'s start from its reset', () => {
+		const wait: FlowNodeKind = { Delay: { ms: 1000 } };
+		expect(portHelp(wait, 'in', 0).label).toBe('start');
+		expect(portHelp(wait, 'in', 1).label).toBe('reset');
+		expect(portHelp(wait, 'in', 1).help).toContain('nothing comes out');
+		expect(namesItsInputs(wait)).toBe(true);
+		expect(namesItsInputs('And')).toBe(false);
+	});
+
+	it('says which shape the handle is', () => {
+		expect(portHelp('Gate', 'in', 0).help).toContain('pulse');
+		expect(portHelp('Gate', 'in', 1).help).toContain('level');
+	});
+
+	it('has a sentence for every port of every kind', () => {
+		const kinds: FlowNodeKind[] = [SOURCE, CONDITION, ACTION, 'Button', 'And', 'Or', 'Not', 'Gate', { Delay: { ms: 1 } }];
+		for (const kind of kinds) {
+			for (const [side, ports] of [['in', inputPorts(kind)], ['out', outputPorts(kind)]] as const) {
+				ports.forEach((_, i) => expect(portHelp(kind, side, i).help.length).toBeGreaterThan(30));
+			}
+		}
 	});
 });
 

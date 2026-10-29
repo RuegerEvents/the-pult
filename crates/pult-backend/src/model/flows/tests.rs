@@ -41,6 +41,7 @@ impl Draw {
         self.nodes.push(FlowNode {
             name: None,
             due_at: None,
+            disabled: None,
             id,
             flow_id,
             kind,
@@ -334,6 +335,25 @@ fn a_disabled_flow_does_nothing() {
         flows.tick(Instant::now(), &graph, &[an_edge(fixture, "Contact:0", Some(false), true)]);
 
     assert!(effects.is_empty());
+}
+
+/// A switched-off action stops the pulse and fires nothing; the one beside it on the
+/// same condition still goes.
+#[test]
+fn a_disabled_action_does_not_fire_and_its_neighbor_does() {
+    let fixture = Uuid::new_v4();
+    let (mut draw, off) = a_rule(TriggerCondition::RisingEdge, fixture, ParameterKind::Contact(0));
+    let gate = draw.nodes[1].id;
+    let on = draw.action();
+    draw.wire(gate, on);
+    draw.nodes.iter_mut().find(|n| n.id == off).unwrap().disabled = Some(true);
+    let graph = draw.graph();
+    let mut flows = Flows::default();
+
+    let effects =
+        flows.tick(Instant::now(), &graph, &[an_edge(fixture, "Contact:0", Some(false), true)]);
+
+    assert_eq!(fired(&effects), vec![on]);
 }
 
 #[test]

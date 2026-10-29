@@ -237,6 +237,167 @@ export function isSwitchLike(kind: { [k: string]: unknown } | string): boolean {
 /** One node's width plus a gap, so a new node lands clear of the last one. */
 export const NODE_STEP = 240;
 
+/** How big a node is drawn, near enough to keep two from landing on each other. */
+export const NODE_SIZE = { w: 184, h: 90 };
+
+/** How far a node is moved off one already in its place. */
+export const NUDGE = 32;
+
+type Point = { x: number; y: number };
+type Rect = { x: number; y: number; w: number; h: number };
+
+const overlaps = (a: Point, b: Point) =>
+	Math.abs(a.x - b.x) < NUDGE && Math.abs(a.y - b.y) < NUDGE;
+
+/**
+ * Where a new node goes: `at`, or a step down and to the right of it for as long as
+ * a node already sits there — but never out of `view`, the part of the board on
+ * screen. A step that would leave it goes back to the top left of the view and
+ * walks again from there; a view with no free spot at all gets `at` itself.
+ */
+export function placeNear(at: Point, nodes: Pick<FlowNode, 'x' | 'y'>[], view: Rect | null): Point {
+	const inView = (p: Point) =>
+		!view || (p.x >= view.x && p.y >= view.y && p.x + NODE_SIZE.w <= view.x + view.w && p.y + NODE_SIZE.h <= view.y + view.h);
+	const taken = (p: Point) => nodes.some((n) => overlaps(p, n));
+	let p = { ...at };
+	for (let tries = 0; tries < 200; tries++) {
+		if (!taken(p)) return p;
+		const next = { x: p.x + NUDGE, y: p.y + NUDGE };
+		if (inView(next)) {
+			p = next;
+		} else if (view) {
+			// Off the bottom or the right: start a new diagonal one step along the top.
+			const row = Math.floor(tries / 4) + 1;
+			p = { x: view.x + NUDGE * row, y: view.y + NUDGE };
+			if (!inView(p)) return at;
+		} else {
+			p = next;
+		}
+	}
+	return at;
+}
+
+// ── Copying ───────────────────────────────────────────────────────────────────
+
+/** Nodes and the wires between them, lifted out of a flow. */
+export type FlowClip = { nodes: FlowNode[]; edges: FlowEdge[] };
+
+/**
+ * What copying `ids` takes: those nodes, and every wire with both ends among them.
+ * A wire to a node left behind would arrive in the paste pointing at nothing.
+ */
+export function copyNodes(nodes: FlowNode[], edges: FlowEdge[], ids: Set<string>): FlowClip {
+	return {
+		nodes: nodes.filter((n) => ids.has(n.id)),
+		edges: edges.filter((e) => ids.has(e.from_node) && ids.has(e.to_node))
+	};
+}
+
+/**
+ * A clip, made new for `flowId`: every node and wire gets its own id, the wires follow
+ * their nodes, the whole thing is moved so its top-left node lands on `at`, and what
+ * a node was in the middle of doing — lit, counting, last fired — stays behind.
+ */
+export function pasteClip(clip: FlowClip, flowId: string, at: Point, newId: () => string): FlowClip {
+	if (clip.nodes.length === 0) return { nodes: [], edges: [] };
+	const left = Math.min(...clip.nodes.map((n) => n.x));
+	const top = Math.min(...clip.nodes.map((n) => n.y));
+	const ids = new Map(clip.nodes.map((n) => [n.id, newId()]));
+	return {
+		nodes: clip.nodes.map((n) => ({
+			...n,
+			id: ids.get(n.id)!,
+			flow_id: flowId,
+			x: at.x + (n.x - left),
+			y: at.y + (n.y - top),
+			active: false,
+			last_fired_at: null,
+			pulsed_at: null,
+			due_at: null
+		})),
+		edges: clip.edges.map((e) => ({
+			...e,
+			id: newId(),
+			flow_id: flowId,
+			from_node: ids.get(e.from_node)!,
+			to_node: ids.get(e.to_node)!
+		}))
+	};
+}
+
+/** The top-left corner of a clip, for working out where it is pasted. */
+export function clipOrigin(clip: FlowClip): Point {
+	return {
+		x: Math.min(...clip.nodes.map((n) => n.x)),
+		y: Math.min(...clip.nodes.map((n) => n.y))
+	};
+}
+
+// ── What a port is for ────────────────────────────────────────────────────────
+
+/**
+ * What one input or output of a node is, in a word and in a sentence: the word drawn
+ * beside a handle where a node's inputs mean different things (a Wait's start and
+ * reset), the sentence shown when the pointer is over it. Every port has one.
+ */
+export function portHelp(kind: FlowNodeKind, side: 'in' | 'out', index: number): { label: string; help: string } {
+	const tag = nodeTag(kind);
+	const port = (side === 'in' ? inputPorts(kind) : outputPorts(kind))[index];
+	const shape = port === 'Pulse' ? 'pulse, a square handle' : 'level, a round handle';
+	const say = (label: string, help: string) => ({ label, help: `${label[0].toUpperCase()}${label.slice(1)} (${shape}). ${help}` });
+	if (side === 'out') {
+		switch (tag) {
+			case 'Source':
+				return say('value', 'What this watches, as it is right now. Wire it into a When to fire on a change.');
+			case 'Button':
+				return say('press', 'One pulse each time the button is pressed, from any console or surface.');
+			case 'Condition':
+				return say('fired', 'One pulse each time the change chosen here happens.');
+			case 'And':
+				return say('both', 'True while both inputs are true.');
+			case 'Or':
+				return say('either', 'True while either input is true.');
+			case 'Not':
+				return say('not', 'True while the input is false.');
+			case 'Gate':
+				return say('let through', 'The pulses that arrived while the condition was true.');
+			case 'Delay':
+				return say('done', 'One pulse when the wait runs out. Nothing if it was reset first.');
+			default:
+				return say('out', '');
+		}
+	}
+	switch (tag) {
+		case 'Condition':
+			return say('watch', 'The level whose change this looks for.');
+		case 'And':
+		case 'Or':
+			return say(index === 0 ? 'first' : 'second', tag === 'And' ? 'Both have to be true.' : 'Either one will do.');
+		case 'Not':
+			return say('in', 'The level to turn around.');
+		case 'Gate':
+			return index === 0
+				? say('pulse', 'The pulse to pass on, if the condition below allows it.')
+				: say('only if', 'The pulse goes through only while this is true, as it stood before the pulse changed anything.');
+		case 'Delay':
+			return index === 0
+				? say('start', 'Starts the wait. A pulse while it is already counting starts it again from the top.')
+				: say('reset', 'Stops the wait, and nothing comes out. A pulse while it is not counting does nothing.');
+		case 'Action':
+			return say('go', 'Each pulse here fires this action, unless the node is switched off.');
+		default:
+			return say('in', '');
+	}
+}
+
+/**
+ * Whether a node's inputs need their words drawn beside them. Only where two inputs
+ * mean different things: an And's two are the same, a Wait's start and reset are not.
+ */
+export function namesItsInputs(kind: FlowNodeKind): boolean {
+	return ['Delay', 'Gate'].includes(nodeTag(kind));
+}
+
 /** Where a new node goes: to the right of the rightmost one, or at the origin. */
 export function nextNodePosition(nodes: FlowNode[]): { x: number; y: number } {
 	if (nodes.length === 0) return { x: 40, y: 40 };
