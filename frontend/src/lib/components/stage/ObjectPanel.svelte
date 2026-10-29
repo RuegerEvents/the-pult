@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Pick from '$lib/components/objects/Pick.svelte';
 	/**
 	 * What one piece of the drawing is, in numbers.
 	 *
@@ -84,15 +85,7 @@
 
 	<label class="field">
 		<span>Layer</span>
-		<select
-			value={object.layer ?? ''}
-			onchange={(e) => row.layer.set(e.currentTarget.value || null)}
-		>
-			<option value="">None</option>
-			{#each $layers as layer (layer.id)}
-				<option value={layer.id}>{layer.name}</option>
-			{/each}
-		</select>
+		<Pick rows={$layers} value={object.layer ?? null} none="None" onpick={(id) => row.layer.set(id)} />
 	</label>
 
 	<label class="field">

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Pick from '$lib/components/objects/Pick.svelte';
 	/**
 	 * A timeline's own settings: how it ends, who plays it, where its position comes
 	 * from, the tempo it drives and its beat grid.
@@ -272,17 +273,14 @@
 
 		<span class="label">Drives <Help label="What a timeline drives">While it runs, the speed master is set to the tempo of each grid segment it crosses, with the downbeat put where the segment's "one" fell.</Help></span>
 		<div class="inline">
-			<select
+			<Pick
 				class="select"
 				disabled={!$canEdit}
-				value={timeline.speed_master ?? ''}
-				onchange={(e) => void proxy(timeline.id).speed_master.set(e.currentTarget.value || null)}
-			>
-				<option value="">no speed master</option>
-				{#each $masters as master (master.id)}
-					<option value={master.id}>{master.name}</option>
-				{/each}
-			</select>
+				rows={$masters}
+				value={timeline.speed_master ?? null}
+				none="no speed master"
+				onpick={(id) => void proxy(timeline.id).speed_master.set(id)}
+			/>
 		</div>
 
 		<span class="label"

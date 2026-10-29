@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Pick from '$lib/components/objects/Pick.svelte';
 	/**
 	 * The ground plan: where the rig is, and — in program mode — what it is doing.
 	 *
@@ -148,15 +149,7 @@
 		</div>
 
 		{#if $plans.length > 1}
-			<select
-				class="ghost"
-				value={plan?.id ?? ''}
-				onchange={(e) => shownPlanId.set(e.currentTarget.value)}
-			>
-				{#each $plans as p (p.id)}
-					<option value={p.id}>{p.name}</option>
-				{/each}
-			</select>
+			<Pick class="ghost" rows={$plans} value={plan?.id ?? null} onpick={(id) => id && shownPlanId.set(id)} />
 		{/if}
 
 		{#if $canEdit}

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import FolderedOptions from '$lib/components/objects/FolderedOptions.svelte';
+	import Pick from '$lib/components/objects/Pick.svelte';
 	/**
 	 * Surfaces: the pages a phone runs the show from, made here.
 	 *
@@ -284,17 +284,19 @@
 
 						<div class="line">
 							{#if target.kind === 'FlowButton'}
-								<select class="input" value={target.node_id} onchange={(e) => retarget(tile, { kind: 'FlowButton', node_id: e.currentTarget.value })}>
-									{#each flowButtons($surfaceShow) as b (b.id)}<option value={b.id}>{b.name}</option>{/each}
-								</select>
-							{:else if target.kind === 'VariableReadout' || target.kind === 'VariableSetter'}
-								<select
+								<Pick
 									class="input"
+									rows={flowButtons($surfaceShow)}
+									value={target.node_id}
+									onpick={(id) => id && retarget(tile, { kind: 'FlowButton', node_id: id })}
+								/>
+							{:else if target.kind === 'VariableReadout' || target.kind === 'VariableSetter'}
+								<Pick
+									class="input"
+									rows={$surfaceShow.variables}
 									value={target.variable_id}
-									onchange={(e) => retarget(tile, { ...target, variable_id: e.currentTarget.value })}
-								>
-									{#each $surfaceShow.variables as v (v.id)}<option value={v.id}>{v.name}</option>{/each}
-								</select>
+									onpick={(id) => id && retarget(tile, { ...target, variable_id: id })}
+								/>
 								{#if target.kind === 'VariableReadout'}
 									<select
 										class="input"
@@ -347,9 +349,12 @@
 									{/if}
 								{/if}
 							{:else if target.kind === 'Timeline'}
-								<select class="input" value={target.timeline_id} onchange={(e) => retarget(tile, { ...target, timeline_id: e.currentTarget.value })}>
-									{#each $surfaceShow.timelines as t (t.id)}<option value={t.id}>{t.name}</option>{/each}
-								</select>
+								<Pick
+									class="input"
+									rows={$surfaceShow.timelines}
+									value={target.timeline_id}
+									onpick={(id) => id && retarget(tile, { ...target, timeline_id: id })}
+								/>
 								<label class="check">
 									<input
 										type="checkbox"
@@ -359,13 +364,19 @@
 									start from the beginning
 								</label>
 							{:else if target.kind === 'SequenceGo' || target.kind === 'SequenceOff'}
-								<select class="input" value={target.sequence_id} onchange={(e) => retarget(tile, { ...target, sequence_id: e.currentTarget.value })}>
-									<FolderedOptions rows={$surfaceShow.sequences} />
-								</select>
+								<Pick
+									class="input"
+									rows={$surfaceShow.sequences}
+									value={target.sequence_id}
+									onpick={(id) => id && retarget(tile, { ...target, sequence_id: id })}
+								/>
 							{:else if target.kind === 'Parameter'}
-								<select class="input" value={target.fixture_id} onchange={(e) => pickParameter(tile, e.currentTarget.value)}>
-									{#each $surfaceShow.fixtures as f (f.id)}<option value={f.id}>{f.name}</option>{/each}
-								</select>
+								<Pick
+									class="input"
+									rows={$surfaceShow.fixtures}
+									value={target.fixture_id}
+									onpick={(id) => id && pickParameter(tile, id)}
+								/>
 								<select
 									class="input"
 									value={parameterKey(target.parameter)}

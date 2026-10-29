@@ -1,5 +1,5 @@
 <script lang="ts">
-	import FolderedOptions from '$lib/components/objects/FolderedOptions.svelte';
+	import Pick from '$lib/components/objects/Pick.svelte';
 	/**
 	 * An event: when, and what it does. A Go, a jump or an Off into a sequence — the
 	 * sequence stays the stack — or one of the acts a flow has: play or stop a timeline,
@@ -90,52 +90,46 @@
 		{#if kind === 'sequence'}
 			{@const sequence_id = sequenceOf(event.action) ?? ''}
 			<span class="label">Sequence</span>
-			<select
+			<Pick
 				class="select"
 				disabled={!$canEdit}
+				rows={$sequences}
 				value={sequence_id}
-				onchange={(e) => void change(row, { action: { GoNext: { sequence_id: e.currentTarget.value } } })}
-			>
-				<FolderedOptions rows={$sequences} />
-			</select>
+				onpick={(id) => id && void change(row, { action: { GoNext: { sequence_id: id } } })}
+			/>
 			<span class="label">Does</span>
-			<select
+			<Pick
 				class="select"
 				disabled={!$canEdit}
-				value={choice(event.action)}
-				onchange={(e) => {
-					const picked = e.currentTarget.value;
+				rows={cuesOf(sequence_id, $sequences, $cues)}
+				value={choice(event.action) || null}
+				none="Go next"
+				extras={[{ id: 'off', label: 'Off' }]}
+				label={(cue) => `Go to ${cue.name}`}
+				onpick={(picked) => {
 					const action: TimelineAction =
-						picked === '' ? { GoNext: { sequence_id } } : picked === 'off' ? { Off: { sequence_id } } : { GoToCue: { sequence_id, cue_id: picked } };
+						picked === null ? { GoNext: { sequence_id } } : picked === 'off' ? { Off: { sequence_id } } : { GoToCue: { sequence_id, cue_id: picked } };
 					void change(row, { action });
 				}}
-			>
-				<option value="">Go next</option>
-				<option value="off">Off</option>
-				{#each cuesOf(sequence_id, $sequences, $cues) as cue (cue.id)}
-					<option value={cue.id}>Go to {cue.name}</option>
-				{/each}
-			</select>
+			/>
 		{:else if kind === 'play' || kind === 'stop'}
 			{@const timeline_id = timelineOf(event.action) ?? ''}
 			<span class="label">Timeline</span>
-			<select
+			<Pick
 				class="select"
 				disabled={!$canEdit}
+				rows={$timelines}
 				value={timeline_id}
-				onchange={(e) => {
-					const id = e.currentTarget.value;
+				hint={(timeline) => (timeline.id === row.timelineId ? 'this one' : '')}
+				onpick={(id) => {
+					if (!id) return;
 					const action: TimelineAction =
 						'PlayTimeline' in event.action
 							? { PlayTimeline: { ...event.action.PlayTimeline, timeline_id: id } }
 							: { StopTimeline: { timeline_id: id } };
 					void change(row, { action });
 				}}
-			>
-				{#each $timelines as timeline (timeline.id)}
-					<option value={timeline.id}>{timeline.name}{timeline.id === row.timelineId ? ' (this one)' : ''}</option>
-				{/each}
-			</select>
+			/>
 			{#if 'PlayTimeline' in event.action}
 				{@const play = event.action.PlayTimeline}
 				<span class="label">If running</span>
@@ -156,16 +150,13 @@
 			{@const target = event.action.SetVariable}
 			{@const parts = variableOpParts(target.op)}
 			<span class="label">Variable</span>
-			<select
+			<Pick
 				class="select"
 				disabled={!$canEdit}
+				rows={$variables}
 				value={target.variable_id}
-				onchange={(e) => void change(row, { action: { SetVariable: { ...target, variable_id: e.currentTarget.value } } })}
-			>
-				{#each $variables as v (v.id)}
-					<option value={v.id}>{v.name}</option>
-				{/each}
-			</select>
+				onpick={(id) => id && void change(row, { action: { SetVariable: { ...target, variable_id: id } } })}
+			/>
 			<span class="label">Change</span>
 			<div class="inline">
 				<select

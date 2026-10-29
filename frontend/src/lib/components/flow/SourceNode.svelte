@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Pick from '$lib/components/objects/Pick.svelte';
 	import type { NodeProps } from '@xyflow/svelte';
 	import type { FlowNode, ParameterDefinition } from '$lib/generated/index.js';
 	import { getDataContext } from '$lib/ws/context.js';
@@ -79,28 +80,12 @@
 	</select>
 
 	{#if variableId !== null}
-		<select
-			class="text-input nodrag"
-			value={variableId}
-			onchange={(e) => read(e.currentTarget.value)}
-		>
-			{#each show.variables as v (v.id)}
-				<option value={v.id}>{v.name}</option>
-			{/each}
-		</select>
+		<Pick class="text-input" rows={show.variables} value={variableId} onpick={(id) => id && read(id)} />
 		<span class="hint">
 			{variable ? `now ${variableLabel(variable)}` : 'variable missing'} · true while off zero
 		</span>
 	{:else}
-		<select
-			class="text-input nodrag"
-			value={watched.fixture_id}
-			onchange={(e) => watch(e.currentTarget.value)}
-		>
-			{#each show.fixtures as fixture (fixture.id)}
-				<option value={fixture.id}>{fixture.name}</option>
-			{/each}
-		</select>
+		<Pick class="text-input" rows={show.fixtures} value={watched.fixture_id} onpick={(id) => id && watch(id)} />
 		<select
 			class="text-input nodrag"
 			value={watched.parameter ? parameterKindLabel(watched.parameter) : ''}

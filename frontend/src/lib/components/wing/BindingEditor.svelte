@@ -1,5 +1,5 @@
 <script lang="ts">
-	import FolderedOptions from '$lib/components/objects/FolderedOptions.svelte';
+	import Pick from '$lib/components/objects/Pick.svelte';
 	/**
 	 * What one wing control does, as a form: what kind of thing, which one, and — for a
 	 * sequence — Go, Off, Flash or Go to cue. Opened by LEARN in the Wing panel and by
@@ -233,10 +233,16 @@
 			{/each}
 		</select>
 		{#if choice === 'Sequence'}
-			<select class="input" bind:value={sequenceId} onchange={() => (cueId = '')}>
-				<option value="">Which sequence?</option>
-				<FolderedOptions rows={$sequences} />
-			</select>
+			<Pick
+				class="input"
+				rows={$sequences}
+				value={sequenceId || null}
+				placeholder="Which sequence?"
+				onpick={(id) => {
+					sequenceId = id ?? '';
+					cueId = '';
+				}}
+			/>
 			<div class="segmented" role="group" aria-label="What the key does">
 				{#each SEQUENCE_ACTS as [act, label] (act)}
 					<button class:on={sequenceAct === act} aria-pressed={sequenceAct === act} onclick={() => (sequenceAct = act)}
@@ -245,18 +251,26 @@
 				{/each}
 			</div>
 			{#if sequenceAct === 'GoToCue'}
-				<select class="input" bind:value={cueId} disabled={!sequenceId}>
-					<option value="">Which cue?</option>
-					{#each cuesOfSequence as c (c.id)}<option value={c.id}>{c.number.toFixed(1)} · {c.name}</option>{/each}
-				</select>
+				<Pick
+					class="input"
+					rows={cuesOfSequence}
+					value={cueId || null}
+					disabled={!sequenceId}
+					placeholder="Which cue?"
+					label={(c) => `${c.number.toFixed(1)} · ${c.name}`}
+					onpick={(id) => (cueId = id ?? '')}
+				/>
 			{:else if sequenceAct === 'Flash'}
 				<span class="dim">Held: on at full. Let go: off again, on the cue's own times.</span>
 			{/if}
 		{:else if choice === 'Timeline'}
-			<select class="input" bind:value={timelineId}>
-				<option value="">Which timeline?</option>
-				{#each $timelines as t (t.id)}<option value={t.id}>{t.name}</option>{/each}
-			</select>
+			<Pick
+				class="input"
+				rows={$timelines}
+				value={timelineId || null}
+				placeholder="Which timeline?"
+				onpick={(id) => (timelineId = id ?? '')}
+			/>
 			<div class="segmented" role="group" aria-label="What the key does">
 				<button class:on={!fromStart} aria-pressed={!fromStart} onclick={() => (fromStart = false)}>Play / stop</button>
 				<button class:on={fromStart} aria-pressed={fromStart} onclick={() => (fromStart = true)}>Start from the beginning</button>
@@ -268,15 +282,21 @@
 		{:else if choice === 'CommandLine'}
 			<input class="input mono" placeholder="group 3 at 50" bind:value={line} />
 		{:else if choice === 'SelectGroup'}
-			<select class="input" bind:value={groupId}>
-				<option value="">Which group?</option>
-				{#each $groups as g (g.id)}<option value={g.id}>{g.name}</option>{/each}
-			</select>
+			<Pick
+				class="input"
+				rows={$groups}
+				value={groupId || null}
+				placeholder="Which group?"
+				onpick={(id) => (groupId = id ?? '')}
+			/>
 		{:else if choice === 'Master'}
-			<select class="input" bind:value={sequenceId}>
-				<option value="">Which sequence?</option>
-				<FolderedOptions rows={$sequences} />
-			</select>
+			<Pick
+				class="input"
+				rows={$sequences}
+				value={sequenceId || null}
+				placeholder="Which sequence?"
+				onpick={(id) => (sequenceId = id ?? '')}
+			/>
 		{:else if selectedRows.length === 0}
 			{#if boundParameter}
 				<span class="dim"

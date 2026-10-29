@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Pick from '$lib/components/objects/Pick.svelte';
 	/**
 	 * What is selected, in the order it was selected.
 	 *
@@ -248,12 +249,7 @@
 			</select>
 
 			{#if kind === 'OfType'}
-				<select class="select" bind:value={typeId}>
-					<option value="">choose a type…</option>
-					{#each $types as t (t.id)}
-						<option value={t.id}>{t.name}</option>
-					{/each}
-				</select>
+				<Pick class="select" rows={$types} value={typeId || null} placeholder="choose a type…" onpick={(id) => (typeId = id ?? '')} />
 			{:else if kind === 'Named'}
 				<input class="input" placeholder="part of the name" bind:value={text} />
 			{:else if kind === 'Sphere' || kind === 'Box'}

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import FolderedOptions from '$lib/components/objects/FolderedOptions.svelte';
+	import Pick from '$lib/components/objects/Pick.svelte';
 	/**
 	 * The store menu.
 	 *
@@ -429,12 +429,7 @@
 				{#if target === 'preset'}
 					<label class="field">
 						<span>Into</span>
-						<select value={presetTarget ?? ''} onchange={(e) => (presetTarget = e.currentTarget.value || null)}>
-							<option value="">A new preset…</option>
-							{#each $presets as p (p.id)}
-								<option value={p.id}>{p.name}</option>
-							{/each}
-						</select>
+						<Pick rows={$presets} value={presetTarget} none="A new preset…" onpick={(id) => (presetTarget = id)} />
 					</label>
 					{#if presetTarget === null}
 						<label class="field">
@@ -450,17 +445,16 @@
 				{:else}
 					<label class="field">
 						<span>Sequence</span>
-						<select
-							value={creatingSequence ? NEW_SEQUENCE : (sequence?.id ?? '')}
-							onchange={(e) => {
-								sequenceId = e.currentTarget.value;
+						<Pick
+							rows={$sequences}
+							value={creatingSequence ? NEW_SEQUENCE : (sequence?.id ?? null)}
+							extras={[{ id: NEW_SEQUENCE, label: '+ New sequence…' }]}
+							onpick={(id) => {
+								sequenceId = id;
 								cueId = null;
 								if (sequenceId === NEW_SEQUENCE) target = 'new';
 							}}
-						>
-							<FolderedOptions rows={$sequences} />
-							<option value={NEW_SEQUENCE}>+ New sequence…</option>
-						</select>
+						/>
 					</label>
 					{#if creatingSequence}
 						<label class="field">
@@ -504,14 +498,14 @@
 						     somebody programming a show in order means. -->
 						<label class="field">
 							<span>After</span>
-							<select value={insertAfter ?? ''} onchange={(e) => (after = e.currentTarget.value || null)}>
-								<option value="">The end of the list</option>
-								{#each cuesInSequence as c (c.id)}
-									<option value={c.id}>
-										{c.number.toFixed(1)} · {c.name}{c.id === afterActive ? ' (up now)' : ''}
-									</option>
-								{/each}
-							</select>
+							<Pick
+								rows={cuesInSequence}
+								value={insertAfter ?? null}
+								none="The end of the list"
+								label={(c) => `${c.number.toFixed(1)} · ${c.name}`}
+								hint={(c) => (c.id === afterActive ? 'up now' : '')}
+								onpick={(id) => (after = id)}
+							/>
 						</label>
 						<!-- The cue's own timing, which every value on the left falls back to. -->
 						<fieldset class="timing">
@@ -556,12 +550,13 @@
 					{:else}
 						<label class="field">
 							<span>Cue</span>
-							<select bind:value={cueId}>
-								<option value={null}>Choose a cue…</option>
-								{#each cuesInSequence as c (c.id)}
-									<option value={c.id}>{c.number.toFixed(1)} · {c.name}</option>
-								{/each}
-							</select>
+							<Pick
+								rows={cuesInSequence}
+								value={cueId}
+								placeholder="Choose a cue…"
+								label={(c) => `${c.number.toFixed(1)} · ${c.name}`}
+								onpick={(id) => (cueId = id)}
+							/>
 						</label>
 						<div class="seg" role="radiogroup" aria-label="Merge or replace">
 							<button role="radio" aria-checked={mode === 'merge'} class:on={mode === 'merge'} onclick={() => (mode = 'merge')}>Merge</button>

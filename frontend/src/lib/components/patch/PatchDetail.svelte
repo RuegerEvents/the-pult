@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Pick from '$lib/components/objects/Pick.svelte';
 	/**
 	 * What the selected fixtures are, editable: the column beside the patch list.
 	 *
@@ -171,21 +172,14 @@
 			{/if}
 
 			<span class="label">Type</span>
-			<select
+			<Pick
 				class="select"
 				disabled={!canEdit}
-				value={sharedType?.id ?? ''}
-				onchange={(e) => {
-					const next = e.currentTarget.value;
-					e.currentTarget.value = sharedType?.id ?? '';
-					if (next) onask(chosen, 'type', next);
-				}}
-			>
-				{#if !sharedType}<option value="">several</option>{/if}
-				{#each types as t (t.id)}
-					<option value={t.id}>{t.name}</option>
-				{/each}
-			</select>
+				rows={types}
+				value={sharedType?.id ?? null}
+				placeholder="several"
+				onpick={(next) => next && onask(chosen, 'type', next)}
+			/>
 
 			{#if sharedType && sharedType.dmx_modes.length > 0}
 				<span class="label">Mode</span>

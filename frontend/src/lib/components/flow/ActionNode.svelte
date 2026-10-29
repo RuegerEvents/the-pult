@@ -1,5 +1,5 @@
 <script lang="ts">
-	import FolderedOptions from '$lib/components/objects/FolderedOptions.svelte';
+	import Pick from '$lib/components/objects/Pick.svelte';
 	import type { NodeProps } from '@xyflow/svelte';
 	import type {
 		FlowNode,
@@ -145,35 +145,27 @@
 	</select>
 
 	{#if action && ('GoNext' in action || 'GoToCue' in action || 'Off' in action)}
-		<select class="text-input nodrag" value={sequenceId} onchange={(e) => retarget(tag, e.currentTarget.value)}>
-			<FolderedOptions rows={show.sequences} />
-		</select>
+		<Pick class="text-input" rows={show.sequences} value={sequenceId} onpick={(id) => id && retarget(tag, id)} />
 	{/if}
 
 	{#if action && 'GoToCue' in action}
-		<select
-			class="text-input nodrag"
+		<Pick
+			class="text-input"
+			rows={cuesOf(sequenceId)}
 			value={action.GoToCue.cue_id}
-			onchange={(e) =>
-				set({ GoToCue: { sequence_id: sequenceId, cue_id: e.currentTarget.value } })}
-		>
-			{#each cuesOf(sequenceId) as cue (cue.id)}
-				<option value={cue.id}>{cue.number} · {cue.name}</option>
-			{/each}
-		</select>
+			label={(cue) => `${cue.number} · ${cue.name}`}
+			onpick={(id) => id && set({ GoToCue: { sequence_id: sequenceId, cue_id: id } })}
+		/>
 	{/if}
 
 	{#if action && 'SetParameter' in action}
 		{@const target = action.SetParameter}
-		<select
-			class="text-input nodrag"
+		<Pick
+			class="text-input"
+			rows={show.fixtures.filter((f) => outputsOf(f.id).length > 0)}
 			value={target.fixture_id}
-			onchange={(e) => setParameter(e.currentTarget.value)}
-		>
-			{#each show.fixtures.filter((f) => outputsOf(f.id).length > 0) as fixture (fixture.id)}
-				<option value={fixture.id}>{fixture.name}</option>
-			{/each}
-		</select>
+			onpick={(id) => id && setParameter(id)}
+		/>
 		<select
 			class="text-input nodrag"
 			value={parameterKindLabel(target.parameter)}
@@ -198,21 +190,19 @@
 		{@const target = action.SetVariable}
 		{@const parts = variableOpParts(target.op)}
 		{@const isFlag = show.variables.find((v) => v.id === target.variable_id)?.kind === 'Flag'}
-		<select
-			class="text-input nodrag"
+		<Pick
+			class="text-input"
+			rows={show.variables}
 			value={target.variable_id}
-			onchange={(e) => {
-				const next = show.variables.find((v) => v.id === e.currentTarget.value);
+			onpick={(id) => {
+				if (!id) return;
+				const next = show.variables.find((v) => v.id === id);
 				// A flag is told on, off or toggle; "add 1" carried over from a number
 				// would be a choice the flag's own menu cannot show.
 				const op = next?.kind === 'Flag' ? flagOpFrom(flagOpOf(target.op)) : target.op;
-				set({ SetVariable: { variable_id: e.currentTarget.value, op } });
+				set({ SetVariable: { variable_id: id, op } });
 			}}
-		>
-			{#each show.variables as v (v.id)}
-				<option value={v.id}>{v.name}</option>
-			{/each}
-		</select>
+		/>
 		{#if isFlag}
 			<select
 				class="text-input nodrag"
@@ -262,18 +252,16 @@
 	{#if action && ('PlayTimeline' in action || 'StopTimeline' in action)}
 		{@const timelineId =
 			'PlayTimeline' in action ? action.PlayTimeline.timeline_id : action.StopTimeline.timeline_id}
-		<select
-			class="text-input nodrag"
+		<Pick
+			class="text-input"
+			rows={show.timelines}
 			value={timelineId}
-			onchange={(e) =>
-				'PlayTimeline' in action
-					? set({ PlayTimeline: { ...action.PlayTimeline, timeline_id: e.currentTarget.value } })
-					: set({ StopTimeline: { timeline_id: e.currentTarget.value } })}
-		>
-			{#each show.timelines as timeline (timeline.id)}
-				<option value={timeline.id}>{timeline.name}</option>
-			{/each}
-		</select>
+			onpick={(id) =>
+				id &&
+				('PlayTimeline' in action
+					? set({ PlayTimeline: { ...action.PlayTimeline, timeline_id: id } })
+					: set({ StopTimeline: { timeline_id: id } }))}
+		/>
 		{#if 'PlayTimeline' in action}
 			{@const play = action.PlayTimeline}
 			<select

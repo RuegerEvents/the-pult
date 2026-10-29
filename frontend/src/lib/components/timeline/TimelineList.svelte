@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Pick from '$lib/components/objects/Pick.svelte';
 	/**
 	 * Every timeline, as cards: what each is doing, and which one is open.
 	 *
@@ -21,8 +22,6 @@
 	import { canEdit } from '$lib/stores/showLock.js';
 	import { createTimeline, lapOf, now, openTimelineId, positionOf, timelines } from '$lib/stores/timelines.js';
 	import { clock } from '$lib/waveform.js';
-	import { byFolder } from '$lib/folders.js';
-	import { folders } from '$lib/stores/folders.js';
 	import NameDialog from '../NameDialog.svelte';
 	import OctoBangerImport from './OctoBangerImport.svelte';
 
@@ -50,18 +49,16 @@
 
 {#if narrow}
 	<div class="narrow">
-		<select class="select" value={open?.id ?? ''} onchange={(e) => openTimelineId.set(e.currentTarget.value)} aria-label="Timeline">
-			<!-- Folders as option groups: a phone-width tile has no room for the tree. -->
-			{#each byFolder($timelines, $folders) as group (group.path)}
-				{#if group.path}
-					<optgroup label={group.path}>
-						{#each group.rows as t (t.id)}<option value={t.id}>{t.running ? '▶ ' : ''}{t.name}</option>{/each}
-					</optgroup>
-				{:else}
-					{#each group.rows as t (t.id)}<option value={t.id}>{t.running ? '▶ ' : ''}{t.name}</option>{/each}
-				{/if}
-			{/each}
-		</select>
+		<!-- Folders as headings in the list: a phone-width tile has no room for the tree. -->
+		<Pick
+			class="select"
+			rows={$timelines}
+			value={open?.id ?? null}
+			placeholder="Timeline…"
+			title="Timeline"
+			hint={(t) => (t.running ? '▶ running' : '')}
+			onpick={(id) => id && openTimelineId.set(id)}
+		/>
 		{#if $canEdit}
 			<button class="btn btn-icon" title="New timeline" aria-label="New timeline" onclick={() => (creating = true)}><Plus size={14} /></button>
 		{/if}
@@ -144,7 +141,8 @@
 		align-items: center;
 		gap: 6px;
 	}
-	.narrow .select {
+	.narrow :global(.select) {
+		flex: 1;
 		width: 100%;
 	}
 </style>

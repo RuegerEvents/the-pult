@@ -13,7 +13,9 @@
 	 * often than it is typed, so the numbers here are the readout you check and correct
 	 * rather than the way you place anything.
 	 */
-	import type { Cue, Layer, SheetBlock } from '$lib/generated/index.js';
+	import Pick from '$lib/components/objects/Pick.svelte';
+	import type { Cue, Layer, Sequence, SheetBlock } from '$lib/generated/index.js';
+	import { collection } from '$lib/stores/show.js';
 	import {
 		GROUPINGS,
 		LABEL_FIELDS,
@@ -39,6 +41,10 @@
 		cues: Cue[];
 		onRemove: () => void;
 	} = $props();
+
+	const sequences = collection('sequences');
+	const sequenceName = (cue: Cue) =>
+		($sequences as Sequence[]).find((s) => s.cue_ids.includes(cue.id))?.name ?? 'In no sequence';
 
 	/** Write a changed copy. Every control in here goes through this. */
 	function put(change: Partial<SheetBlock>) {
@@ -281,14 +287,13 @@
 				<legend>Standing in</legend>
 				{#each block.style.cues as shot, at (at)}
 					<div class="shot">
-						<select
+						<Pick
+							rows={cues}
 							value={shot.cue}
-							onchange={(e) => setShot(at, { ...shot, cue: e.currentTarget.value })}
-						>
-							{#each cues as cue (cue.id)}
-								<option value={cue.id}>{cue.number} {cue.name}</option>
-							{/each}
-						</select>
+							label={(cue) => `${cue.number} ${cue.name}`}
+							group={sequenceName}
+							onpick={(id) => id && setShot(at, { ...shot, cue: id })}
+						/>
 						<input
 							type="number"
 							step="0.5"

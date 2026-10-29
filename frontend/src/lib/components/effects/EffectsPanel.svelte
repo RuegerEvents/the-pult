@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Pick from '$lib/components/objects/Pick.svelte';
 	/**
 	 * Building an effect for the selection: from the pool, by hand, or for a strip.
 	 *
@@ -734,19 +735,13 @@
 						/>
 						<span class="unit">×</span>
 					{/if}
-					<select
+					<Pick
 						class="select"
-						value={'Hz' in layer.rate ? '' : layer.rate.Master.id}
-						onchange={(e) => {
-							const id = e.currentTarget.value;
-							edit({ rate: id ? { Master: { id, multiplier: 1 } } : { Hz: rateHz || 0.5 } });
-						}}
-					>
-						<option value="">Own rate</option>
-						{#each $masters as master (master.id)}
-							<option value={master.id}>{master.name}</option>
-						{/each}
-					</select>
+						rows={$masters}
+						value={'Hz' in layer.rate ? null : layer.rate.Master.id}
+						none="Own rate"
+						onpick={(id) => edit({ rate: id ? { Master: { id, multiplier: 1 } } : { Hz: rateHz || 0.5 } })}
+					/>
 				</div>
 				<div class="field">
 					<span>Width</span>
