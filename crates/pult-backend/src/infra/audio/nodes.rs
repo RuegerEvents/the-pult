@@ -489,8 +489,11 @@ impl AudioManager {
                     // timeline, and not when Play is pressed: decoding a song took
                     // longer than a count-in on the first Play after a restart, and the
                     // stream started that late, joining the clip part of the way in.
-                    if let Err(e) = self.decoded(&clip.asset).await {
-                        fault(&mut faults, e);
+                    // On a task of its own, so this pass does not wait for it either.
+                    match self.decoded(&clip.asset) {
+                        Ok(Some(_)) => {}
+                        Ok(None) => fault(&mut faults, super::STILL_DECODING.to_string()),
+                        Err(e) => fault(&mut faults, e),
                     }
                     streamed.entry(serial.to_string()).or_default().push((timeline.clone(), clip.clone(), sides));
                     continue;
@@ -662,12 +665,8 @@ impl AudioManager {
         node: &NodeAudio,
         sides: Option<&[Vec<u16>]>,
     ) -> Result<Arc<Bounced>, String> {
-        let decoded = self.decoded(&clip.asset).await?;
-        let source = pult_audio::Source {
-            samples: decoded.samples.clone(),
-            channels: decoded.channels as usize,
-            sample_rate: decoded.sample_rate,
-        };
+        let decoded = self.decoded(&clip.asset)?.ok_or_else(|| super::STILL_DECODING.to_string())?;
+        let source = decoded.source();
         let placement = super::placement(clip);
         let region = placement.region_ms(source.duration_ms());
         if region <= 0.0 {
@@ -923,16 +922,12 @@ impl AudioManager {
             for (timeline, routed) in by_timeline.into_values() {
                 let mut voices = Vec::new();
                 for (clip, sides) in &routed {
-                    let Ok(decoded) = self.decoded(&clip.asset).await else { continue };
+                    let Ok(Some(decoded)) = self.decoded(&clip.asset) else { continue };
                     let Ok(routes) = node_routes(decoded.channels as usize, sides.as_deref(), channels) else {
                         continue;
                     };
                     voices.push(pult_audio::Voice {
-                        source: pult_audio::Source {
-                            samples: decoded.samples.clone(),
-                            channels: decoded.channels as usize,
-                            sample_rate: decoded.sample_rate,
-                        },
+                        source: decoded.source(),
                         placement: pult_audio::Placement {
                             gain: super::placement(clip).gain * destination_gain(&clip.destination, &self.zones),
                             ..super::placement(clip)
@@ -942,9 +937,10 @@ impl AudioManager {
                 }
                 let levels: Vec<f32> =
                     routed.iter().map(|(c, _)| destination_gain(&c.destination, &self.zones)).collect();
+                // How many voices, so a file that finishes decoding joins the stream.
                 built.push(serde_json::json!([
                     timeline.id, timeline.running, timeline.anchor_ms, timeline.position_at_anchor_ms,
-                    timeline.rate, timeline.end, routed, levels,
+                    timeline.rate, timeline.end, routed, levels, voices.len(),
                 ]));
                 decks.push(StreamDeck {
                     id: timeline.id.as_u128(),

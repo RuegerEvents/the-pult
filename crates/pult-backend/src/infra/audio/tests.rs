@@ -298,3 +298,74 @@ async fn a_listener_on_an_undecoded_timeline_does_not_hold_up_the_tick() {
     assert!(chunk.samples.iter().all(|s| *s == 0.0), "without the clip in it meanwhile");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// What HHG found: a seventy-minute mp3 decoded inside the manager's loop was seconds
+/// in which nothing on that loop ran — the steer, Play and Stop, the chase. So a pass
+/// over a timeline whose file is not decoded starts the work and returns, the clip says
+/// it is still decoding meanwhile, and the file arriving puts it right.
+#[tokio::test]
+async fn a_pass_over_an_undecoded_file_starts_the_decode_and_does_not_wait_for_it() {
+    let here = NodeId(Uuid::from_u128(1));
+    let mut manager = a_manager(here, true);
+    manager.zones = vec![a_zone(&[(here, 1)])];
+    let pool = std::sync::Arc::new(crate::infra::showfile::open_in_memory().await.unwrap());
+    let dir = std::env::temp_dir().join(format!("pult-decoding-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = crate::infra::assets::AssetStore::new(Some(dir.clone()), pool);
+    let tone: Vec<f32> = (0..48_000 * 30).map(|i| if i % 2 == 0 { 0.5 } else { -0.5 }).collect();
+    let wav = pult_audio::wav::encode(&tone, 1, 48_000, pult_audio::wav::Encoding::Pcm16).unwrap();
+    let sha = store.put("audio/wav", &wav).await.unwrap();
+    manager.assets = Some(store);
+
+    let mut timeline = a_timeline(None);
+    let mut clip = a_clip(0, 0, None);
+    clip.asset = sha.clone();
+    timeline.clips = vec![clip.clone()];
+    manager.timelines = vec![timeline.clone()];
+
+    manager.reconcile_deck(&timeline).await;
+    assert!(manager.loading.contains(&sha), "the decode was started");
+    assert!(manager.background.try_recv().is_err(), "and not waited for");
+    let said = |m: &AudioManager| m.clip_faults.get(&timeline.id).and_then(|f| f.get(&clip.id.to_string())).cloned();
+    assert_eq!(said(&manager).as_deref(), Some(STILL_DECODING));
+
+    // A second look while it runs starts nothing more.
+    manager.reconcile_deck(&timeline).await;
+    assert_eq!(manager.loading.len(), 1);
+
+    let done = tokio::time::timeout(std::time::Duration::from_secs(30), manager.background.recv())
+        .await
+        .expect("the decode finished")
+        .expect("and said so");
+    let Background::Decoded { sha: decoded, failed } = done else { panic!("a decode was what finished") };
+    assert_eq!((decoded.as_str(), failed), (sha.as_str(), None));
+    manager.loading.remove(&sha);
+    assert!(manager.cache.get(&sha).is_some_and(|d| d.duration_ms() == 30_000));
+    manager.reconcile_deck(&timeline).await;
+    assert_eq!(said(&manager), None, "and the clip has nothing more to say");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A file nobody can supply is said as such, and not fetched again on every look: a
+/// monitor looks twenty times a second.
+#[tokio::test]
+async fn a_file_nobody_has_is_said_and_not_fetched_on_every_look() {
+    let here = NodeId(Uuid::from_u128(1));
+    let mut manager = a_manager(here, true);
+    manager.zones = vec![a_zone(&[(here, 1)])];
+    let timeline = Timeline { clips: vec![a_clip(0, 0, None)], ..a_timeline(None) };
+    manager.timelines = vec![timeline.clone()];
+
+    // No show open, so no store to read and no peer to ask.
+    manager.reconcile_deck(&timeline).await;
+    let done = tokio::time::timeout(std::time::Duration::from_secs(5), manager.background.recv()).await.unwrap().unwrap();
+    let Background::Decoded { failed: Some((why, refuse)), .. } = done else { panic!("it could not be had") };
+    assert!(!refuse, "which is not the file's fault");
+    manager.loading.remove("abc");
+    manager.unavailable.insert("abc".into(), (why.clone(), std::time::Instant::now()));
+
+    manager.reconcile_deck(&timeline).await;
+    assert!(manager.loading.is_empty(), "not fetched again inside a second");
+    let said = manager.clip_faults.get(&timeline.id).and_then(|f| f.get(&Uuid::from_u128(9).to_string())).cloned();
+    assert_eq!(said, Some(why));
+}

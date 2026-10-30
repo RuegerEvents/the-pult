@@ -31,7 +31,10 @@
 //!
 //! The device is open while anything this station plays has clips, running or not,
 //! because opening a device takes longer than a scare is allowed to take to start; and
-//! every clip's file is decoded as soon as it is on a timeline, for the same reason.
+//! every clip's file is decoded as soon as it is on a timeline, for the same reason —
+//! on a task of its own, never on this loop, and into the station's disk cache, so a
+//! station decodes a file once rather than once per start. See [`decode`] and
+//! `AudioManager::decoded`.
 //!
 //! And the reference *is* the sound. The playhead this manager reads is the position
 //! the audio callback has actually delivered, minus what the device says is still in
@@ -105,6 +108,14 @@ use pult_schema::types::zone::{destination_gain, station_channels, SpeakerZone};
 /// See the module header.
 pub const DRIFT_MS: i64 = 20;
 
+/// How long a file nobody could supply waits before it is fetched again.
+const RETRY: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// How often the files decks are playing off the disk are read ahead, and how far.
+/// See [`AudioManager::prefetch`].
+const PREFETCH_EVERY: u64 = 250;
+const PREFETCH_MS: u64 = 4_000;
+
 /// The mime a reduced waveform is stored under.
 pub const PEAKS_MIME: &str = "application/vnd.pult.peaks";
 
@@ -126,6 +137,9 @@ pub struct AudioPrefs {
     /// buffers. 150 ms when unsaid, which rides out ordinary wifi and still feels
     /// immediate for a triggered scare.
     pub node_stream_delay_ms: Option<u32>,
+    /// How much of the disk the decoded sound files may take, in gigabytes. Twenty when
+    /// unsaid, about fourteen hours of stereo. See `decode::Disk`.
+    pub decoded_cache_gb: Option<u32>,
     /// What this station calls its sound cards and their channels, keyed by the
     /// device's own name — the key `output` already matches by. Names only: nothing
     /// plays differently for them, but a zone mapped to "FOH L, FOH R" is a mapping
@@ -170,6 +184,19 @@ pub enum AudioCommand {
     Monitor { timeline: Option<Uuid>, chunks: mpsc::Sender<Vec<u8>> },
     #[allow(dead_code, reason = "Stop has no caller until the server shuts down gracefully")]
     Stop,
+}
+
+/// What a clip says while its file is fetched and decoded. A fault rather than a field
+/// of its own, because until then the clip *is* silent — but not one worth a warning.
+pub const STILL_DECODING: &str = "still being decoded on this station";
+
+/// Work handed off the manager's loop, coming back.
+enum Background {
+    /// A file is decoded and in the cache, or why not. `refuse` is the file's own
+    /// fault, which no retry will change; otherwise its bytes could not be had.
+    Decoded { sha: String, failed: Option<(String, bool)> },
+    /// A file's waveform is stored, as this asset.
+    Reduced { sha: String, peaks: Option<String> },
 }
 
 #[derive(Clone)]
@@ -297,6 +324,19 @@ pub struct AudioManager {
     /// a file that will never decode must not be decoded again every second for the
     /// rest of the show, and it is the *only* thing that should be remembered that way.
     refused: HashSet<String>,
+    /// Files being fetched and decoded on a task of their own. See [`Self::decoded`].
+    loading: HashSet<String>,
+    /// Files no store here or on a peer could supply, why, and when that was found — said
+    /// on the status row while the next try runs, and tried again no more than once a
+    /// [`RETRY`], so a missing file is not fetched twenty times a second for a monitor.
+    unavailable: HashMap<String, (String, std::time::Instant)>,
+    /// Files whose waveform is being worked out on a task of its own.
+    reducing: HashSet<String>,
+    /// What those tasks hand back.
+    background_tx: mpsc::Sender<Background>,
+    background: mpsc::Receiver<Background>,
+    /// When the playing files were last read ahead, in console milliseconds.
+    prefetched_at: u64,
     /// Why a timeline is not playing, keyed by timeline. Kept rather than only logged:
     /// see [`device`] on a refusal that says so.
     faults: HashMap<Uuid, String>,
@@ -325,6 +365,7 @@ impl AudioManager {
         // has stalled does not accumulate seconds of stale timecode — the rule the
         // input connector's frame queue follows.
         let (samples_tx, samples) = mpsc::channel(64);
+        let (background_tx, background) = mpsc::channel(64);
         (
             AudioManager {
                 node_id,
@@ -348,6 +389,12 @@ impl AudioManager {
                 reduced: HashMap::new(),
                 peaks_written: HashMap::new(),
                 refused: HashSet::new(),
+                loading: HashSet::new(),
+                unavailable: HashMap::new(),
+                reducing: HashSet::new(),
+                background_tx,
+                background,
+                prefetched_at: 0,
                 faults: HashMap::new(),
                 clip_faults: HashMap::new(),
                 clip_channels: HashMap::new(),
@@ -364,6 +411,14 @@ impl AudioManager {
     /// The decoded files, for the station row to report on.
     pub fn cache(&self) -> AudioCache {
         self.cache.clone()
+    }
+
+    /// Decode into `dir` rather than onto the heap, up to `cap` bytes of it. A manager
+    /// without one decodes onto the heap, which is what every test that does not ask
+    /// for a directory wants.
+    pub fn with_decoded_dir(mut self, dir: std::path::PathBuf, cap: u64) -> Self {
+        self.cache = self.cache.clone().on_disk(decode::Disk::new(dir, cap));
+        self
     }
 
     /// Where the OpenHaunt nodes are and how to talk to them, so a clip can be routed
@@ -409,7 +464,7 @@ impl AudioManager {
                             self.take_timecode(timeline_id, &samples, sample_rate).await;
                         }
                         AudioCommand::Detect { timeline_id, clip_id, reply } => {
-                            let _ = reply.send(self.detect(timeline_id, clip_id).await);
+                            self.detect(timeline_id, clip_id, reply);
                         }
                         AudioCommand::Devices { reply } => {
                             // On a blocking thread, always. See [`device`].
@@ -428,11 +483,13 @@ impl AudioManager {
                     self.take_timecode(timeline_id, &samples, sample_rate).await;
                 }
                 Some(done) = self.nodes.results.recv() => self.node_request_done(done).await,
+                Some(done) = self.background.recv() => self.background_done(done).await,
                 // A node moving is acted on at once, not at the next report: see
                 // `follow_nodes`.
                 _ = nodes::moved(&mut self.nodes.directory) => self.follow_nodes(),
                 _ = steer.tick() => {
                     self.steer().await;
+                    self.prefetch(pult_schema::clock::now_ms());
                     self.feed_monitors(pult_schema::clock::now_ms()).await;
                     self.schedule_nodes(pult_schema::clock::now_ms());
                 }
@@ -570,7 +627,7 @@ impl AudioManager {
             outputs.sort_unstable();
             outputs.dedup();
             routed.insert(clip.id.to_string(), outputs);
-            match self.voice(clip, channels, device_channels).await {
+            match self.voice(clip, channels, device_channels) {
                 Ok(Some(voice)) => voices.push(voice),
                 // Decoded, with no device to route it to: the timeline's own fault says
                 // why, once, rather than every clip saying it again.
@@ -586,7 +643,7 @@ impl AudioManager {
             self.clip_channels.insert(timeline.id, routed.clone());
         }
         if self.clip_faults.get(&timeline.id).map_or(!faults.is_empty(), |held| *held != faults) {
-            for (clip, fault) in &faults {
+            for (clip, fault) in faults.iter().filter(|(_, f)| f.as_str() != STILL_DECODING) {
                 warn!("[audio] a clip on {} is not playing ({clip}): {fault}", timeline.name);
             }
         }
@@ -648,6 +705,10 @@ impl AudioManager {
             Some(wait) if wait > 0 => (folded(timeline, timeline.position_at_anchor_ms), wait),
             _ => (folded(timeline, timeline.position_at(now)) + latency, 0),
         };
+        // Read in from where it starts before the callback has it: a first buffer off a
+        // cold disk is a read on the real-time thread.
+        self.prefetch_timeline(timeline, from);
+        let Some(output) = &self.output else { return };
         let mut deck = pult_audio::Deck::new(timeline.id.as_u128(), from as f64, voices);
         deck.wait_ms = wait_ms as f64;
         deck.tag = slot;
@@ -683,23 +744,20 @@ impl AudioManager {
     }
 
     /// One clip, decoded and routed to its zone's channels on the open device.
-    /// `Ok(None)` is decoded with no device to route it to.
-    async fn voice(
+    /// `Ok(None)` is decoded with no device to route it to; a file still being decoded
+    /// is [`STILL_DECODING`].
+    fn voice(
         &mut self,
         clip: &AudioClip,
         channels: &[Vec<u16>],
         device_channels: Option<usize>,
     ) -> Result<Option<pult_audio::Voice>, String> {
-        let decoded = self.decoded(&clip.asset).await?;
+        let decoded = self.decoded(&clip.asset)?.ok_or_else(|| STILL_DECODING.to_string())?;
         let Some(device_channels) = device_channels else { return Ok(None) };
         let routes = pult_audio::mix::route_sides(decoded.channels as usize, channels, device_channels)
             .map_err(|e| e.to_string())?;
         Ok(Some(pult_audio::Voice {
-            source: pult_audio::Source {
-                samples: decoded.samples.clone(),
-                channels: decoded.channels as usize,
-                sample_rate: decoded.sample_rate,
-            },
+            source: decoded.source(),
             placement: pult_audio::Placement {
                 gain: placement(clip).gain * destination_gain(&clip.destination, &self.zones),
                 ..placement(clip)
@@ -708,31 +766,122 @@ impl AudioManager {
         }))
     }
 
-    /// A file, decoded, from the cache or from wherever its bytes are. A file that
-    /// would not decode is remembered as such and not tried again.
-    async fn decoded(&mut self, sha: &str) -> Result<std::sync::Arc<decode::Decoded>, String> {
+    /// A file, decoded — or `Ok(None)` while it is being, on a task of its own.
+    ///
+    /// **Never waits.** Everything this loop does waits on whatever it is doing: the
+    /// 25 ms steer, Play and Stop, the timecode chase, the monitors, the node streams.
+    /// Decoding a seventy-minute mp3 is seconds of a core even on a blocking thread, and
+    /// when this awaited it — every start of a station, every open of a show — the
+    /// station kept no time for those seconds. So the first ask starts the work and
+    /// answers "not yet", and the file arriving reconciles again, which builds the deck
+    /// a timeline that is already running joins at wherever the show has got to.
+    ///
+    /// A file that would not decode is remembered as such and not tried again; one whose
+    /// bytes nobody could supply is said as such and tried again after [`RETRY`].
+    fn decoded(&mut self, sha: &str) -> Result<Option<std::sync::Arc<decode::Decoded>>, String> {
         if self.refused.contains(sha) {
             return Err("the file would not decode".into());
         }
         if let Some(decoded) = self.cache.get(sha) {
-            return Ok(decoded);
+            return Ok(Some(decoded));
         }
-        let bytes = self.asset_bytes(sha).await?;
-        match self.cache.decode(sha, bytes).await {
-            Ok(decoded) => Ok(decoded),
-            Err(e) => {
-                self.refused.insert(sha.to_string());
-                Err(e)
-            }
+        let unavailable = self.unavailable.get(sha).cloned();
+        if unavailable.as_ref().is_none_or(|(_, at)| at.elapsed() >= RETRY) {
+            self.load(sha);
+        }
+        match unavailable {
+            Some((why, _)) => Err(why),
+            None => Ok(None),
         }
     }
 
-    /// An asset's bytes, from here or from a peer.
-    ///
-    /// The same path a plugin bundle takes, and for the same reason: a file uploaded at
-    /// front of house has to reach the station backstage, and it cannot ride the oplog.
-    async fn asset_bytes(&self, sha: &str) -> Result<Vec<u8>, String> {
-        asset_bytes(self.assets.as_ref(), &self.engine, self.node_id, sha).await
+    /// Fetch and decode a file on a task of its own, into the cache, once however many
+    /// ask. Told back through [`Background::Decoded`].
+    fn load(&mut self, sha: &str) {
+        if !self.loading.insert(sha.to_string()) {
+            return;
+        }
+        let (sha, cache, assets, engine, me, done) = (
+            sha.to_string(),
+            self.cache.clone(),
+            self.assets.clone(),
+            self.engine.clone(),
+            self.node_id,
+            self.background_tx.clone(),
+        );
+        tokio::spawn(async move {
+            let failed = fetch_and_decode(&cache, assets.as_ref(), &engine, me, &sha).await.err();
+            let _ = done.send(Background::Decoded { sha, failed }).await;
+        });
+    }
+
+    /// What came back from the tasks.
+    async fn background_done(&mut self, done: Background) {
+        match done {
+            Background::Decoded { sha, failed } => {
+                self.loading.remove(&sha);
+                match failed {
+                    None => {
+                        self.unavailable.remove(&sha);
+                    }
+                    Some((why, true)) => {
+                        warn!("[audio] {} would not decode: {why}", short(&sha));
+                        self.unavailable.remove(&sha);
+                        self.refused.insert(sha);
+                    }
+                    // Said on the row and tried again on a later look, which is not now:
+                    // reconciling at once would fetch it again at once, for ever.
+                    Some((why, false)) => {
+                        debug!("[audio] {} could not be had: {why}", short(&sha));
+                        self.unavailable.insert(sha, (why, std::time::Instant::now()));
+                        return;
+                    }
+                }
+            }
+            Background::Reduced { sha, peaks } => {
+                self.reducing.remove(&sha);
+                let Some(peaks) = peaks else { return };
+                self.reduced.insert(sha, peaks);
+            }
+        }
+        self.reconcile().await;
+    }
+
+    /// Ask the OS to read in the next few seconds of every file a deck here is playing,
+    /// so the audio callback never finds a page on the disk. See
+    /// [`decode::Decoded::prefetch`]. Every [`PREFETCH_EVERY`] ms, for [`PREFETCH_MS`]
+    /// ahead — plenty of overlap, since a deck moves a second while this is asked
+    /// several times, and asking about a page already in memory costs a system call.
+    fn prefetch(&mut self, now: u64) {
+        if now < self.prefetched_at + PREFETCH_EVERY {
+            return;
+        }
+        self.prefetched_at = now;
+        for timeline in self.timelines.iter().filter(|t| self.playing.contains_key(&t.id)) {
+            self.prefetch_timeline(timeline, folded(timeline, timeline.position_at(now)));
+        }
+    }
+
+    /// One timeline's files, from `at` in timeline milliseconds.
+    fn prefetch_timeline(&self, timeline: &Timeline, at: u64) {
+        let at = at as f64;
+        for clip in &timeline.clips {
+            let Some(decoded) = self.cache.get(&clip.asset) else { continue };
+            if !decoded.on_disk() {
+                continue;
+            }
+            let file_ms = decoded.duration_ms() as f64;
+            let placement = placement(clip);
+            // Where the clip is in its file now and a little later, each read ahead
+            // from: two places rather than one, so a clip that loops or starts in the
+            // next few seconds has its next region asked for too.
+            for ahead in [0.0, PREFETCH_MS as f64 / 2.0] {
+                let start = (at + ahead - placement.start_ms).max(0.0) + placement.start_ms;
+                if let Some((into, _)) = placement.at(start, file_ms) {
+                    decoded.prefetch(into, PREFETCH_MS as f64);
+                }
+            }
+        }
     }
 
     // ── Steering ──────────────────────────────────────────────────────────────
@@ -991,8 +1140,13 @@ impl AudioManager {
         }
         let files: std::collections::BTreeSet<String> = missing.iter().map(|c| c.asset.clone()).collect();
         for sha in files {
-            if !self.reduced.contains_key(&sha) && !self.refused.contains(&sha) {
-                self.reduce(&timeline.name, sha).await;
+            if self.reduced.contains_key(&sha) || self.reducing.contains(&sha) {
+                continue;
+            }
+            // Decoded first, which is a task of its own; the file arriving reconciles,
+            // which comes back here.
+            if let Ok(Some(decoded)) = self.decoded(&sha) {
+                self.reduce(timeline.name.clone(), sha, decoded);
             }
         }
         let mut clips = timeline.clips.clone();
@@ -1012,35 +1166,34 @@ impl AudioManager {
         }
     }
 
-    /// Decode a file and store its waveform, into `reduced`.
-    async fn reduce(&mut self, name: &str, sha: String) {
-        let Ok(bytes) = self.asset_bytes(&sha).await else { return };
-        let decoded = match self.cache.decode(&sha, bytes).await {
-            Ok(decoded) => decoded,
-            Err(e) => {
-                warn!("[audio] a clip on {name} could not be decoded: {e}");
-                self.refused.insert(sha);
-                return;
-            }
-        };
-        // On a blocking thread: reducing four minutes of stereo is ten million
-        // comparisons, which is not the runtime's to do.
-        let samples = decoded.samples.clone();
-        let channels = decoded.channels as usize;
-        let sample_rate = decoded.sample_rate;
-        let reduced = tokio::task::spawn_blocking(move || {
-            pult_audio::Peaks::compute(&samples, channels, sample_rate).encode()
-        })
-        .await;
-        let Ok(reduced) = reduced else { return };
-        let Some(store) = &self.assets else { return };
-        match store.put(PEAKS_MIME, &reduced).await {
-            Ok(peaks_sha) => {
-                info!("[audio] a clip on {name} reduced to a waveform of {} bytes", reduced.len());
-                self.reduced.insert(sha, peaks_sha);
-            }
-            Err(e) => warn!("[audio] the waveform of a clip on {name} could not be stored: {e}"),
-        }
+    /// Store a decoded file's waveform, on a task of its own, into `reduced` by way of
+    /// [`Background::Reduced`]. On a blocking thread inside that: reducing four minutes
+    /// of stereo is ten million comparisons, and seventy minutes is a fair part of a
+    /// second, which is not this loop's to spend either.
+    fn reduce(&mut self, name: String, sha: String, decoded: std::sync::Arc<decode::Decoded>) {
+        let Some(store) = self.assets.clone() else { return };
+        self.reducing.insert(sha.clone());
+        let done = self.background_tx.clone();
+        tokio::spawn(async move {
+            let reduced = tokio::task::spawn_blocking(move || {
+                pult_audio::Peaks::compute(decoded.data(), decoded.channels as usize, decoded.sample_rate).encode()
+            })
+            .await;
+            let peaks = match reduced {
+                Ok(reduced) => match store.put(PEAKS_MIME, &reduced).await {
+                    Ok(peaks_sha) => {
+                        info!("[audio] a clip on {name} reduced to a waveform of {} bytes", reduced.len());
+                        Some(peaks_sha)
+                    }
+                    Err(e) => {
+                        warn!("[audio] the waveform of a clip on {name} could not be stored: {e}");
+                        None
+                    }
+                },
+                Err(_) => None,
+            };
+            let _ = done.send(Background::Reduced { sha, peaks }).await;
+        });
     }
 
     /// Find the beats, and write them where the panel can draw them.
@@ -1053,77 +1206,45 @@ impl AudioManager {
     /// On one clip — the first, unless another is named — and answered in *timeline*
     /// positions: a beat at two seconds into a file that starts at ten is a beat at
     /// twelve, and one in the part of the file the trim leaves out is no beat at all.
-    async fn detect(&mut self, timeline_id: Uuid, clip_id: Option<Uuid>) -> Result<Detected, String> {
-        let timeline = self
+    ///
+    /// **On a task of its own**, answering `reply` when it is done: it is the decode and
+    /// then the inference, and this loop is what keeps the sound in time meanwhile.
+    fn detect(&self, timeline_id: Uuid, clip_id: Option<Uuid>, reply: oneshot::Sender<Result<Detected, String>>) {
+        let clip = self
             .timelines
             .iter()
             .find(|t| t.id == timeline_id)
-            .cloned()
-            .ok_or_else(|| "no such timeline".to_string())?;
-        let clip = match clip_id {
-            Some(id) => timeline.clips.iter().find(|c| c.id == id),
-            None => timeline.clips.first(),
-        }
-        .cloned()
-        .ok_or_else(|| "that timeline has no audio".to_string())?;
-        let sha = clip.asset.clone();
-
-        let bytes = self.asset_bytes(&sha).await?;
-        let decoded = self.cache.decode(&sha, bytes).await?;
-        let full = models::full_model().await;
-
-        let samples = decoded.samples.clone();
-        let channels = decoded.channels as usize;
-        let sample_rate = decoded.sample_rate;
-        let found = tokio::task::spawn_blocking(move || {
-            let mut detector = match full {
-                Some(bytes) => pult_audio::Detector::full(bytes),
-                None => pult_audio::Detector::small(),
+            .ok_or_else(|| "no such timeline".to_string())
+            .and_then(|timeline| {
+                match clip_id {
+                    Some(id) => timeline.clips.iter().find(|c| c.id == id),
+                    None => timeline.clips.first(),
+                }
+                .cloned()
+                .map(|clip| (timeline.name.clone(), clip))
+                .ok_or_else(|| "that timeline has no audio".to_string())
+            });
+        let (name, clip) = match clip {
+            Ok(found) => found,
+            Err(e) => {
+                let _ = reply.send(Err(e));
+                return;
             }
-            .map_err(|e| e.to_string())?;
-            detector.detect(&samples, channels, sample_rate).map_err(|e| e.to_string())
-        })
-        .await
-        .map_err(|e| format!("the detector stopped: {e}"))??;
-
-        info!(
-            "[audio] {} — {} beats, {} downbeats",
-            timeline.name,
-            found.beats_ms.len(),
-            found.downbeats_ms.len()
-        );
-        let on_the_timeline = |file_ms: &Vec<u32>| -> Vec<u32> {
-            file_ms
-                .iter()
-                .filter_map(|at| clip_to_timeline(&clip, *at as u64))
-                .map(|at| at.min(u32::MAX as u64) as u32)
-                .collect()
         };
-        let detected = Detected {
-            beats_ms: on_the_timeline(&found.beats_ms),
-            downbeats_ms: on_the_timeline(&found.downbeats_ms),
-        };
-        // Written to `detected` and **not** to `grid`: the detector proposes and the
-        // operator confirms. See `types::timeline::Detected`.
-        self.write(timeline_id, "detected", serde_json::to_value(&detected).unwrap_or_default())
-            .await;
-        Ok(detected)
+        if self.refused.contains(&clip.asset) {
+            let _ = reply.send(Err("the file would not decode".into()));
+            return;
+        }
+        let (cache, assets, engine, me) = (self.cache.clone(), self.assets.clone(), self.engine.clone(), self.node_id);
+        tokio::spawn(async move {
+            let found = detect_beats(&cache, assets.as_ref(), &engine, me, timeline_id, &name, &clip).await;
+            let _ = reply.send(found);
+        });
     }
 
     /// Whether it was written.
     async fn write(&self, timeline_id: Uuid, field: &str, value: serde_json::Value) -> bool {
-        let path = vec![
-            PathSegment::Key("timelines".into()),
-            PathSegment::Id(timeline_id),
-            PathSegment::Key(field.into()),
-        ];
-        match self.engine.set(path, Lifecycle::Persisted, value).await {
-            Ok(_) => true,
-            Err(e) => {
-                warn!("[audio] {field} could not be written: {e}");
-                false
-            }
-        }
+        write_field(&self.engine, timeline_id, field, value).await
     }
 
     // ── Saying what is happening ──────────────────────────────────────────────
@@ -1423,8 +1544,91 @@ fn patience_ms(rate: LtcRate) -> u32 {
     (4_000.0 / frames_per_second(ltc_rate(rate))).round() as u32
 }
 
-/// An asset's bytes, from here or from a peer. Free of the manager so a monitor can
-/// fetch on a task of its own, off the manager's loop; see [`monitor`].
+/// A file decoded into `cache`: off the station's disk cache if an earlier run decoded
+/// it, otherwise fetched and decoded. The error says whether it is the file's own fault
+/// (`true`), which no retry will change, or that its bytes could not be had.
+async fn fetch_and_decode(
+    cache: &AudioCache,
+    assets: Option<&AssetStore>,
+    engine: &EngineHandle,
+    me: NodeId,
+    sha: &str,
+) -> Result<std::sync::Arc<decode::Decoded>, (String, bool)> {
+    if let Some(found) = cache.from_disk(sha).await {
+        return Ok(found);
+    }
+    let bytes = asset_bytes(assets, engine, me, sha).await.map_err(|e| (e, false))?;
+    cache.decode(sha, bytes).await.map_err(|e| (e, true))
+}
+
+/// The beats in one clip's file, written to its timeline's `detected` in timeline
+/// positions. See [`AudioManager::detect`].
+async fn detect_beats(
+    cache: &AudioCache,
+    assets: Option<&AssetStore>,
+    engine: &EngineHandle,
+    me: NodeId,
+    timeline_id: Uuid,
+    name: &str,
+    clip: &AudioClip,
+) -> Result<Detected, String> {
+    let decoded = fetch_and_decode(cache, assets, engine, me, &clip.asset).await.map_err(|(e, _)| e)?;
+    let full = models::full_model().await;
+    let found = tokio::task::spawn_blocking(move || {
+        let mut detector = match full {
+            Some(bytes) => pult_audio::Detector::full(bytes),
+            None => pult_audio::Detector::small(),
+        }
+        .map_err(|e| e.to_string())?;
+        detector.detect(decoded.data(), decoded.channels as usize, decoded.sample_rate).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("the detector stopped: {e}"))??;
+
+    info!("[audio] {name} — {} beats, {} downbeats", found.beats_ms.len(), found.downbeats_ms.len());
+    let on_the_timeline = |file_ms: &Vec<u32>| -> Vec<u32> {
+        file_ms
+            .iter()
+            .filter_map(|at| clip_to_timeline(clip, *at as u64))
+            .map(|at| at.min(u32::MAX as u64) as u32)
+            .collect()
+    };
+    let detected = Detected {
+        beats_ms: on_the_timeline(&found.beats_ms),
+        downbeats_ms: on_the_timeline(&found.downbeats_ms),
+    };
+    // Written to `detected` and **not** to `grid`: the detector proposes and the
+    // operator confirms. See `types::timeline::Detected`.
+    write_field(engine, timeline_id, "detected", serde_json::to_value(&detected).unwrap_or_default()).await;
+    Ok(detected)
+}
+
+/// One field of a timeline, PERSISTED. Whether it was written.
+async fn write_field(engine: &EngineHandle, timeline_id: Uuid, field: &str, value: serde_json::Value) -> bool {
+    let path = vec![
+        PathSegment::Key("timelines".into()),
+        PathSegment::Id(timeline_id),
+        PathSegment::Key(field.into()),
+    ];
+    match engine.set(path, Lifecycle::Persisted, value).await {
+        Ok(_) => true,
+        Err(e) => {
+            warn!("[audio] {field} could not be written: {e}");
+            false
+        }
+    }
+}
+
+/// A sha, short enough for a log line.
+fn short(sha: &str) -> &str {
+    &sha[..8.min(sha.len())]
+}
+
+/// An asset's bytes, from here or from a peer.
+///
+/// The same path a plugin bundle takes, and for the same reason: a file uploaded at
+/// front of house has to reach the station backstage, and it cannot ride the oplog.
+/// Free of the manager so it runs on a task of its own, off the manager's loop.
 async fn asset_bytes(
     assets: Option<&AssetStore>,
     engine: &EngineHandle,

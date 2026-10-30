@@ -54,6 +54,7 @@ sysinfo = { workspace = true }
 cpal = { workspace = true }
 symphonia = { workspace = true }
 crossbeam-queue = { workspace = true }
+memmap2 = { workspace = true }
 reqwest = { workspace = true }
 rumqttd = { workspace = true }
 rumqttc = { workspace = true }

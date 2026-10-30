@@ -458,9 +458,16 @@
 								Decoded sound
 								<Help label="About the decoded sound">
 									<p>
-										A sound file is decoded once and kept in memory as samples, because decoding a
-										long mp3 takes seconds of a core. A file on a timeline is kept however big it
-										is; the budget, a third of the machine's memory, bounds only the rest.
+										A sound file is decoded once per station, because decoding a long mp3 takes
+										seconds of a core. The samples go to a cache on the station's disk and are read
+										back as the sound reaches them, so an hour-long file costs the memory the
+										machine can spare rather than a gigabyte and a half of it, and a restart decodes
+										nothing it has decoded before.
+									</p>
+									<p>
+										A station that cannot write that cache keeps the samples in memory instead. A
+										file on a timeline is kept however big it is; the budget, a third of the
+										machine's memory, bounds only the rest.
 									</p>
 									<p>
 										A station counts only what it has decoded itself: one that plays no timeline
@@ -470,16 +477,23 @@
 							</h3>
 							<dl class="figures">
 								<div>
-									<dt title="Everything decoded on this station, against what it may hold beyond the timelines' own">Held</dt>
+									<dt title="Decoded files read off this station's disk cache: the OS keeps what it can spare of them in memory, and none of it counts against the budget">From disk</dt>
+									<dd class="num">
+										{size(cache.mapped)}
+										<span class="dim">· {cache.mapped_files} {cache.mapped_files === 1 ? 'file' : 'files'}</span>
+									</dd>
+								</div>
+								<div>
+									<dt title="Decoded files held in this station's memory, against what it may hold beyond the timelines' own">In memory</dt>
 									<dd class="num">
 										<span class:bad={warning !== null}>{size(cache.held)}</span>
 										<span class="dim">of {size(cache.budget)} · {cache.files} {cache.files === 1 ? 'file' : 'files'}</span>
 									</dd>
 								</div>
 								<div>
-									<dt title="What the show's timelines have on them, of what this station has decoded">Timelines</dt>
+									<dt title="What of the show's timelines' sound this station holds in memory, and how many of their files it has decoded at all">Timelines</dt>
 									<dd class="num">
-										{size(cache.timeline_bytes)}
+										{size(cache.timeline_bytes)} in memory
 										<span class="dim">· {cache.timeline_decoded} of {cache.timeline_files} decoded here</span>
 									</dd>
 								</div>

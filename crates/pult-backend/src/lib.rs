@@ -697,6 +697,10 @@ pub async fn start(config: Config) -> Result<Running> {
     // `timelines` collection, told about it whenever it changes. Which station plays a
     // timeline is `Timeline::node_id` — or the leader — so every station runs one of
     // these and most of them are quietly playing nothing.
+    let audio_prefs = crate::infra::preferences::load().audio;
+    let decoded_cap = audio_prefs
+        .decoded_cache_gb
+        .map_or(crate::infra::audio::decode::DEFAULT_DISK_CAP, |gb| gb as u64 * 1024 * 1024 * 1024);
     let (audio_mgr, audio) = crate::infra::audio::AudioManager::new(
         node_id,
         engine_handle.clone(),
@@ -704,9 +708,14 @@ pub async fn start(config: Config) -> Result<Running> {
         // A station preference, read here rather than in the manager for the reason
         // `[network]` is: preferences are read once by the process, and a station
         // reading its own would overwrite what a caller of `start` asked for.
-        crate::infra::preferences::load().audio,
+        audio_prefs,
         Some(assets.clone()),
     );
+    // Decoded once per station rather than once per start: see `infra/audio/decode.rs`.
+    let audio_mgr = match crate::infra::preferences::decoded_audio_dir() {
+        Some(dir) => audio_mgr.with_decoded_dir(dir, decoded_cap),
+        None => audio_mgr,
+    };
     // And a node's loudspeaker is somewhere a clip can go, reached through the same
     // directory and the same broker the output side drives the nodes' ports through.
     let audio_mgr = audio_mgr.with_nodes(device_directory, device_handle.clone());

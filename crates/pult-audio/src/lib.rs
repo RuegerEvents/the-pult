@@ -37,7 +37,7 @@ pub mod wav;
 pub use beats::{grid_from_beats, Detected, Detector, GridSegment};
 pub use lock::{chase, Chase};
 pub use ltc::{Decoder, Lock, LtcFrame, LtcRate};
-pub use mix::{Deck, Mixer, Placement, RouteError, Source, Voice};
+pub use mix::{Deck, Mixer, Placement, RouteError, Samples, Source, Voice};
 pub use peaks::Peaks;
 
 use thiserror::Error;

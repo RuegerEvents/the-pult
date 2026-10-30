@@ -185,6 +185,9 @@ symphonia = { version = "0.6", features = ["mp3", "aac", "isomp4", "flac", "wav"
 # What the audio callback is handed its decks over: a bounded queue that neither locks
 # nor allocates. Already in the tree under crossbeam-channel.
 crossbeam-queue = "0.3"
+# A decoded file, read back off the disk as pages the OS keeps or lets go of, rather
+# than as gigabytes of heap. See `infra/audio/decode.rs`.
+memmap2 = "0.9"
 
 # The beat detector's runtime: pure Rust, no C, no ONNX Runtime to install.
 # `fft` supplies the STFT operator the mel front end is built out of.

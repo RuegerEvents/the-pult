@@ -8,6 +8,11 @@
  * for a show whose sound is bigger than what was set aside for it, and worth knowing
  * before the machine runs short of memory.
  *
+ * All of it is about the heap. A file read off the station's disk cache (`mapped`) is
+ * pages the OS keeps or drops as it needs, and is never over anything — so a station
+ * whose cache works says nothing here however long its sound is, and one that warns
+ * is one that could not write its cache.
+ *
  * The panel calls this rather than restating it, the way `stats.ts`'s `struggling()`
  * is called.
  */
@@ -24,7 +29,7 @@ export function cacheWarning(stats: AudioCacheStats, size: (bytes: number) => st
 	if (stats.timeline_bytes > stats.budget) {
 		return {
 			level: 'over',
-			text: `The timelines' sound is ${size(stats.timeline_bytes)} decoded, over the ${size(stats.budget)} this station sets aside. It is kept anyway, out of the machine's memory.`
+			text: `The timelines' sound is ${size(stats.timeline_bytes)} decoded in memory, over the ${size(stats.budget)} this station sets aside. It is kept anyway, out of the machine's memory — this station could not write its disk cache.`
 		};
 	}
 	if (stats.held > stats.budget * CLOSE_SHARE) {

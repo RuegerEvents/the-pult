@@ -44,22 +44,34 @@ pub enum AtEnd {
 /// station whose Play and Stop wait behind it. What a timeline holds is kept whatever
 /// it costs; `budget` bounds only the rest. So `timeline_bytes` over `budget` is a show
 /// whose sound does not fit what this machine set aside for it, and the station is
-/// holding it anyway.
+/// holding it anyway. Since files are decoded to the disk and mapped back in, that is
+/// the station that could not write its cache; `mapped` is the ordinary case.
 ///
 /// `timeline_*` counts only files this station has decoded: one that plays no timeline
 /// here never decodes the others' sound, and cannot say how big it would be.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AudioCacheStats {
-    /// What may be held, in bytes. Zero from a station that cannot say.
+    /// What may be held on the heap, in bytes. Zero from a station that cannot say.
     pub budget: u64,
-    /// What is held, timelines' and otherwise.
+    /// What is held on the heap, timelines' and otherwise.
     pub held: u64,
     pub files: u32,
     /// Of `held`, what the show's timelines have on them.
     pub timeline_bytes: u64,
-    /// Files on the show's timelines, and how many of those are decoded here.
+    /// Files on the show's timelines, and how many of those are decoded here — on the
+    /// heap or on the disk.
     pub timeline_files: u32,
     pub timeline_decoded: u32,
+    /// What is played off the station's disk cache rather than held on the heap: pages
+    /// the OS reads in as the sound reaches them and drops when it needs the memory,
+    /// so this is what the files come to and not what they cost. None of it counts
+    /// against `budget`.
+    ///
+    /// Defaulted, so a peer on an older build still deserializes.
+    #[serde(default)]
+    pub mapped: u64,
+    #[serde(default)]
+    pub mapped_files: u32,
 }
 
 /// One file on a timeline: where it starts, what of it plays, how loud, and where to.
@@ -3175,11 +3187,6 @@ pub struct Station {
     /// **The whole machine, not this console.** Every other figure in this row is what
     /// the console is responsible for; this is what the cable is actually carrying,
     /// which includes whatever else the box is doing. The two are worth having side by
-    /// How much decoded sound this station is holding, against what it may hold.
-    ///
-    /// Defaulted, and a `budget` of zero is a station on an older build that cannot say.
-    #[serde(default)]
-    pub audio_cache: AudioCacheStats,
     /// side and must never be confused: a station whose own output accounts for 2 MB/s
     /// on an interface carrying 90 MB/s has a network problem that is not its fault,
     /// and one where the two figures agree has found its own.
