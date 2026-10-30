@@ -43,17 +43,40 @@ use std::sync::Arc;
 
 use thiserror::Error;
 
+/// Samples, wherever they are kept: a `Vec` in memory, or a file the station mapped in.
+///
+/// A trait object rather than a type, because this crate owns no file and must not — a
+/// mapping is the station's (`infra/audio/decode.rs`), and a `Vec<f32>` is already one
+/// of these. Shared, because a deck is built off the audio thread and its last
+/// reference is dropped off it too: see the module header.
+pub type Samples = Arc<dyn AsRef<[f32]> + Send + Sync>;
+
 /// A decoded file: interleaved f32 at its own rate.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Source {
-    pub samples: Arc<Vec<f32>>,
+    pub samples: Samples,
     pub channels: usize,
     pub sample_rate: u32,
 }
 
+impl std::fmt::Debug for Source {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Source")
+            .field("samples", &self.data().len())
+            .field("channels", &self.channels)
+            .field("sample_rate", &self.sample_rate)
+            .finish()
+    }
+}
+
 impl Source {
+    /// The samples, interleaved.
+    pub fn data(&self) -> &[f32] {
+        (*self.samples).as_ref()
+    }
+
     pub fn frames(&self) -> usize {
-        self.samples.len() / self.channels.max(1)
+        self.data().len() / self.channels.max(1)
     }
 
     pub fn duration_ms(&self) -> f64 {
@@ -72,7 +95,8 @@ impl Source {
         let channels = self.channels.max(1);
         let base = frame.floor() as usize;
         let index = base * channels + channel;
-        match (self.samples.get(index), self.samples.get(index + channels)) {
+        let samples = self.data();
+        match (samples.get(index), samples.get(index + channels)) {
             (Some(a), Some(b)) => {
                 let fraction = (frame - base as f64) as f32;
                 a * (1.0 - fraction) + b * fraction

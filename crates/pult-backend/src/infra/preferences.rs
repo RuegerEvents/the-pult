@@ -390,6 +390,20 @@ pub fn xchange_cache_dir() -> PathBuf {
     }
 }
 
+/// Where this station keeps the sound files it has decoded. See `infra/audio/decode.rs`.
+///
+/// `PULT_DECODED_AUDIO` names it outright; otherwise it sits **beside the preferences
+/// file**, wherever that is — so a test or a second console that moved its preferences
+/// with `PULT_PREFERENCES` has moved this with them, and nothing it decodes lands in the
+/// real station's directory. `None` where there is no preferences file either, which
+/// decodes onto the heap as a station always used to.
+pub fn decoded_audio_dir() -> Option<PathBuf> {
+    if let Some(named) = std::env::var_os("PULT_DECODED_AUDIO") {
+        return Some(PathBuf::from(named));
+    }
+    Some(path()?.parent()?.join("decoded"))
+}
+
 /// The platform's configuration directory, without a crate to ask.
 pub(crate) fn config_dir() -> Option<PathBuf> {
     if cfg!(target_os = "windows") {

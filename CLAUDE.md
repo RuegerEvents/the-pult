@@ -1927,6 +1927,17 @@ never rewrites flash. A stream follows the node's retained `net` without a new s
 and a node's own fixture may ask for it down every path. See `infra/audio/nodes.rs` and
 tasks 71 and 89.
 
+**A file is decoded once per station, onto its disk, and nothing waits for it.** The
+samples go straight into `decoded/<sha>.pcm` beside `preferences.toml` (`decode::Disk`,
+f32, capped by `[audio] decoded_cache_gb`) and are mapped back in. A seventy-minute mp3
+is 1.5 GB of samples, which is pages the OS can drop rather than heap, and a restart
+decodes nothing it decoded before. The heap is the fallback for a station that cannot
+write there. `AudioManager::decoded` starts a task and answers "not yet"
+(`STILL_DECODING` on the clip), because the manager's loop is what keeps the sound in
+time, and an await on a decode there was seconds of a station keeping no time. The
+mixer reads a mapped page off the disk if it is not resident, so the manager
+`madvise`s the next four seconds of every playing clip. See task 101.
+
 **Peaks are an asset, computed once by the station that plays the file.** Min and max
 per bin at a hundred bins a second, as `i16`, under `application/vnd.pult.peaks`;
 `AudioClip::peaks` is the sha. Min and max because a waveform is read as an envelope and

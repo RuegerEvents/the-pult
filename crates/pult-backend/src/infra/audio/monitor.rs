@@ -24,9 +24,6 @@
 //! that goes takes its receiver with it, and the next chunk sent to it finds that out.
 //! Nothing expires.
 
-use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
-
 use pult_audio::monitor::{self, Chunk, CHANNELS, SAMPLE_RATE};
 use pult_schema::types::timeline::Timeline;
 use tokio::sync::mpsc;
@@ -45,18 +42,11 @@ pub struct Listener {
     chunks: mpsc::Sender<Vec<u8>>,
     /// The show millisecond the next chunk starts at.
     next: Option<u64>,
-    /// Files this page's monitor has asked for that are not decoded here. Each is
-    /// tried once, or a file no station can supply would be fetched twenty times a
-    /// second for as long as somebody listened.
-    tried: HashSet<String>,
-    /// Of those, the ones still being fetched and decoded, which is what makes a chunk
-    /// say "loading". The task doing it takes its sha out when it is done either way.
-    loading: Arc<Mutex<HashSet<String>>>,
 }
 
 impl Listener {
     pub fn new(timeline: Option<Uuid>, chunks: mpsc::Sender<Vec<u8>>) -> Self {
-        Listener { timeline, chunks, next: None, tried: Default::default(), loading: Default::default() }
+        Listener { timeline, chunks, next: None }
     }
 }
 
@@ -66,8 +56,9 @@ impl AudioManager {
     /// **Never waits on a file.** A tablet starting to listen mid-show must not stall
     /// the station playing the show — its chase, its anchor writes, its node streams
     /// all run on this loop. A clip whose file is not decoded here is fetched and
-    /// decoded on a task of its own, into the shared cache, and left out of the chunks
-    /// until it is there; the chunks say "loading" meanwhile.
+    /// decoded on a task of its own (`AudioManager::decoded`, the one the station's own
+    /// decks use), and left out of the chunks until it is there; the chunks say
+    /// "loading" meanwhile.
     pub(super) async fn feed_monitors(&mut self, now: u64) {
         if self.monitors.is_empty() {
             return;
@@ -94,7 +85,7 @@ impl AudioManager {
     /// One chunk of sound at show millisecond `at`, and whether a file it needs is still
     /// loading — or `None` when nothing it covers is running, which a page is told by
     /// being sent nothing. Not `async`, and that is the guarantee: nothing in it waits.
-    fn monitor_chunk(&self, listener: &mut Listener, at: u64) -> Option<(Vec<f32>, bool)> {
+    fn monitor_chunk(&mut self, listener: &Listener, at: u64) -> Option<(Vec<f32>, bool)> {
         let only = listener.timeline;
         let timelines: Vec<Timeline> = self
             .timelines
@@ -110,20 +101,18 @@ impl AudioManager {
         for timeline in &timelines {
             let mut voices = Vec::new();
             for clip in &timeline.clips {
-                let Some(decoded) = self.cache.get(&clip.asset) else {
-                    if listener.tried.insert(clip.asset.clone()) {
-                        self.load_for_monitor(&clip.asset, listener.loading.clone());
+                let decoded = match self.decoded(&clip.asset) {
+                    Ok(Some(decoded)) => decoded,
+                    Ok(None) => {
+                        loading = true;
+                        continue;
                     }
-                    loading |= listener.loading.lock().is_ok_and(|l| l.contains(&clip.asset));
-                    continue;
+                    // Would not decode, or no station has it: silence, and not "loading".
+                    Err(_) => continue,
                 };
                 let Ok(routes) = pult_audio::mix::route(decoded.channels as usize, &[1, 2], CHANNELS) else { continue };
                 voices.push(pult_audio::Voice {
-                    source: pult_audio::Source {
-                        samples: decoded.samples.clone(),
-                        channels: decoded.channels as usize,
-                        sample_rate: decoded.sample_rate,
-                    },
+                    source: decoded.source(),
                     placement: placement(clip),
                     routes,
                 });
@@ -142,30 +131,5 @@ impl AudioManager {
         let mut samples = vec![0.0; monitor::chunk_frames() * CHANNELS];
         mixer.render(&mut samples);
         Some((samples, loading))
-    }
-
-    /// Fetch and decode a file for a monitor on a task of its own, into the cache the
-    /// station plays from. The decode itself is on a blocking thread (`AudioCache`).
-    fn load_for_monitor(&self, sha: &str, loading: Arc<Mutex<HashSet<String>>>) {
-        if self.refused.contains(sha) {
-            return;
-        }
-        if let Ok(mut l) = loading.lock() {
-            l.insert(sha.to_string());
-        }
-        let (sha, cache, assets, engine, me) =
-            (sha.to_string(), self.cache.clone(), self.assets.clone(), self.engine.clone(), self.node_id);
-        tokio::spawn(async move {
-            let done = match super::asset_bytes(assets.as_ref(), &engine, me, &sha).await {
-                Ok(bytes) => cache.decode(&sha, bytes).await.map(|_| ()),
-                Err(e) => Err(e),
-            };
-            if let Err(e) = done {
-                debug!("[audio] a monitor could not load {}: {e}", &sha[..8.min(sha.len())]);
-            }
-            if let Ok(mut l) = loading.lock() {
-                l.remove(&sha);
-            }
-        });
     }
 }

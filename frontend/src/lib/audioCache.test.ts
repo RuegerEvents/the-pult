@@ -7,7 +7,17 @@ const MB = 1_000_000;
 const size = (bytes: number) => `${Math.round(bytes / MB)} MB`;
 
 function stats(over: Partial<AudioCacheStats>): AudioCacheStats {
-	return { budget: 1000 * MB, held: 0, files: 0, timeline_bytes: 0, timeline_files: 0, timeline_decoded: 0, ...over };
+	return {
+		budget: 1000 * MB,
+		held: 0,
+		files: 0,
+		timeline_bytes: 0,
+		timeline_files: 0,
+		timeline_decoded: 0,
+		mapped: 0,
+		mapped_files: 0,
+		...over
+	};
 }
 
 describe('cacheWarning', () => {

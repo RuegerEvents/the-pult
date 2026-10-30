@@ -8096,6 +8096,80 @@ cd plugins && cargo test -p command-line-core numbers
 cd frontend && npx vitest run src/lib/fixtureNumbers.test.ts src/lib/surface.test.ts
 ```
 
+### 101. A decoded file is the station's, on its disk, and nothing waits for one
+
+At HHG (2026-10-29) one seventy-minute mp3 was 1.5 GB of f32, over the 512 MB the
+decoded-audio cache allowed. It pushed the other four files out and they pushed it out,
+and every few seconds the manager decoded all five again: a whole core, with Play, Stop
+and Locate queued behind it. 402b40d fixed the thrashing by pinning every file on a
+timeline whatever it costs. That left two faults, and this task is both.
+
+**Decoding was off the runtime but on the manager's loop.** `AudioCache::decode` ran
+on `spawn_blocking`, and `reconcile_deck`, `reduce`, `detect` and the node paths all
+*awaited* it. Each await stopped the one loop that steers the sound, answers Play and
+Stop, chases timecode, feeds the monitors and streams to the nodes, for as long as the
+decode took. That was seconds on every station start and every show open. Now
+`AudioManager::decoded` never waits. The first ask starts a task (`load`, de-duplicated
+by sha) and answers "not yet", and the clip carries `STILL_DECODING` as its fault,
+because it really is silent until then. The file arriving comes back over
+`Background::Decoded` and reconciles again. A timeline that is already running gets its
+deck then, at `position_at(now)`, because the anchor is the show's and the sound is
+what joins it. A deck's `built` signature counts its voices, so a file that arrives late
+rebuilds the deck from the old one's cursor. The node stream signature gained the same
+count. The waveform and beat detection now run on tasks of their own, reporting back
+the same way. A file whose bytes nobody could supply is not the same as one that will
+not decode. It is said on the row and fetched again no more than once a second, since a
+monitor looks twenty times a second, and it is never added to `refused`. The monitor's
+own loading set is gone; it asks the manager like everything else.
+
+**The samples go to the disk and are mapped back in.** `decode::Disk` sits beside
+`preferences.toml` (`decoded/`, or `PULT_DECODED_AUDIO`). Because it is derived from
+the preferences path, a test that moved its preferences has moved this too. A file is
+decoded *straight into* `<sha>.pcm`, packet by packet through a buffer, so the decode
+takes megabytes of memory rather than the whole song. The file is a 64-byte header
+(`PLDA`, version, channels, rate, sample count) followed by little-endian f32. It is
+written under a name of its own, synced, and renamed into place, then mapped. f32
+rather than i16 because a file played from the disk must be the same samples as one
+played from memory: the test checks bit for bit. What this buys:
+
+- A restart, a show reopen or a failover to a spare that played the file before costs
+  a header read and an mmap. `fetch_and_decode` asks the disk *before* fetching the
+  bytes, which may be a hundred megabytes across the link.
+- The memory is the OS's to manage. Mapped pages are clean, so the machine drops them
+  under pressure and reads them back. The heap budget counts only the heap. A mapped
+  file no timeline has on it is let go at the next pin, since mapping it again costs
+  nothing.
+- The heap remains as the fallback, not a second design. A station with no config
+  directory, or a full disk, falls back to the old `Vec` with a warning. A file
+  that is not audio is refused once, never mistaken for a full disk and decoded a
+  second time.
+
+`[audio] decoded_cache_gb` caps the directory, 20 GB by default (about fourteen hours of
+stereo). Pruning goes oldest first by mtime, which is touched on every open, and skips
+anything pinned. On Unix, a file pruned while mapped goes on playing.
+
+**The one new risk is a page fault on the audio thread**, and the manager guards
+against it. A page the mixer reaches that is not resident is a disk read inside the
+callback. Every 250 ms (`PREFETCH_EVERY`), and once before a deck is first handed
+over, the manager asks `madvise(WILLNEED)` for the next four seconds of each playing
+clip, at two points so a clip that loops or starts soon is covered. The call returns at
+once and the OS reads in the background. Not measured yet against a cold disk on the
+Mini; if underruns show up, `mlock` on a window round the cursor is the next step, and
+a streaming reader thread is not, because locate, loop and varispeed want random access.
+
+`pult_audio::Samples` is `Arc<dyn AsRef<[f32]> + Send + Sync>`, so `pult-audio` still
+owns no file. The System panel shows *From disk* beside *In memory*, and the "over"
+warning now means a station that could not write its cache.
+
+Not done here: `bounce_for`, which renders a clip's region for a node's flash, still
+awaits its own `spawn_blocking` on the loop. That is a real stall only for a long
+region going to a node, which flash makes unlikely.
+
+```
+cargo test -p pult-backend --lib infra::audio   # the disk, the fallback, nothing waiting
+cd frontend && npx vitest run src/lib/audioCache.test.ts
+```
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are
