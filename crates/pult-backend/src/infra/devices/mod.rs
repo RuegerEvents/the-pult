@@ -519,7 +519,12 @@ impl DeviceManager {
         // the catch-all; a patch from this station reconciles at once.
         let mut strips = tokio::time::interval(STRIP_CHECK);
         strips.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        let mut strays = tokio::time::interval(STRAY_CHECK);
+        // A period in, not at once: at start no node has had the time to reach the
+        // broker, so every adopted one would be a stray — and a first tick landing just
+        // after an adoption told the node twice, which is how two tests failed on a
+        // loaded machine.
+        let mut strays =
+            tokio::time::interval_at(tokio::time::Instant::now() + STRAY_CHECK, STRAY_CHECK);
         strays.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut grace = tokio::time::interval(std::time::Duration::from_secs(2));
         let mut undescribed = tokio::time::interval(Duration::from_secs(10));
@@ -562,6 +567,12 @@ impl DeviceManager {
                 Some(_) = stations.next() => self.refresh_brokers().await,
                 Some(_) = addresses.next() => {
                     self.remember_patched().await;
+                    // Which node is adopted as what follows the fixtures, whoever wrote
+                    // them. `remember_patched` reconciles only for a node it had not
+                    // seen, so a follower whose Adopt the leader carried out went on
+                    // listing the node as unadopted until some device event happened
+                    // to come along (the audio MacBook, HHG 2026-10-30).
+                    self.reconcile_adoptions().await;
                     self.name_heads().await;
                     self.push_renamed().await;
                     self.publish().await;

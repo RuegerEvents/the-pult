@@ -170,11 +170,21 @@ the `fixtureTypes.library` RPC hands both to the patch dialog and the type edito
 used to be three bytes whatever the emitters said, so a hand-made RGBW head drove its
 white from nothing.
 
-**A showfile is not a migration target.** While the console is in development nobody is
-carrying a season's work in one, and a migration is a promise about every shape the data
-has ever had. So there is none: `infra/showfile/mod.rs` stamps a file with
-`SCHEMA_GENERATION` and refuses one from another generation, saying so plainly. Two
-things make that necessary rather than merely tidy, and both are the SQLite read path:
+**A showfile is upgraded from generation 9 on, and only when somebody says so.** Until
+then it was refused, on the grounds that nobody carried a season's work in one; a haunt
+running its second weekend is exactly that. So every bump of `SCHEMA_GENERATION` ships a
+**step** in `infra/showfile/upgrade.rs` — one Rust function over one transaction, `n` to
+`n + 1`, Rust because most shape changes are inside a JSON column — and
+`every_generation_since_the_first_has_a_step` fails a bump without one. Four rules, each
+the user's: **nothing is upgraded unasked** (`showfile::open` answers `NeedsUpgrade`;
+`show.open` and `show.restore` answer `{needsUpgrade}` and the page asks; a station
+opening an older show by itself comes up with no show and the welcome screen offers it);
+**a version is kept first** (`Before upgrading from generation n`, the file as it was);
+**history starts at the upgrade** (the floor is raised and the oplog goes, as a prune
+does — an old operation replayed would write the old shape back); and **older than 9
+stays refused**. `testdata/showfiles/generation-9.db` is walked by
+`tests/upgrade.rs`. Two things make the stamp necessary rather than merely tidy, and
+both are the SQLite read path:
 `#[derive(PultSchema)]` generates `from_columns`, which reads each column on its own and
 unwraps — so a non-`Option` column that is NULL **panics while a show is opening**, and
 an `Option` column that fails to parse **becomes `None` with no error at all**. The
@@ -631,8 +641,9 @@ and the MVR importer never guesses one: a drawing says what it is with its mesh,
 picking an `f34-2m` because the name said "truss" would put a measurement into
 somebody's rig that nobody measured.
 
-**A showfile is still not a migration target.** `SCHEMA_GENERATION` is 9 and refuses a
-file from another generation by name. Opening also vacuums when more than a quarter of
+**A showfile is upgraded, not refused, from generation 9 on** — see *A fixture type says
+what a light can do*. `SCHEMA_GENERATION` is 10; a file older than 9 or from a newer
+build is refused by name. Opening also vacuums when more than a quarter of
 the file is free, which is the one moment nothing else is using it.
 
 ```
@@ -877,12 +888,14 @@ See *The loop, and a color that says where a value came from*.
 
 The frontend opens onto a **tiled workspace** rather than a sidebar and tabs. Panels
 live in a tree of splits and tab groups: drag a tab to a tile's edge to divide it or
-to its middle to stack it, drag the gutters to resize, and pick a layout from the menu
+to its middle to stack it, drag the gutters to resize, and pick a workspace from the menu
 in the top bar. Presets are built in; *Save as…* writes an arrangement into the show
-as a `layouts` row. Which layout this browser is looking at is kept in `localStorage`,
-not in the show.
+as a `workspaces` row. Which workspace this browser is looking at is kept in `localStorage`,
+not in the show. (They were `layouts` until generation 10; that name is now the
+**`layout` panel**'s — 2D drawings with sensors, variables and timelines on them, shared
+read-only at `/layout/<id>` the way a surface is. See task 101.)
 
-**Setup is a mode, not nine panels.** `PanelMeta.home` in `layout/panels.ts` is
+**Setup is a mode, not nine panels.** `PanelMeta.home` in `workspace/panels.ts` is
 `workspace | setup | both`: patching, fixture types, devices, I/O, network, session,
 plugins, MVR-xchange, the show and the settings are *errands*, and an errand that costs
 a tile costs the picture somebody is programming against. `components/setup/Setup.svelte`
@@ -901,7 +914,7 @@ a mode change, a new fixture, a network cable, removing a plugin. Every panel re
 leaves acts working and hides every edit handle. See task 79 for the table.
 
 **Panels have a category and an icon; objects have one grammar.** `PanelMeta.category`
-is one of six (`layout/categories.ts`), its color is a `--cat-*` token, and `icon` is a
+is one of six (`workspace/categories.ts`), its color is a `--cat-*` token, and `icon` is a
 Lucide component. A pool object is a *kind* registered by a `*.kind.ts` file in
 `lib/kinds/` (imported by glob, so nothing lists them): tap acts, ⌘-click or the corner
 dot makes it the Inspector's subject, right-click or a long-press opens the one
@@ -1216,7 +1229,7 @@ each is one Ctrl-Z. Two selections, deliberately separate: a `SelectionQuery` is
 question about the *rig* and `at 50` means the fixtures it answers, so `selectedObjects`
 is its own store and a truss is never in that scope.
 
-`SCHEMA_GENERATION` is 9.
+`SCHEMA_GENERATION` is 10.
 
 ```
 cargo test -p pult-schema                          # the corpora, the glb, the joints
@@ -1843,7 +1856,7 @@ else on the machine is listening to the same show LAN, so `SO_REUSEADDR` (and
 multicast group is joined *on* an interface as a separate act, and binding a receiver to
 a unicast address is what stops broadcast Art-Net arriving at all.
 
-`SCHEMA_GENERATION` is 9. `FollowMode::Timecode` is gone — a position written on a cue
+`SCHEMA_GENERATION` is 10. `FollowMode::Timecode` is gone — a position written on a cue
 is a clock the cue cannot see, and the same fact as a `timelines` event is a list an
 operator can read and drag.
 

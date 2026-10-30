@@ -236,6 +236,7 @@
 						fixture_number: null,
 						unit_number: null,
 						sensed_values: {},
+						sensed_at: {},
 						live_effects: {},
 						live_fades: {},
 						live_htp: {},

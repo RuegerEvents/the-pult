@@ -15,9 +15,9 @@
 import { derived, readable, type Readable } from 'svelte/store';
 
 import type { PluginsState } from '$lib/generated/index.js';
-import { PANELS, type PanelMeta } from '$lib/layout/panels.js';
-import { isCategory } from '$lib/layout/categories.js';
-import { pluginIcon } from '$lib/layout/pluginIcons.js';
+import { PANELS, type PanelMeta } from '$lib/workspace/panels.js';
+import { isCategory } from '$lib/workspace/categories.js';
+import { pluginIcon } from '$lib/workspace/pluginIcons.js';
 import { showClient } from './show.js';
 
 import BarSurface from '$lib/components/plugins/BarSurface.svelte';

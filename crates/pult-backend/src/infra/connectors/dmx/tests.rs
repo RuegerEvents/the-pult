@@ -27,6 +27,7 @@ fn a_fixture(fixture_type: &FixtureType, universe: u16, address: u16) -> Fixture
         address: FixtureAddress::dmx(universe, address),
         position: None,
         sensed_values: HashMap::new(),
+        sensed_at: Default::default(),
         live_effects: Default::default(),
         live_fades: Default::default(),
         live_htp: Default::default(),

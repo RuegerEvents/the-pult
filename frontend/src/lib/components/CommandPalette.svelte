@@ -11,7 +11,7 @@
 
 	import { focusOnMount } from '$lib/actions.js';
 	import { allCommands, searchCommands, type Command } from '$lib/commands.js';
-	import { categoryColor } from '$lib/layout/categories.js';
+	import { categoryColor } from '$lib/workspace/categories.js';
 	import { addToast } from '$lib/toasts.js';
 
 	let { onclose }: { onclose: () => void } = $props();

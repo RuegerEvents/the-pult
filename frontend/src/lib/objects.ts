@@ -29,7 +29,7 @@
 import type { Component } from 'svelte';
 import { derived, get, writable, type Readable } from 'svelte/store';
 
-import type { Category } from '$lib/layout/categories.js';
+import type { Category } from '$lib/workspace/categories.js';
 
 /** Which object: its kind's name and its id. */
 export type ObjectRef = { kind: string; id: string };

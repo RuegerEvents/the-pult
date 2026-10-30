@@ -8,7 +8,7 @@
 	import { applyToSelection, openTemplate } from '$lib/kinds/effects.kind.js';
 	import { spreadLabel } from '$lib/effects.js';
 	import { displayLabel } from '$lib/patch.js';
-	import { revealPanel } from '$lib/stores/layout.js';
+	import { revealPanel } from '$lib/stores/workspace.js';
 	import { selection } from '$lib/stores/selection.js';
 
 	let { rows }: { rows: EffectTemplate[] } = $props();

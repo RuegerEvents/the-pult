@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { LayoutNode } from './generated/index.js';
+import type { WorkspaceNode } from './generated/index.js';
 import {
 	addTab,
 	findPanel,
@@ -14,13 +14,13 @@ import {
 	splitLeaf,
 	tabs,
 	tidy
-} from './layout.js';
+} from './workspace.js';
 
 /** rig | [values / selection] — one row, the right half stacked. */
-const nested = (): LayoutNode =>
+const nested = (): WorkspaceNode =>
 	split('Row', [tabs(['rig']), split('Column', [tabs(['values']), tabs(['selection'])])], [0.6, 0.4]);
 
-const sizesOf = (node: LayoutNode) => (node.type === 'Split' ? node.sizes : null);
+const sizesOf = (node: WorkspaceNode) => (node.type === 'Split' ? node.sizes : null);
 
 describe('reading a tree', () => {
 	it('finds the node a path names', () => {

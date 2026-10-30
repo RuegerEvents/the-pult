@@ -15,7 +15,7 @@
 	 * Under the Show lock it still shows everything and changes nothing.
 	 */
 
-	import { categoryColor } from '$lib/layout/categories.js';
+	import { categoryColor } from '$lib/workspace/categories.js';
 	import { clearSubject, SWATCHES, subjectRows, type ObjectKind, type ObjectRow } from '$lib/objects.js';
 	import { beginGesture, endGesture } from '$lib/stores/gesture.js';
 	import { canEdit } from '$lib/stores/showLock.js';

@@ -16,7 +16,7 @@ import {
 	renameTemplate,
 	templates
 } from '$lib/stores/effectPool.js';
-import { revealPanel } from '$lib/stores/layout.js';
+import { revealPanel } from '$lib/stores/workspace.js';
 import { elements } from '$lib/stores/selection.js';
 import { collection, showData } from '$lib/stores/show.js';
 import { addToast } from '$lib/toasts.js';

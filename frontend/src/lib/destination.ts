@@ -7,7 +7,14 @@
  * their `/info`, which the station keeps on the device row — so nothing here knows what
  * a node is beyond what the node said.
  */
-import type { AudioDestination, DevicesState, NodeAudioMode, NodeReport, SpeakerZone } from '$lib/generated/index.js';
+import type {
+	AudioDestination,
+	DevicesState,
+	NodeAudioMode,
+	NodeAudioState,
+	NodeReport,
+	SpeakerZone
+} from '$lib/generated/index.js';
 
 /** The zone a destination names, or `null` for a node. */
 export function zoneOf(destination: AudioDestination): string | null {
@@ -75,4 +82,53 @@ export function bytesText(bytes: number): string {
 	if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 	if (bytes >= 1024) return `${Math.round(bytes / 1024)} kB`;
 	return `${bytes} B`;
+}
+
+/** Where one clip stands on one node's flash, for the line under Streamed/Stored. */
+export type ClipOnNode =
+	| { kind: 'stored' }
+	| { kind: 'uploading'; fraction: number; sent: number; total: number }
+	| { kind: 'waiting'; behind: boolean }
+	| { kind: 'preparing' }
+	| { kind: 'refused'; why: string }
+	| { kind: 'unknown' };
+
+/**
+ * Where a stored clip is on a node, from what the driving station said about that node.
+ *
+ * By the sha of the region made for this clip on this node (`clips`), never the clip's
+ * own asset: a clip is cut and encoded per node, so the asset is not what the node holds.
+ * `stored` comes from the node's own listing, so it is the only state that means the
+ * clip will play; an upload at 100% is still uploading until the node has said so.
+ */
+export function clipOnNode(state: NodeAudioState | undefined, clipId: string): ClipOnNode {
+	if (!state) return { kind: 'unknown' };
+	const sha = state.clips?.[clipId];
+	if (!sha) return { kind: 'preparing' };
+	if (state.stored.includes(sha)) return { kind: 'stored' };
+	if (state.uploading === sha) {
+		const total = state.upload_total ?? 0;
+		const sent = Math.min(state.upload_sent ?? 0, total);
+		return { kind: 'uploading', fraction: total > 0 ? sent / total : 0, sent, total };
+	}
+	if (state.fault) return { kind: 'refused', why: state.fault };
+	return { kind: 'waiting', behind: !!state.uploading };
+}
+
+/** That, in words. */
+export function clipOnNodeText(on: ClipOnNode): string {
+	switch (on.kind) {
+		case 'stored':
+			return 'on the node';
+		case 'uploading':
+			return `uploading ${Math.floor(on.fraction * 100)}% (${bytesText(on.sent)} of ${bytesText(on.total)})`;
+		case 'waiting':
+			return on.behind ? 'waiting: another clip is uploading' : 'waiting to upload';
+		case 'preparing':
+			return 'being prepared for the node';
+		case 'refused':
+			return on.why;
+		case 'unknown':
+			return 'not reported: is the station driving the nodes up?';
+	}
 }

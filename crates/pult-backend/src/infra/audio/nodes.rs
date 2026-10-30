@@ -112,6 +112,11 @@ pub struct Nodes {
     stores: BTreeMap<String, Store>,
     /// Nodes with a request in flight, and which clip it is uploading if it is one.
     busy: BTreeMap<String, Option<String>>,
+    /// How far each running upload has got: bytes handed to the socket, of how many.
+    progress: BTreeMap<String, (Arc<AtomicU64>, u64)>,
+    /// When the progress was last written, so a page sees it move a few times a second
+    /// rather than once per request finished.
+    progress_said: Option<Instant>,
     /// Clips a node refused, and why. Not tried again until its store changes.
     refused: BTreeMap<(String, String), String>,
     pub(super) results: mpsc::Receiver<Done>,
@@ -165,6 +170,7 @@ pub struct Done {
     outcome: Outcome,
 }
 
+#[derive(Debug)]
 enum Outcome {
     Listed(Store),
     Uploaded { sha: String },
@@ -195,6 +201,8 @@ impl Nodes {
             wanted_since: HashMap::new(),
             stores: BTreeMap::new(),
             busy: BTreeMap::new(),
+            progress: BTreeMap::new(),
+            progress_said: None,
             refused: BTreeMap::new(),
             results,
             results_tx,
@@ -250,6 +258,25 @@ pub fn node_clips<'t>(
                 (clip, serial, mode, sides)
             })
         })
+        .collect()
+}
+
+/// The nodes whose clip store this station keeps: the ones online, with a loudspeaker,
+/// and **adopted in this show**.
+///
+/// Adopted, and nothing else. The directory lists every node a browse found, and one
+/// that is not in this show is somebody else's — a station keeping it emptied it, since
+/// nothing here wants anything on it. Without the filter, every station leading a show
+/// emptied every node on the network that show did not have: a test run on a laptop in
+/// the room deleted the Pumpkin Room's clips a minute after the leader stored them, and
+/// the leader, holding its own listing, went on telling the node to play them (HHG,
+/// 2026-10-30).
+pub fn managed_nodes(directory: &DeviceDirectory) -> Vec<String> {
+    directory
+        .entries
+        .iter()
+        .filter(|(_, entry)| entry.online && entry.audio.is_some() && entry.adopted)
+        .map(|(serial, _)| serial.clone())
         .collect()
 }
 
@@ -446,12 +473,11 @@ impl AudioManager {
         let mut waiting: BTreeMap<(String, String), Vec<(Uuid, String)>> = BTreeMap::new();
         let mut sizes: HashMap<String, u64> = HashMap::new();
 
-        // Every adopted node with a loudspeaker is in `wanted`, if only with nothing, so a
-        // node whose last clip was taken off its timeline is emptied rather than ignored.
-        for (serial, entry) in &directory.entries {
-            if entry.online && entry.audio.is_some() {
-                wanted.entry(serial.clone()).or_default();
-            }
+        // Every node of this show's with a loudspeaker is in `wanted`, if only with
+        // nothing, so a node whose last clip was taken off its timeline is emptied rather
+        // than ignored. See `managed_nodes` for why only this show's.
+        for serial in managed_nodes(&directory) {
+            wanted.entry(serial).or_default();
         }
 
         for timeline in &timelines {
@@ -752,9 +778,14 @@ impl AudioManager {
             if let Some(sha) = &uploading {
                 info!("[audio] uploading a clip to node {serial} ({sha:.12})");
             }
+            let sent = bytes.as_ref().map(|b| {
+                let sent = Arc::new(AtomicU64::new(0));
+                self.nodes.progress.insert(serial.clone(), (sent.clone(), b.len() as u64));
+                sent
+            });
             self.nodes.busy.insert(serial.clone(), uploading);
             tokio::spawn(async move {
-                let outcome = request(&http, &base, op, bytes).await;
+                let outcome = request(&http, &base, op, bytes, sent).await;
                 let _ = done.send(Done { serial, outcome }).await;
             });
         }
@@ -764,6 +795,7 @@ impl AudioManager {
     pub(super) async fn node_request_done(&mut self, done: Done) {
         let Done { serial, outcome } = done;
         self.nodes.busy.remove(&serial);
+        self.nodes.progress.remove(&serial);
         match outcome {
             Outcome::Listed(store) => {
                 self.forget_refusals_if_roomier(&serial, &store);
@@ -1056,12 +1088,45 @@ impl AudioManager {
                     bytes_total: store.map_or(0, |s| s.bytes_total),
                     bytes_free: store.map_or(0, |s| s.bytes_free),
                     uploading: self.nodes.busy.get(serial).cloned().flatten(),
+                    upload_sent: self.nodes.progress.get(serial).map_or(0, |(sent, _)| sent.load(Ordering::Relaxed)),
+                    upload_total: self.nodes.progress.get(serial).map_or(0, |(_, total)| *total),
+                    clips: self
+                        .nodes
+                        .made
+                        .iter()
+                        .filter(|((_, node), _)| node == serial)
+                        .map(|((clip, _), made)| (clip.to_string(), made.sha.clone()))
+                        .collect(),
                     pending: pending as u32,
                     streaming: self.nodes.streams.contains_key(serial),
                     fault,
                 },
             );
         }
+        if self.nodes.published.as_ref() != Some(&states) {
+            self.write_node_audio(&states).await;
+            self.nodes.published = Some(states);
+        }
+    }
+
+    /// Move the upload progress on in what was last said, a few times a second while
+    /// anything is uploading. On the steer tick, because nothing else wakes in the
+    /// middle of an upload: a request says nothing until it has finished.
+    pub(super) async fn say_upload_progress(&mut self) {
+        if self.nodes.progress.is_empty() {
+            return;
+        }
+        if self.nodes.progress_said.is_some_and(|said| said.elapsed() < PROGRESS_EVERY) {
+            return;
+        }
+        let Some(mut states) = self.nodes.published.clone() else { return };
+        for (serial, (sent, total)) in &self.nodes.progress {
+            if let Some(state) = states.get_mut(serial) {
+                state.upload_sent = sent.load(Ordering::Relaxed);
+                state.upload_total = *total;
+            }
+        }
+        self.nodes.progress_said = Some(Instant::now());
         if self.nodes.published.as_ref() != Some(&states) {
             self.write_node_audio(&states).await;
             self.nodes.published = Some(states);
@@ -1077,7 +1142,39 @@ impl AudioManager {
 }
 
 /// One request, made and answered.
-async fn request(http: &reqwest::Client, base: &str, op: Op, bytes: Option<Arc<Vec<u8>>>) -> Outcome {
+/// How often an upload's progress is written while it runs.
+const PROGRESS_EVERY: Duration = Duration::from_millis(250);
+
+/// How much of an upload is handed over at a time, and so how finely its progress moves.
+const UPLOAD_CHUNK: usize = 16 * 1024;
+
+/// An upload's bytes as a stream of chunks, counting into `sent` as each is taken.
+///
+/// Counted as the socket takes them, which is what a progress bar can know: the node
+/// answers only once it has the whole clip, and says nothing in between.
+fn counted_body(bytes: Arc<Vec<u8>>, sent: Arc<AtomicU64>) -> reqwest::Body {
+    let chunks = futures::stream::unfold(0usize, move |at| {
+        let bytes = bytes.clone();
+        let sent = sent.clone();
+        async move {
+            if at >= bytes.len() {
+                return None;
+            }
+            let end = (at + UPLOAD_CHUNK).min(bytes.len());
+            sent.store(end as u64, Ordering::Relaxed);
+            Some((Ok::<_, std::io::Error>(bytes[at..end].to_vec()), end))
+        }
+    });
+    reqwest::Body::wrap_stream(chunks)
+}
+
+async fn request(
+    http: &reqwest::Client,
+    base: &str,
+    op: Op,
+    bytes: Option<Arc<Vec<u8>>>,
+    sent: Option<Arc<AtomicU64>>,
+) -> Outcome {
     match op {
         Op::List(_) => {
             let response = match http.get(base).send().await {
@@ -1103,8 +1200,14 @@ async fn request(http: &reqwest::Client, base: &str, op: Op, bytes: Option<Arc<V
             })
         }
         Op::Upload { sha, .. } => {
-            let body = bytes.map(|b| b.as_ref().clone()).unwrap_or_default();
-            let length = body.len();
+            let bytes = bytes.unwrap_or_default();
+            let length = bytes.len();
+            let body = match sent {
+                Some(sent) => counted_body(bytes, sent),
+                None => reqwest::Body::from(bytes.as_ref().clone()),
+            };
+            // The length is said outright: a streamed body would otherwise go chunked,
+            // and the node needs to know before it starts how much room to find.
             let response = http
                 .put(format!("{base}/{sha}"))
                 .header("content-type", "audio/wav")

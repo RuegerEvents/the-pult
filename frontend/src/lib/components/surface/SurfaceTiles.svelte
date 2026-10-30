@@ -22,6 +22,7 @@
 		pressTarget,
 		targetExists,
 		tileLabel,
+		timeLeft,
 		timelineLength,
 		timelinePosition,
 		timelineProgress,
@@ -131,8 +132,7 @@
 				const where = position === null ? '' : ` · ${clock(position).slice(0, -3)}`;
 				// A loop is never done, so it has no countdown and no bar.
 				const progress = timelineProgress(position, timelineLength(timeline, fileMs));
-				// Rounded up, the way a countdown is read: it says 0:00 only once it is over.
-				const left = progress ? ` · −${clock(Math.ceil(progress.remainingMs / 1000) * 1000).slice(0, -3)}` : '';
+				const left = progress ? ` · ${timeLeft(progress.remainingMs)}` : '';
 				return {
 					text: (timeline.running ? 'Playing' : 'Stopped') + where + left,
 					color: timeline.running ? '#22c55e' : null,

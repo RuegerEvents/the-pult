@@ -132,7 +132,13 @@ CREATE TABLE IF NOT EXISTS layers (
 CREATE TABLE IF NOT EXISTS layouts (
     "id" TEXT NOT NULL PRIMARY KEY,
     "name" TEXT NOT NULL,
-    "tree" TEXT NOT NULL,
+    "width" REAL NOT NULL,
+    "height" REAL NOT NULL,
+    "grid" REAL NOT NULL,
+    "backdrop" TEXT,
+    "decay" TEXT NOT NULL,
+    "elements" TEXT NOT NULL,
+    "color" TEXT,
     "folder" TEXT
 );
 
@@ -335,6 +341,13 @@ CREATE TABLE IF NOT EXISTS versions (
     "user_id" TEXT,
     "automatic" INTEGER NOT NULL,
     "clock" TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS workspaces (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT NOT NULL,
+    "tree" TEXT NOT NULL,
+    "folder" TEXT
 );
 
 CREATE TABLE IF NOT EXISTS collection_order (

@@ -32,6 +32,7 @@ import Lightbulb from '@lucide/svelte/icons/lightbulb';
 import ListOrdered from '@lucide/svelte/icons/list-ordered';
 import ListTree from '@lucide/svelte/icons/list-tree';
 import MapIcon from '@lucide/svelte/icons/map';
+import MapPinned from '@lucide/svelte/icons/map-pinned';
 import Network from '@lucide/svelte/icons/network';
 import PanelRight from '@lucide/svelte/icons/panel-right';
 import Play from '@lucide/svelte/icons/play';
@@ -92,6 +93,7 @@ import PaperworkPanel from '$lib/components/paperwork/PaperworkPanel.svelte';
 import TimelinePanel from '$lib/components/timeline/TimelinePanel.svelte';
 import VariablesPanel from '$lib/components/VariablesPanel.svelte';
 import SurfacePanel from '$lib/components/surface/SurfacePanel.svelte';
+import LayoutPanel from '$lib/components/layouts/LayoutPanel.svelte';
 import InspectorPanel from '$lib/components/inspector/InspectorPanel.svelte';
 import AudioPanel from '$lib/components/audio/AudioPanel.svelte';
 import WingPanel from '$lib/components/wing/WingPanel.svelte';
@@ -191,6 +193,11 @@ export const PANELS = {
 	// locked it *is* the surface — a desk can press the same tiles — and `/surface/<id>`
 	// is the same component with no workspace round it.
 	surface: { title: 'Surfaces', component: SurfacePanel, fills: false, category: 'playback', icon: Smartphone },
+	// Drawings of somewhere with what is happening there painted on them: the maze with
+	// every contact lit while somebody is on it. A panel rather than an errand, because
+	// it is watched all night; `/layout/<id>` is the same drawing for a phone. Stage,
+	// beside the plan, because it is a picture of a place — its own, not the rig's.
+	layout: { title: 'Layouts', component: LayoutPanel, fills: true, category: 'stage', icon: MapPinned },
 	// The command wing. A panel and not a Setup errand: the encoder bar is what an
 	// operator reads while turning, the wing having no screen of its own, and a binding
 	// is made by touching the control in the middle of programming.

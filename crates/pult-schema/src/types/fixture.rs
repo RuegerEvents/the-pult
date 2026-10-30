@@ -988,6 +988,17 @@ pub struct Fixture {
     #[serde(default)]
     #[pult(lifecycle = SYNCED)]
     pub sensed_values: HashMap<String, ParameterValue>,
+    /// When each of `sensed_values` last *changed*, in console milliseconds, keyed the
+    /// same way.
+    ///
+    /// Stamped by the station that heard the device, and only on a change: a node
+    /// repeating the value it already reported moves nothing. What makes "somebody
+    /// was here thirty seconds ago" a reading every page agrees on — a page that only
+    /// noted when *it* saw a change would show nothing until the next one, and two
+    /// phones would disagree. A layout's decay reads it; see [`crate::types::layout`].
+    #[serde(default)]
+    #[pult(lifecycle = SYNCED)]
+    pub sensed_at: HashMap<String, u64>,
     /// What shape is driving each of this fixture's parameters, keyed by parameter
     /// key.
     ///

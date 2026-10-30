@@ -40,6 +40,7 @@ fn a_fixture(n: u128, name: &str, type_id: u128, parent: Option<u128>) -> Fixtur
         fixture_number: Some(n as u32),
         unit_number: None,
         sensed_values: HashMap::new(),
+        sensed_at: Default::default(),
         live_effects: HashMap::new(),
         live_fades: HashMap::new(),
         live_htp: Default::default(),

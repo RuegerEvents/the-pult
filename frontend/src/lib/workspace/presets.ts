@@ -1,5 +1,5 @@
 /**
- * The layouts that are always there.
+ * The workspaces that are always there.
  *
  * A console has to open onto something the first time it is used, and an operator
  * who has rearranged everything into a corner needs a way back. Presets are built in
@@ -10,10 +10,10 @@
  * is what a house rig's own arrangement should be.
  */
 
-import type { LayoutNode } from '$lib/generated/index.js';
-import { split, tabs } from '$lib/layout.js';
+import type { WorkspaceNode } from '$lib/generated/index.js';
+import { split, tabs } from '$lib/workspace.js';
 
-export type Preset = { key: string; name: string; tree: LayoutNode };
+export type Preset = { key: string; name: string; tree: WorkspaceNode };
 
 export const PRESETS: Preset[] = [
 	{

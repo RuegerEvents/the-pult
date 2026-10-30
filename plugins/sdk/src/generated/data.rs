@@ -948,6 +948,20 @@ impl FixtureEntity {
         self.at.field("sensed_values")
     }
 
+    /// When each of `sensed_values` last *changed*, in console milliseconds, keyed the
+    /// same way.
+    ///
+    /// Stamped by the station that heard the device, and only on a change: a node
+    /// repeating the value it already reported moves nothing. What makes "somebody
+    /// was here thirty seconds ago" a reading every page agrees on — a page that only
+    /// noted when *it* saw a change would show nothing until the next one, and two
+    /// phones would disagree. A layout's decay reads it; see [`crate::types::layout`].
+    ///
+    /// SYNCED.
+    pub fn sensed_at(&self) -> Field<HashMap<String, u64>> {
+        self.at.field("sensed_at")
+    }
+
     /// What shape is driving each of this fixture's parameters, keyed by parameter
     /// key.
     ///
@@ -2332,7 +2346,7 @@ impl LayerEntity {
 
 // ── layouts ─────────────────────────────────────────────────────────────
 
-/// One saved arrangement of the workspace.
+/// One drawing.
 ///
 /// The `layouts` collection.
 pub fn layouts() -> LayoutCollection {
@@ -2450,11 +2464,51 @@ impl LayoutEntity {
         self.at.field("name")
     }
 
-    /// The whole arrangement, as one JSON column.
+    /// The canvas, in its own units. The drawing keeps this aspect on any screen.
     ///
     /// PERSISTED.
-    pub fn tree(&self) -> Field<LayoutNode> {
-        self.at.field("tree")
+    pub fn width(&self) -> Field<f32> {
+        self.at.field("width")
+    }
+
+    /// PERSISTED.
+    pub fn height(&self) -> Field<f32> {
+        self.at.field("height")
+    }
+
+    /// What a dragged element snaps to, in canvas units. Zero is no snapping.
+    ///
+    /// PERSISTED.
+    pub fn grid(&self) -> Field<f32> {
+        self.at.field("grid")
+    }
+
+    /// A drawing somebody was handed, stretched over the canvas: the asset's sha256.
+    ///
+    /// PERSISTED.
+    pub fn backdrop(&self) -> Field<Option<String>> {
+        self.at.field("backdrop")
+    }
+
+    /// The layout's answer to how a reading decays; an element may say otherwise.
+    ///
+    /// PERSISTED.
+    pub fn decay(&self) -> Field<Decay> {
+        self.at.field("decay")
+    }
+
+    /// The elements, back to front, as one JSON column.
+    ///
+    /// PERSISTED.
+    pub fn elements(&self) -> Field<Vec<LayoutElement>> {
+        self.at.field("elements")
+    }
+
+    /// The card's color, as `#rrggbb`, or `None` for its panel category's color.
+    ///
+    /// PERSISTED.
+    pub fn color(&self) -> Field<Option<String>> {
+        self.at.field("color")
     }
 
     /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
@@ -4333,7 +4387,7 @@ impl SequenceEntity {
 /// One sheet of the paperwork.
 ///
 /// Seeded into a new show rather than being a built-in preset the way a
-/// [`super::layout::Layout`] is. The consequence, recorded because it will be asked
+/// [`super::workspace::Workspace`] is. The consequence, recorded because it will be asked
 /// about: a showfile made before this feature existed opens with no sheets and stays
 /// that way, and a show made today never picks up a later version's better defaults.
 ///
@@ -5461,15 +5515,6 @@ impl StationEntity {
     /// on an interface carrying 90 MB/s has a network problem that is not its fault,
     /// and one where the two figures agree has found its own.
     ///
-    /// How much decoded sound this station is holding, against what it may hold.
-    ///
-    /// Defaulted, and a `budget` of zero is a station on an older build that cannot say.
-    ///
-    /// SYNCED.
-    pub fn audio_cache(&self) -> Field<AudioCacheStats> {
-        self.at.field("audio_cache")
-    }
-
     /// Loopback is excluded. On a laptop running `demo.sh` every byte this console
     /// sends to itself would otherwise arrive twice — sent and received — and swamp
     /// the figure it is there to give.
@@ -6923,6 +6968,141 @@ impl VersionEntity {
     /// PERSISTED.
     pub fn clock(&self) -> Field<VectorClock> {
         self.at.field("clock")
+    }
+}
+
+// ── workspaces ──────────────────────────────────────────────────────────
+
+/// One saved arrangement of the panels.
+///
+/// The `workspaces` collection.
+pub fn workspaces() -> WorkspaceCollection {
+    WorkspaceCollection { at: Collection::at("workspaces") }
+}
+
+/// The `workspaces` collection, reached by [`workspaces()`].
+pub struct WorkspaceCollection {
+    at: Collection,
+}
+
+impl WorkspaceCollection {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// Every row, in the show's own order.
+    pub fn get(&self) -> Result<Vec<Workspace>, String> {
+        self.at.get()
+    }
+
+    /// One row by its id.
+    pub fn by_id(&self, id: Uuid) -> WorkspaceEntity {
+        WorkspaceEntity { at: self.at.by_id(id) }
+    }
+
+    /// One row by position in the collection's order.
+    pub fn nth(&self, index: usize) -> WorkspaceEntity {
+        WorkspaceEntity { at: self.at.nth(index) }
+    }
+
+    /// Add a row. One gesture, so it is one Ctrl-Z for whoever asked.
+    pub fn create(&self, value: &Workspace) -> Result<(), String> {
+        self.at.create(value)
+    }
+
+    /// Be told when the collection itself changes — a create, a delete.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe()
+    }
+
+    /// Be told about anything at or under the collection, a level moving
+    /// included.
+    pub fn subscribe_deep(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// Put something back where it rests when nothing is driving it.
+    ///
+    /// `programmer_values`. `{ "fixtureId": <uuid> }` sends every output parameter of
+    /// that fixture home, and naming a `parameterKind` as well sends just the one. The
+    /// station resolves it against what it holds, so a plugin can ask for home without
+    /// being able to read the rig.
+    pub fn home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__home", args)
+    }
+
+    /// Make where a parameter rests be wherever it is now.
+    ///
+    /// `fixtures`, and the same arguments as [`Self::home`] backwards. Evaluated at
+    /// the instant it is asked, which is why it is a verb and not a write.
+    pub fn take_home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__set_home", args)
+    }
+
+    /// Save: a point to come back to.
+    ///
+    /// `versions`. `{ "name": "Act 1" }`, and a quick Save gives no name. A verb
+    /// rather than a create because two of the row's fields are the engine's own.
+    pub fn checkpoint(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__checkpoint", args)
+    }
+}
+
+/// One `workspaces` row, reached by [`WorkspaceCollection::by_id`] or
+/// [`WorkspaceCollection::nth`].
+pub struct WorkspaceEntity {
+    at: Entity,
+}
+
+impl WorkspaceEntity {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// The whole row.
+    pub fn get(&self) -> Result<Workspace, String> {
+        self.at.get()
+    }
+
+    /// Replace the whole row.
+    pub fn set(&self, value: &Workspace) -> Result<(), String> {
+        self.at.set(value)
+    }
+
+    /// Delete the row.
+    pub fn delete(&self) -> Result<(), String> {
+        self.at.delete()
+    }
+
+    /// Be told when this row changes.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// PERSISTED.
+    pub fn id(&self) -> Field<Uuid> {
+        self.at.field("id")
+    }
+
+    /// PERSISTED.
+    pub fn name(&self) -> Field<String> {
+        self.at.field("name")
+    }
+
+    /// The whole arrangement, as one JSON column.
+    ///
+    /// PERSISTED.
+    pub fn tree(&self) -> Field<WorkspaceNode> {
+        self.at.field("tree")
+    }
+
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    ///
+    /// PERSISTED.
+    pub fn folder(&self) -> Field<Option<Uuid>> {
+        self.at.field("folder")
     }
 }
 

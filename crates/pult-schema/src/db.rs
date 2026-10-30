@@ -88,6 +88,31 @@ pub async fn upsert<T: PultSqlRow>(pool: &SqlitePool, entity: &T) -> Result<()> 
     Ok(())
 }
 
+/// Write the one row of a singleton table: this row, and no other.
+///
+/// A singleton is keyed by its own `id` like any row, so [`upsert`] alone leaves a row
+/// with a different id where it was: a follower handed the leader's show on joining
+/// kept its own beside it, and loading — which takes the first row — brought the
+/// stale one back at the next start (HHG, 2026-10-30). Upserted first and the others
+/// deleted after, so a write cut off between the two leaves two rows, as before, and
+/// never none.
+pub async fn replace_singleton<T: PultSqlRow>(pool: &SqlitePool, entity: &T) -> Result<()> {
+    let table = T::table_name().expect("replace_singleton requires an entity with a table name");
+    let pk = T::primary_key_field().expect("replace_singleton requires an entity with a primary key");
+    upsert(pool, entity).await?;
+    let at = T::column_names().iter().position(|c| *c == pk).expect("the primary key is a column");
+    let id = match entity.to_sql_values().swap_remove(at) {
+        crate::sql::SqlLiteral::Text(id) => id,
+        crate::sql::SqlLiteral::Int(id) => id.to_string(),
+        _ => return Ok(()),
+    };
+    sqlx::query(&format!("DELETE FROM {table} WHERE \"{pk}\" != ?1"))
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 pub async fn delete<T: PultSqlRow>(pool: &SqlitePool, id: Uuid) -> Result<()> {
     let table = T::table_name().expect("delete requires an entity with a table name");
     let pk = T::primary_key_field().expect("delete requires an entity with a primary key");

@@ -53,6 +53,18 @@ pub struct Config {
     /// second rig on top of somebody's work.
     #[serde(default)]
     pub demo: Option<crate::demo::Demo>,
+    /// Walk `show` up to this build's generation if it is older: somebody said to.
+    ///
+    /// Only for one start, like `demo`. Without it an older show is refused, and a
+    /// console that was opening it by itself comes up with no show open — an upgrade
+    /// is a one-way door, and see `infra::showfile::upgrade` for who opens it.
+    #[serde(skip)]
+    pub upgrade: bool,
+    /// A show this console was told to open and could not without an upgrade, which it
+    /// is now waiting for another station to have made. Said on the welcome screen;
+    /// set by `Console`, never by a caller.
+    #[serde(skip)]
+    pub waiting_to_upgrade: Option<std::path::PathBuf>,
     /// Seeds for the `outputs` collection, applied only to a show that has none.
     #[serde(default)]
     pub artnet: Vec<SocketAddr>,
@@ -131,6 +143,8 @@ impl Default for Config {
             identity: None,
             shows_dir: None,
             demo: None,
+            upgrade: false,
+            waiting_to_upgrade: None,
             artnet: Vec::new(),
             sacn: None,
             openhaunt_broker_port: default_broker_port(),

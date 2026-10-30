@@ -97,6 +97,7 @@ fn a_fixture() -> Fixture {
         address: FixtureAddress::dmx(1, 1),
         position: None,
         sensed_values: HashMap::new(),
+        sensed_at: Default::default(),
         live_effects: Default::default(),
         live_fades: Default::default(),
         live_htp: Default::default(),

@@ -17,13 +17,13 @@
 	import { initShowStores } from '$lib/stores/show.js';
 	import { identifyOnConnect } from '$lib/stores/user.js';
 	import { isTextField, redo, shortcutFor, undo } from '$lib/stores/undo.js';
-	import { restoreLayout } from '$lib/stores/layout.js';
+	import { restoreWorkspace } from '$lib/stores/workspace.js';
 	import { reportBrowserErrors } from '$lib/errors.js';
 	import { reportBrowserStats } from '$lib/stats.js';
 	import { frameMeter } from '$lib/stores/output.js';
 	import { beginSwitch, endSwitch, switching } from '$lib/stores/switching.js';
 	import { switchFromClose } from '$lib/switching.js';
-	import LayoutBar from '$lib/components/layout/LayoutBar.svelte';
+	import WorkspaceBar from '$lib/components/workspace/WorkspaceBar.svelte';
 	import Setup from '$lib/components/setup/Setup.svelte';
 	import { closeSetup, setupSection, toggleSetup } from '$lib/stores/setup.js';
 	import Verbs from '$lib/components/programmer/Verbs.svelte';
@@ -36,6 +36,7 @@
 	import { startTakeReview } from '$lib/stores/takeReview.js';
 	import { connection } from '$lib/stores/connection.js';
 	import { isSurfacePath } from '$lib/surface.js';
+	import { isLayoutPath } from '$lib/layoutView.js';
 	import CommandPalette from '$lib/components/CommandPalette.svelte';
 	import ContextMenu from '$lib/components/objects/ContextMenu.svelte';
 	import MoveToFolder from '$lib/components/objects/MoveToFolder.svelte';
@@ -59,9 +60,10 @@
 	 * it: no top bar, no keymap — Space is Go on a desk and a stray keyboard on a
 	 * phone must not be — and no cover over the page when the socket drops. The
 	 * surface draws its own disconnected state, over the last known values, because
-	 * a maze runner needs to see what the page last said and that it is stale.
+	 * a maze runner needs to see what the page last said and that it is stale. A
+	 * layout's shared page (`/layout/<id>`) is the same, for the same people.
 	 */
-	const chromeless = $derived(isSurfacePath(page.url.pathname));
+	const chromeless = $derived(isSurfacePath(page.url.pathname) || isLayoutPath(page.url.pathname));
 
 	// The backend serves this page, so where it is is where we came from. `?port=`
 	// still names a second station on the same host, which is what demo.sh --two
@@ -96,9 +98,9 @@
 	startWing();
 	// A recording this page armed opens its review here when it stops.
 	startTakeReview();
-	// Which tiles this browser had up last time. The layouts themselves are the
+	// Which tiles this browser had up last time. The workspaces themselves are the
 	// show's; which one is on screen is this operator's.
-	restoreLayout();
+	restoreWorkspace();
 	// What ⌘K can find: the panels, every object, the console's own verbs.
 	registerBuiltInCommands();
 	// And who this browser is, so its writes can be taken back. Said again on every
@@ -282,7 +284,7 @@
 			{#if $station?.show}
 				<span class="tb-sep"></span>
 				<ShowMenu show={$station.show} />
-				<LayoutBar />
+				<WorkspaceBar />
 				<span class="tb-sep"></span>
 				<!-- The three verbs, in the chrome rather than in a panel: an operator
 				     programming in the rig, in the plan or from the command line means the

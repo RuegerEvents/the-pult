@@ -141,6 +141,8 @@ pub enum ShowSwitch {
         /// hundred writes through an engine, and the engine that will hold this show
         /// does not exist until the station has started.
         demo: Option<demo::Demo>,
+        /// Walk an older show up to this build first: somebody was asked, and said so.
+        upgrade: bool,
     },
     Close,
     Restore {
@@ -181,6 +183,8 @@ pub struct ShowsHandle {
     tx: mpsc::Sender<ShowSwitch>,
     pub bundle: Option<Bundle>,
     pub shows_dir: Option<std::path::PathBuf>,
+    /// See `Config::waiting_to_upgrade`.
+    pub waiting_to_upgrade: Option<std::path::PathBuf>,
 }
 
 impl ShowsHandle {
@@ -189,7 +193,7 @@ impl ShowsHandle {
     /// the same shape `logging::detached` takes for a station with no log.
     pub fn detached() -> ShowsHandle {
         let (tx, _nobody) = mpsc::channel(1);
-        ShowsHandle { tx, bundle: None, shows_dir: None }
+        ShowsHandle { tx, bundle: None, shows_dir: None, waiting_to_upgrade: None }
     }
 
     /// Ask the console to do this next.
@@ -302,6 +306,17 @@ impl Running {
     }
 }
 
+/// How often a console waiting on an upgrade looks for a station that has made it.
+const LOOK_FOR_AN_UPGRADE_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// A show an upgrade would have to touch, as a console waits for it: where it is and
+/// which show it is. `None` where the file cannot say, which waits for nothing.
+async fn waiting_for(path: &std::path::Path) -> Option<(std::path::PathBuf, Vec<Uuid>)> {
+    let bundle = Bundle::open(path).ok()?;
+    let ids = showfile::upgrade::show_ids_of(&bundle.db_path()).await;
+    (!ids.is_empty()).then(|| (bundle.path().to_path_buf(), ids))
+}
+
 /// How long a station gets to stop tidily before it is stopped untidily.
 const STOPPING_WITHIN: std::time::Duration = std::time::Duration::from_secs(2);
 
@@ -318,13 +333,33 @@ const STOPPING_WITHIN: std::time::Duration = std::time::Duration::from_secs(2);
 pub struct Console {
     config: Config,
     running: Option<Running>,
+    /// The show this console could not open without an upgrade, and which show it is:
+    /// see [`Console::upgraded_elsewhere`].
+    waiting: Option<(std::path::PathBuf, Vec<Uuid>)>,
 }
 
 impl Console {
-    pub async fn start(config: Config) -> Result<Console> {
-        let running = start(config.clone()).await?;
+    pub async fn start(mut config: Config) -> Result<Console> {
+        let mut waiting = None;
+        let running = match start(config.clone()).await {
+            Ok(running) => running,
+            // A show this console was told to open by itself — a reboot, `--show` —
+            // that an upgrade would have to touch. Nobody is here to be asked, so it
+            // comes up with no show open: the welcome screen offers the upgrade, and
+            // the console waits for another station to have made it.
+            Err(e) if e.downcast_ref::<showfile::NeedsUpgrade>().is_some() => {
+                warn!("[shows] {e:#}");
+                let path = config.show.take().unwrap_or_default();
+                waiting = waiting_for(&path).await;
+                config.waiting_to_upgrade = waiting.as_ref().map(|(path, _)| path.clone());
+                start(config.clone()).await?
+            }
+            Err(e) => return Err(e),
+        };
+        config.upgrade = false;
+        config.waiting_to_upgrade = None;
         remember_this_show(&running);
-        Ok(Console { config, running: Some(running) })
+        Ok(Console { config, running: Some(running), waiting })
     }
 
     /// The show acts, for a caller that has no browser to take one from — a test,
@@ -357,6 +392,14 @@ impl Console {
         self.running.as_ref().map(|running| running.sync.clone())
     }
 
+    /// Where the running station's sync link listens, for a caller joining another
+    /// station to it.
+    pub fn sync_addr(&self) -> SocketAddr {
+        self.running.as_ref().map(|r| r.sync_addr).unwrap_or_else(|| {
+            SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 0))
+        })
+    }
+
     pub fn http_addr(&self) -> SocketAddr {
         self.running.as_ref().map(|r| r.http_addr).unwrap_or_else(|| {
             SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 0))
@@ -366,8 +409,10 @@ impl Console {
     /// Run until the HTTP server stops, opening whatever shows it is asked for on
     /// the way.
     pub async fn serve(mut self) -> Result<()> {
+        let mut look = tokio::time::interval(LOOK_FOR_AN_UPGRADE_EVERY);
         loop {
             let asked = {
+                let waiting = self.waiting.is_some();
                 let Some(running) = self.running.as_mut() else { return Ok(()) };
                 tokio::select! {
                     served = &mut running.serve => return served?,
@@ -376,15 +421,68 @@ impl Console {
                         // Nothing can ask any more, which means the station is gone.
                         None => return Ok(()),
                     },
+                    _ = look.tick(), if waiting => match self.upgraded_elsewhere().await {
+                        Some(asked) => asked,
+                        None => continue,
+                    },
                 }
             };
             self.switch_to(asked).await?;
         }
     }
 
+    /// Whether the show this console is waiting on has been upgraded by another
+    /// station, and if so the act that opens it here.
+    ///
+    /// **One station's yes is the show's.** The user asked for it that way: the
+    /// question "upgrade this show?" is about the show, and asking it again at every
+    /// station in the rig is three dialogs for one decision, one of them on a Pi
+    /// nobody has a screen on. Two ways to know, and both mean a station *on this
+    /// build* runs the show: a session advertising it at this generation (an advert
+    /// from an older build says no generation, so a deploy half done upgrades
+    /// nothing), or the remembered leader's show arriving over a sync link — which
+    /// only links at all between stations of one protocol, and so of one generation.
+    async fn upgraded_elsewhere(&self) -> Option<ShowSwitch> {
+        let (path, show_ids) = self.waiting.clone()?;
+        let engine = &self.running.as_ref()?.engine;
+
+        use pult_schema::path::PathSegment;
+        let session = engine.get(vec![PathSegment::Key("session".into())]).await.ok();
+        let advertised = session
+            .and_then(|s| serde_json::from_value::<pult_schema::types::session::SessionState>(s).ok())
+            .and_then(|s| {
+                s.discovered.into_iter().find(|d| {
+                    show_ids.contains(&d.show_id) && d.generation == Some(showfile::upgrade::CURRENT)
+                })
+            });
+        let linked = engine
+            .get(vec![PathSegment::Key("show".into())])
+            .await
+            .ok()
+            .and_then(|show| serde_json::from_value::<Uuid>(show["id"].clone()).ok())
+            .is_some_and(|id| show_ids.contains(&id));
+        if advertised.is_none() && !linked {
+            return None;
+        }
+        info!(
+            "[shows] another station on this build runs {}: upgrading it here too",
+            path.display()
+        );
+        Some(ShowSwitch::Open {
+            path,
+            then_join: advertised.map(|d| d.session_id),
+            demo: None,
+            upgrade: true,
+        })
+    }
+
     async fn switch_to(&mut self, asked: ShowSwitch) -> Result<()> {
         let Some(running) = self.running.take() else { return Ok(()) };
         let was = self.config.show.clone();
+        // Whatever this act is, it answers what the console was waiting for — an
+        // upgrade made here, or a different show opened instead.
+        self.waiting = None;
+        self.config.waiting_to_upgrade = None;
 
         // The ports the OS actually gave out, pinned before the listener goes: a
         // console started with `--port 0` must not move to a different port every
@@ -397,8 +495,9 @@ impl Console {
 
         let mut then_join = None;
         match asked {
-            ShowSwitch::Open { path, then_join: join, demo } => {
+            ShowSwitch::Open { path, then_join: join, demo, upgrade } => {
                 self.config.show = Some(path);
+                self.config.upgrade = upgrade;
                 // Only for this start. A demo is seeded once into a show with no rig
                 // in it, and leaving the flag on would mean every later restart
                 // trying again — which the seeder itself refuses, but which would
@@ -436,6 +535,7 @@ impl Console {
 
         let starting = self.config.clone();
         self.config.demo = None;
+        self.config.upgrade = false;
         let running = match start(starting).await {
             Ok(running) => running,
             Err(e) => {
@@ -490,7 +590,11 @@ pub async fn start(config: Config) -> Result<Running> {
         None => None,
     };
     let pool = Arc::new(match &bundle {
-        Some(bundle) => showfile::open(&bundle.db_path()).await?,
+        Some(bundle) => {
+            let upgrade =
+                if config.upgrade { showfile::Upgrade::InPlace } else { showfile::Upgrade::No };
+            showfile::open_with(&bundle.db_path(), upgrade).await?
+        }
         None => showfile::open_in_memory().await?,
     });
     // Opened after `open` has migrated the file, and never used for reading.
@@ -589,6 +693,7 @@ pub async fn start(config: Config) -> Result<Running> {
         tx: switch_tx,
         bundle: bundle.clone(),
         shows_dir: shows_dir(&config),
+        waiting_to_upgrade: config.waiting_to_upgrade.clone(),
     };
 
     let log_watchers = crate::logging::Watchers::default();

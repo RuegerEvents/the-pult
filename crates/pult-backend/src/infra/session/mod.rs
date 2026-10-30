@@ -920,6 +920,7 @@ impl SessionManager {
         props.insert("show_name".to_string(), show_name);
         props.insert("node_id".to_string(), self.node_id.0.to_string());
         props.insert("leader_node_id".to_string(), self.node_id.0.to_string());
+        props.insert("generation".to_string(), crate::infra::showfile::upgrade::CURRENT.to_string());
 
         let info = match self.advertise_at {
             Some(ip) => ServiceInfo::new(SERVICE_TYPE, &instance_name, &hostname, IpAddr::V4(ip), self.sync_port, props),
@@ -952,6 +953,7 @@ impl SessionManager {
                 let show_name = props.get("show_name").map(|v| v.val_str().to_string()).unwrap_or_default();
                 let node_id = props.get("node_id").and_then(|v| v.val_str().parse::<Uuid>().ok()).map(NodeId);
                 let leader_node_id = props.get("leader_node_id").and_then(|v| v.val_str().parse::<Uuid>().ok()).map(NodeId);
+                let generation = props.get("generation").and_then(|v| v.val_str().parse::<i64>().ok());
 
                 if let (Some(session_id), Some(show_id), Some(node_id), Some(leader_node_id)) =
                     (session_id, show_id, node_id, leader_node_id)
@@ -991,12 +993,14 @@ impl SessionManager {
                     if let Some(existing) = self.state.discovered.iter_mut().find(|d| d.session_id == session_id) {
                         existing.show_name = show_name;
                         existing.sync_addr = sync_addr.to_string();
+                        existing.generation = generation;
                     } else {
                         self.state.discovered.push(DiscoveredSession {
                             session_id,
                             show_id,
                             show_name,
                             sync_addr: sync_addr.to_string(),
+                            generation,
                         });
                     }
                     self.push_state().await;

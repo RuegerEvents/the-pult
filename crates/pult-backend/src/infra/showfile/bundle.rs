@@ -279,6 +279,8 @@ impl Bundle {
 
         let generation: i64 =
             sqlx::query_scalar("PRAGMA user_version").fetch_one(&pool).await.unwrap_or(0);
+        summary.generation = Some(generation);
+        summary.upgradable = super::upgrade::upgradable(generation);
         if generation != super::SCHEMA_GENERATION {
             summary.made_by_another_build = true;
             // Nothing below can be trusted to parse, but the counts are integers out
@@ -347,6 +349,11 @@ pub struct Summary {
     /// `PRAGMA user_version` disagrees with this build. Said rather than refused: a
     /// welcome screen listing ten shows must not fail because one of them is old.
     pub made_by_another_build: bool,
+    /// Which generation it is, where it could be read.
+    pub generation: Option<i64>,
+    /// Older than this build, and a step reaches it: opening it asks first. See
+    /// `infra::showfile::upgrade`.
+    pub upgradable: bool,
     /// Whatever went wrong reading it, where something did.
     pub problem: Option<String>,
 }

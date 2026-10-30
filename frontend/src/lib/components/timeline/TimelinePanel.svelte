@@ -39,9 +39,9 @@
 	import TimelineList from './TimelineList.svelte';
 	import Transport from './Transport.svelte';
 	import { timelineOfItem } from '$lib/kinds/timeline.kind.js';
-	import { panelsShown } from '$lib/layout.js';
+	import { panelsShown } from '$lib/workspace.js';
 	import { selectSubject, subject, subjectRows } from '$lib/objects.js';
-	import { maximized, revealPanel, tree } from '$lib/stores/layout.js';
+	import { maximized, revealPanel, tree } from '$lib/stores/workspace.js';
 	import { canEdit } from '$lib/stores/showLock.js';
 	import { beginGesture, endGesture } from '$lib/stores/gesture.js';
 	import { firstDestination } from '$lib/stores/zones.js';

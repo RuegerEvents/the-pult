@@ -2052,6 +2052,12 @@ impl ShowEngine {
             .cloned()
             .ok_or_else(|| BackendError::PathNotFound(path.clone()))?;
         let previous = values.get(&key).cloned();
+        // A repeat is not a change, and the stamp says when the value last *changed*:
+        // a node restating a closed contact every heartbeat must not keep a layout's
+        // decay from ever starting. Nor is a first report: after a restart every node
+        // reports in, and a contact whose first word is "off" would otherwise read as
+        // one somebody just stepped off — the whole maze glowing for half a minute.
+        let changed = previous.as_ref().is_some_and(|before| before != &value);
         set_field(&mut values, &key, value.clone());
 
         // Queued for the next flow pass rather than read back from the state there, so
@@ -2065,16 +2071,34 @@ impl ShowEngine {
             });
         }
 
-        self.apply_set(path.clone(), values.clone(), Lifecycle::Synced).await?;
-        self.record_write(&path, &values, Lifecycle::Synced);
-        self.log_local_write(&path, &values, Lifecycle::Synced, &Authorship::none()).await;
-        self.broadcast_after_set(&path, values.clone());
-        if let Some(sync) = &self.sync {
-            sync.broadcast_synced(path, values, self.clock.clone(), Authorship::none()).await;
+        self.write_sensed(path, values).await?;
+        if changed {
+            let at_path = entity_field_path("fixtures", fixture_id, "sensed_at");
+            let mut stamps = self
+                .state
+                .entity("fixtures", fixture_id)
+                .and_then(|entity| entity.get("sensed_at"))
+                .cloned()
+                .filter(serde_json::Value::is_object)
+                .unwrap_or_else(|| serde_json::json!({}));
+            set_field(&mut stamps, &key, serde_json::json!(pult_schema::clock::now_ms()));
+            self.write_sensed(at_path, stamps).await?;
         }
         // The output side has to see it now: an input can arrive between two passes,
         // and a relay that follows a button should not wait for the next one.
         self.push_output(vec![fixture_id]).await;
+        Ok(())
+    }
+
+    /// One SYNCED write of a fixture's sensed state, unattributed, replicated.
+    async fn write_sensed(&mut self, path: Path, value: serde_json::Value) -> Result<(), BackendError> {
+        self.apply_set(path.clone(), value.clone(), Lifecycle::Synced).await?;
+        self.record_write(&path, &value, Lifecycle::Synced);
+        self.log_local_write(&path, &value, Lifecycle::Synced, &Authorship::none()).await;
+        self.broadcast_after_set(&path, value.clone());
+        if let Some(sync) = &self.sync {
+            sync.broadcast_synced(path, value, self.clock.clone(), Authorship::none()).await;
+        }
         Ok(())
     }
 

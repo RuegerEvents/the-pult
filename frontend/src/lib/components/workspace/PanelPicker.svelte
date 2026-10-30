@@ -13,11 +13,11 @@
 
 	import Dialog from '$lib/components/Dialog.svelte';
 	import { focusOnMount } from '$lib/actions.js';
-	import { CATEGORIES } from '$lib/layout/categories.js';
-	import { flatEntries, pickerColumns, type PickerEntry } from '$lib/layout/picker.js';
-	import type { Path } from '$lib/layout.js';
-	import { panelsIn } from '$lib/layout.js';
-	import { openPanel, revealPanel, tree } from '$lib/stores/layout.js';
+	import { CATEGORIES } from '$lib/workspace/categories.js';
+	import { flatEntries, pickerColumns, type PickerEntry } from '$lib/workspace/picker.js';
+	import type { Path } from '$lib/workspace.js';
+	import { panelsIn } from '$lib/workspace.js';
+	import { openPanel, revealPanel, tree } from '$lib/stores/workspace.js';
 	import { allPanels } from '$lib/stores/plugins.js';
 	import { openSetup } from '$lib/stores/setup.js';
 

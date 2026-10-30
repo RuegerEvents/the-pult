@@ -1,6 +1,7 @@
 import { describe as group, expect, it } from 'vitest';
 
 import {
+	upgradeAsked,
 	asSize,
 	baseName,
 	describe,
@@ -132,5 +133,23 @@ group('the links', () => {
 
 	it('offer nothing when the binary was built without one', () => {
 		expect(links('')).toEqual([]);
+	});
+});
+
+group('an upgrade the station asks about', () => {
+	it('is an answer, not an error', () => {
+		expect(upgradeAsked({ needsUpgrade: { from: 9, to: 10 } })).toEqual({ from: 9, to: 10 });
+	});
+
+	it('is nothing on an ordinary answer', () => {
+		expect(upgradeAsked({ ok: true })).toBeNull();
+		expect(upgradeAsked(null)).toBeNull();
+		expect(upgradeAsked({ needsUpgrade: { from: '9' } })).toBeNull();
+	});
+
+	it('is what a card says before anything else it could say', () => {
+		expect(describe({ path: '/a', name: 'A', upgradable: true, madeByAnotherBuild: true })).toBe(
+			'needs upgrading to open here'
+		);
 	});
 });

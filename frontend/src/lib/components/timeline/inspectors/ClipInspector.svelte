@@ -16,8 +16,8 @@
 
 	import type { AudioClip, AudioDestination, SpeakerZone } from '$lib/generated/index.js';
 	import type { ClipRow } from '$lib/kinds/timeline.kind.js';
-	import { categoryColor } from '$lib/layout/categories.js';
-	import { audioNodes, bytesText, nodeOf, zoneOf } from '$lib/destination.js';
+	import { categoryColor } from '$lib/workspace/categories.js';
+	import { audioNodes, bytesText, clipOnNode, clipOnNodeText, nodeOf, zoneOf } from '$lib/destination.js';
 	import Dialog from '$lib/components/Dialog.svelte';
 	import { canEdit } from '$lib/stores/showLock.js';
 	import { openSetup } from '$lib/stores/setup.js';
@@ -273,6 +273,26 @@
 					onclick={() => storedShared === true || (confirmingStore = true)}>Stored</button
 				>
 			</div>
+			<!-- Where each stored clip is on each of the zone's nodes, while it gets there
+			     and after: a clip that says Stored and is not on the node plays nothing. -->
+			{#each rows.filter((r) => r.clip.stored) as row (row.id)}
+				{#each zone.nodes as member (member.serial)}
+					{@const on = clipOnNode($nodeAudio?.[member.serial], row.id)}
+					{@const nodeName = nodes.find((n) => n.serial === member.serial)?.name ?? member.serial}
+					<span></span>
+					<div class="on-node">
+						<span
+							class:says-good={on.kind === 'stored'}
+							class:says-bad={on.kind === 'refused'}
+							class:says-warn={on.kind === 'unknown'}
+							>{rows.length > 1 ? `${row.name}, ` : ''}{nodeName}: {clipOnNodeText(on)}</span
+						>
+						{#if on.kind === 'uploading'}
+							<progress max="1" value={on.fraction}></progress>
+						{/if}
+					</div>
+				{/each}
+			{/each}
 		{/if}
 		<span class="label">Output</span>
 		{#if $audioOutput?.open}
@@ -305,7 +325,7 @@
 			<span class="label">The node</span>
 			<span class="note">
 				{store.stored.length} clip{store.stored.length === 1 ? '' : 's'} on it, {bytesText(store.bytes_free)} free{store.uploading
-					? ' · uploading…'
+					? ` · uploading${store.upload_total ? ` ${Math.floor((100 * store.upload_sent) / store.upload_total)}%` : '…'}`
 					: ''}{store.streaming ? ' · streaming' : ''}
 			</span>
 		{/if}
@@ -398,5 +418,16 @@
 	.target.on {
 		border-color: var(--accent-solid);
 		background: color-mix(in srgb, var(--accent-solid) 18%, var(--bg-sunken));
+	}
+	.on-node {
+		display: flex;
+		flex-direction: column;
+		gap: 3px;
+		font-size: var(--font-xs);
+	}
+	.on-node progress {
+		width: 100%;
+		height: 6px;
+		accent-color: var(--accent);
 	}
 </style>

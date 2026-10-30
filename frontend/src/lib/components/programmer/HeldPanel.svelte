@@ -16,7 +16,7 @@
 	import type { EffectSpec } from '$lib/generated/index.js';
 	import { displayLabel, formatValue } from '$lib/patch.js';
 	import { collection } from '$lib/stores/show.js';
-	import { revealPanel } from '$lib/stores/layout.js';
+	import { revealPanel } from '$lib/stores/workspace.js';
 	import { clear, entries, lockAll, remove, removeEffect, toggleLock } from '$lib/stores/programmer.js';
 	import { rgbToHex } from '$lib/programmer.js';
 	import Lock from '@lucide/svelte/icons/lock';

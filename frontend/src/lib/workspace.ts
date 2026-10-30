@@ -21,7 +21,7 @@
  *   so closing the last panel of a tile removes the tile rather than leaving a hole.
  */
 
-import type { LayoutNode, SplitDirection } from './generated/index.js';
+import type { WorkspaceNode, SplitDirection } from './generated/index.js';
 
 export type Path = number[];
 /** Where a dropped panel goes relative to the tile it was dropped on. */
@@ -30,7 +30,7 @@ export type DropSide = 'left' | 'right' | 'top' | 'bottom' | 'center';
 /** No tile may be squeezed below a tenth of its split, so it stays grabbable. */
 const MIN_SHARE = 0.1;
 
-export const tabs = (panels: string[], active = 0): LayoutNode => ({
+export const tabs = (panels: string[], active = 0): WorkspaceNode => ({
 	type: 'Tabs',
 	panels,
 	active
@@ -38,9 +38,9 @@ export const tabs = (panels: string[], active = 0): LayoutNode => ({
 
 export const split = (
 	direction: SplitDirection,
-	children: LayoutNode[],
+	children: WorkspaceNode[],
 	sizes?: number[]
-): LayoutNode => ({
+): WorkspaceNode => ({
 	type: 'Split',
 	direction,
 	sizes: normalize(sizes ?? children.map(() => 1)),
@@ -50,8 +50,8 @@ export const split = (
 // ── Reading ───────────────────────────────────────────────────────────────────
 
 /** The node at a path, or null if the path does not lead anywhere. */
-export function leafAt(tree: LayoutNode, path: Path): LayoutNode | null {
-	let node: LayoutNode = tree;
+export function leafAt(tree: WorkspaceNode, path: Path): WorkspaceNode | null {
+	let node: WorkspaceNode = tree;
 	for (const index of path) {
 		if (node.type !== 'Split') return null;
 		const child = node.children[index];
@@ -62,7 +62,7 @@ export function leafAt(tree: LayoutNode, path: Path): LayoutNode | null {
 }
 
 /** Every panel the tree holds, in the order it holds them. */
-export function panelsIn(tree: LayoutNode): string[] {
+export function panelsIn(tree: WorkspaceNode): string[] {
 	return tree.type === 'Tabs' ? [...tree.panels] : tree.children.flatMap(panelsIn);
 }
 
@@ -71,7 +71,7 @@ export function panelsIn(tree: LayoutNode): string[] {
  * tab is in the layout and shows nothing, which is the difference a panel deciding
  * whether to stand in for another one has to know.
  */
-export function panelsShown(tree: LayoutNode): string[] {
+export function panelsShown(tree: WorkspaceNode): string[] {
 	if (tree.type === 'Tabs') return tree.panels.length ? [tree.panels[Math.min(tree.active, tree.panels.length - 1)]] : [];
 	return tree.children.flatMap(panelsShown);
 }
@@ -83,7 +83,7 @@ export function panelsShown(tree: LayoutNode): string[] {
  * *outside* the tree asks where a panel went, which is what "open this panel" has to
  * know before it can decide between opening one and bringing one forward.
  */
-export function findPanel(tree: LayoutNode, panel: string): Path | null {
+export function findPanel(tree: WorkspaceNode, panel: string): Path | null {
 	if (tree.type === 'Tabs') return tree.panels.includes(panel) ? [] : null;
 	for (const [index, child] of tree.children.entries()) {
 		const found = findPanel(child, panel);
@@ -95,7 +95,7 @@ export function findPanel(tree: LayoutNode, panel: string): Path | null {
 // ── Changing ──────────────────────────────────────────────────────────────────
 
 /** Put a panel in the tab group at `path`, or bring it forward if it is there. */
-export function addTab(tree: LayoutNode, path: Path, panel: string): LayoutNode {
+export function addTab(tree: WorkspaceNode, path: Path, panel: string): WorkspaceNode {
 	return tidy(
 		replaceAt(tree, path, (node) => {
 			if (node.type !== 'Tabs') return node;
@@ -108,11 +108,11 @@ export function addTab(tree: LayoutNode, path: Path, panel: string): LayoutNode 
 
 /** Divide the tile at `path` and put a panel in the new half. */
 export function splitLeaf(
-	tree: LayoutNode,
+	tree: WorkspaceNode,
 	path: Path,
 	side: Exclude<DropSide, 'center'>,
 	panel: string
-): LayoutNode {
+): WorkspaceNode {
 	const direction: SplitDirection = side === 'left' || side === 'right' ? 'Row' : 'Column';
 	const fresh = tabs([panel]);
 	return tidy(
@@ -123,7 +123,7 @@ export function splitLeaf(
 }
 
 /** Take a panel out of the tab group at `path`. */
-export function removePanel(tree: LayoutNode, path: Path, panel: string): LayoutNode {
+export function removePanel(tree: WorkspaceNode, path: Path, panel: string): WorkspaceNode {
 	return tidy(withoutPanel(tree, path, panel));
 }
 
@@ -135,11 +135,11 @@ export function removePanel(tree: LayoutNode, path: Path, panel: string): Layout
  * tile the panel came from and renumber everything after it.
  */
 export function movePanel(
-	tree: LayoutNode,
+	tree: WorkspaceNode,
 	from: { path: Path; panel: string },
 	to: Path,
 	side: DropSide
-): LayoutNode {
+): WorkspaceNode {
 	const target = leafAt(tree, to);
 	if (!target || target.type !== 'Tabs') return tree;
 
@@ -169,11 +169,11 @@ export function movePanel(
  * cannot be dragged out of existence — the way to close one is to close it.
  */
 export function resize(
-	tree: LayoutNode,
+	tree: WorkspaceNode,
 	path: Path,
 	gutter: number,
 	delta: number
-): LayoutNode {
+): WorkspaceNode {
 	return replaceAt(tree, path, (node) => {
 		if (node.type !== 'Split') return node;
 		const before = node.sizes[gutter];
@@ -191,10 +191,10 @@ export function resize(
 // ── Machinery ─────────────────────────────────────────────────────────────────
 
 function replaceAt(
-	tree: LayoutNode,
+	tree: WorkspaceNode,
 	path: Path,
-	change: (node: LayoutNode) => LayoutNode
-): LayoutNode {
+	change: (node: WorkspaceNode) => WorkspaceNode
+): WorkspaceNode {
 	if (path.length === 0) return change(tree);
 	if (tree.type !== 'Split') return tree;
 	const [index, ...rest] = path;
@@ -206,7 +206,7 @@ function replaceAt(
 }
 
 /** Take a panel out, leaving the tree the shape it was — empty tiles and all. */
-function withoutPanel(tree: LayoutNode, path: Path, panel: string): LayoutNode {
+function withoutPanel(tree: WorkspaceNode, path: Path, panel: string): WorkspaceNode {
 	return replaceAt(tree, path, (node) => {
 		if (node.type !== 'Tabs') return node;
 		const at = node.panels.indexOf(panel);
@@ -222,10 +222,10 @@ function withoutPanel(tree: LayoutNode, path: Path, panel: string): LayoutNode {
  * Every operation ends here rather than each one worrying about it, which is why
  * they can all be written as "put this node there".
  */
-export function tidy(node: LayoutNode): LayoutNode {
+export function tidy(node: WorkspaceNode): WorkspaceNode {
 	if (node.type === 'Tabs') return node;
 
-	const children: LayoutNode[] = [];
+	const children: WorkspaceNode[] = [];
 	const sizes: number[] = [];
 	const even = 1 / Math.max(node.children.length, 1);
 

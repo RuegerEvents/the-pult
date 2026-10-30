@@ -444,11 +444,39 @@ async fn a_station_that_has_just_started_is_sent_a_snapshot_whatever_its_clock_s
 #[tokio::test]
 async fn a_restarted_leader_keeps_its_show_and_takes_what_is_running() {
     let leader = a_node().await;
-    let renamed = a_sequence("Renamed");
+    let renamed = a_sequence("Old name");
     create(&leader, &renamed).await;
 
+    // The stand-in heard the sequence made and nothing after it — it heard it *from
+    // the leader*, which is what makes the rename later than what it holds. Written by
+    // the stand-in itself, the old name would be a concurrent edit, and which of two
+    // concurrent edits wins is the higher node id: a coin toss between two random ids,
+    // which is how this test used to fail two runs in three.
     let stand_in = a_node_following(0, true, Some(leader.id)).await;
-    create(&stand_in, &Sequence { name: "Old name".into(), ..renamed.clone() }).await;
+    let then = leader.engine.get_clock().await;
+    let heard = Operation {
+        id: Uuid::new_v4(),
+        node_id: leader.id,
+        seq: then.0.get(&leader.id).copied().unwrap_or(1),
+        clock: then,
+        lifecycle: Lifecycle::Persisted,
+        path: vec![PathSegment::Key("sequences".into()), PathSegment::Key("__create".into())],
+        value: serde_json::to_value(&renamed).unwrap(),
+        timestamp: Utc::now(),
+        user_id: None,
+        previous: None,
+        undoes: None,
+        gesture: None,
+    };
+    stand_in.engine.0.send(EngineCommand::ApplyPeerOperation(heard)).await.unwrap();
+    assert_eq!(name_of(&stand_in, renamed.id).await.as_deref(), Some("Old name"));
+
+    // The rename the stand-in never hears about.
+    leader
+        .engine
+        .set(seq_path(renamed.id, "name"), Lifecycle::Persisted, serde_json::json!("Renamed"))
+        .await
+        .unwrap();
     let added = a_sequence("Made while the leader was away");
     create(&stand_in, &added).await;
 
@@ -944,6 +972,7 @@ async fn a_sensor_reading_on_the_leader_reaches_the_follower() {
         address: FixtureAddress::node("1a2b3c", None),
         position: None,
         sensed_values: Default::default(),
+        sensed_at: Default::default(),
         live_effects: Default::default(),
         live_fades: Default::default(),
         live_htp: Default::default(),

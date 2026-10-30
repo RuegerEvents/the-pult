@@ -297,7 +297,13 @@ const KEPT_BY_A_RESTORE: &[&str] = &["versions", "users"];
 /// The snapshot is read through a copy opened the way a show is opened, so a file from
 /// another generation is refused by name and a field added since is filled in, exactly
 /// as opening it would.
-pub async fn restore_in_place(bundle: &Bundle, version: Uuid, engine: &EngineHandle, user: Uuid) -> Result<usize> {
+pub async fn restore_in_place(
+    bundle: &Bundle,
+    version: Uuid,
+    upgrade: bool,
+    engine: &EngineHandle,
+    user: Uuid,
+) -> Result<usize> {
     use pult_schema::{path::PathSegment, registry::EntityMeta};
 
     let from = bundle.version_path(version);
@@ -309,7 +315,9 @@ pub async fn restore_in_place(bundle: &Bundle, version: Uuid, engine: &EngineHan
     }
     let scratch = std::env::temp_dir().join(format!("pult-restore-{}.db", Uuid::new_v4()));
     std::fs::copy(&from, &scratch).with_context(|| format!("reading {}", from.display()))?;
-    let then = read_rows(&scratch).await;
+    // The copy, never the snapshot: a version stays the file it was taken as, and an
+    // older build can still restore it.
+    let then = read_rows(&scratch, upgrade).await;
     for suffix in ["", "-wal", "-shm"] {
         let _ = std::fs::remove_file(format!("{}{suffix}", scratch.display()));
     }
@@ -337,9 +345,10 @@ pub async fn restore_in_place(bundle: &Bundle, version: Uuid, engine: &EngineHan
 }
 
 /// Every stored collection of a showfile, by table, as the engine serves them.
-async fn read_rows(path: &Path) -> Result<serde_json::Map<String, serde_json::Value>> {
+async fn read_rows(path: &Path, upgrade: bool) -> Result<serde_json::Map<String, serde_json::Value>> {
     use pult_schema::registry::EntityMeta;
-    let pool = super::open(path).await.context("opening the version")?;
+    let upgrade = if upgrade { super::Upgrade::Scratch } else { super::Upgrade::No };
+    let pool = super::open_with(path, upgrade).await.context("opening the version")?;
     let mut out = serde_json::Map::new();
     for meta in EntityMeta::all_with_tables() {
         let (Some(table), Some(load)) = (meta.table_name, meta.load_all) else { continue };

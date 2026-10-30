@@ -435,6 +435,7 @@ impl AudioManager {
                     self.steer().await;
                     self.feed_monitors(pult_schema::clock::now_ms()).await;
                     self.schedule_nodes(pult_schema::clock::now_ms());
+                    self.say_upload_progress().await;
                 }
                 _ = report.tick() => {
                     // Where a device appearing or disappearing is acted on, and where a

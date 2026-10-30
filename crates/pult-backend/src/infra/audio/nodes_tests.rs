@@ -523,3 +523,57 @@ async fn a_stream_moves_the_moment_net_says_the_node_has() {
     let said = stream_messages(&mut commands);
     assert!(said.iter().all(|(op, s)| op == "start" && *s == Some(ssrc)), "no stop and no new start: {said:?}");
 }
+
+#[test]
+fn only_this_shows_nodes_have_their_clips_kept() {
+    // A node another show adopted, found by this station's browse: never in `wanted`,
+    // so never emptied of clips somebody else stored on it.
+    let mut directory = a_streamed_node("10.0.0.5", 5004, 48_000);
+    let mine = directory.entries["n1"].clone();
+    let mut theirs = mine.clone();
+    theirs.adopted = false;
+    directory.entries.insert("n2".into(), theirs);
+    let mut off = mine.clone();
+    off.online = false;
+    directory.entries.insert("n3".into(), off);
+
+    assert_eq!(managed_nodes(&directory), vec!["n1".to_string()]);
+}
+
+#[tokio::test]
+async fn an_upload_says_its_length_and_counts_what_it_sent() {
+    use axum::{body::Bytes, http::HeaderMap, routing::put, Router};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    // A node, as far as an upload is concerned: what length it was told, and what came.
+    let (told, got) = (Arc::new(Mutex::new(None::<String>)), Arc::new(Mutex::new(Vec::<u8>::new())));
+    let (t, g) = (told.clone(), got.clone());
+    let app = Router::new().route(
+        "/clips/{sha}",
+        put(move |headers: HeaderMap, body: Bytes| async move {
+            *t.lock().unwrap() = headers.get("content-length").and_then(|v| v.to_str().ok()).map(str::to_string);
+            *g.lock().unwrap() = body.to_vec();
+            axum::http::StatusCode::CREATED
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    // Several chunks and a ragged end, so the counting is not one step.
+    let bytes: Arc<Vec<u8>> = Arc::new((0..100_000u32).map(|i| i as u8).collect());
+    let sent = Arc::new(AtomicU64::new(0));
+    let outcome = request(
+        &reqwest::Client::new(),
+        &format!("http://{addr}/clips"),
+        Op::Upload { serial: "n1".into(), sha: "abc".into() },
+        Some(bytes.clone()),
+        Some(sent.clone()),
+    )
+    .await;
+
+    assert!(matches!(outcome, Outcome::Uploaded { .. }), "{outcome:?}");
+    assert_eq!(told.lock().unwrap().as_deref(), Some("100000"), "a length, never chunked");
+    assert_eq!(*got.lock().unwrap(), *bytes, "every byte, in order");
+    assert_eq!(sent.load(Ordering::Relaxed), 100_000);
+}

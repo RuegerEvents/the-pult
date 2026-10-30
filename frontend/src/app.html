@@ -4,6 +4,11 @@
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		<meta name="text-scale" content="scale" />
+		<!-- Opened from a phone's Home Screen, a page runs without the browser's bars:
+		     the layout and surface pages' full screen where the Fullscreen API is not. -->
+		<meta name="mobile-web-app-capable" content="yes" />
+		<meta name="apple-mobile-web-app-capable" content="yes" />
+		<meta name="apple-mobile-web-app-status-bar-style" content="black" />
 		%sveltekit.head%
 	</head>
 	<body data-sveltekit-preload-data="hover">

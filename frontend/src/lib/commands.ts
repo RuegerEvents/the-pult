@@ -16,15 +16,15 @@ import LockOpen from '@lucide/svelte/icons/lock-open';
 import Terminal from '@lucide/svelte/icons/terminal';
 
 import { fuzzyFilter } from '$lib/fuzzy.js';
-import type { Category } from '$lib/layout/categories.js';
+import type { Category } from '$lib/workspace/categories.js';
 import { objectKinds, selectSubject, type ObjectKind } from '$lib/objects.js';
 import { pathOf } from '$lib/stores/folders.js';
-import { findPanel } from '$lib/layout.js';
-import { revealPanel, tree } from '$lib/stores/layout.js';
+import { findPanel } from '$lib/workspace.js';
+import { revealPanel, tree } from '$lib/stores/workspace.js';
 import { allPanels, focusConsole } from '$lib/stores/plugins.js';
 import { openSetup } from '$lib/stores/setup.js';
 import { showLocked, toggleShowLock } from '$lib/stores/showLock.js';
-import { panelHome } from '$lib/layout/panels.js';
+import { panelHome } from '$lib/workspace/panels.js';
 
 export type Command = {
 	/** Unique across sources, so a list can key on it. */

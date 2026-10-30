@@ -9,7 +9,7 @@ import Workflow from '@lucide/svelte/icons/workflow';
 
 import type { Flow, Variable as VariableRow } from '$lib/generated/index.js';
 import { registerKind } from '$lib/objects.js';
-import { revealPanel } from '$lib/stores/layout.js';
+import { revealPanel } from '$lib/stores/workspace.js';
 import { collection, showClient, showData } from '$lib/stores/show.js';
 
 registerKind<Flow>({

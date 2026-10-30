@@ -8,7 +8,7 @@
 //! sequence, one parameter of one fixture). Nothing about a maze is written here;
 //! a surface for a theater's stage manager is the same list with other targets.
 //!
-//! The tiles are one JSON column, the way `Layout::tree` is: a surface is edited
+//! The tiles are one JSON column, the way `Workspace::tree` is: a surface is edited
 //! as a whole by one person between shows, and reordering a list is rewriting it.
 
 use serde::{Deserialize, Serialize};
@@ -22,7 +22,7 @@ use crate::{
 
 /// What a tile shows, or does when it is pressed.
 ///
-/// Tagged by `kind` so the browser discriminates on a field, as `LayoutNode` does.
+/// Tagged by `kind` so the browser discriminates on a field, as `WorkspaceNode` does.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[serde(tag = "kind")]

@@ -1,7 +1,7 @@
 /**
- * The workspace: which layout is on screen, and what is being done to it.
+ * The workspace: which arrangement is on screen, and what is being done to it.
  *
- * Layouts themselves are show data — a PERSISTED `layouts` collection, so an
+ * Workspaces themselves are show data — a PERSISTED `workspaces` collection, so an
  * arrangement made at the tech table is there at the next call and on the console
  * next to it. *Which* one this browser is looking at is not: two operators at two
  * screens plainly want different tiles up, so that lives here and in `localStorage`.
@@ -14,7 +14,7 @@
 
 import { browser } from '$app/environment';
 import { get, writable } from 'svelte/store';
-import type { Layout, LayoutNode } from '$lib/generated/index.js';
+import type { Workspace, WorkspaceNode } from '$lib/generated/index.js';
 import {
 	addTab,
 	findPanel,
@@ -24,19 +24,21 @@ import {
 	tidy,
 	type DropSide,
 	type Path
-} from '$lib/layout.js';
-import { DEFAULT_PRESET, presetByKey } from '$lib/layout/presets.js';
+} from '$lib/workspace.js';
+import { DEFAULT_PRESET, presetByKey } from '$lib/workspace/presets.js';
 import { collection, showData } from './show.js';
 import { uuid } from '$lib/uuid.js';
 import { compactPanel } from './viewport.js';
 
 export type Active = { kind: 'preset'; key: string } | { kind: 'show'; id: string };
 
+// Still `layout`, from before the saved arrangements were called workspaces: renaming
+// the key would put every browser back on the default preset for nothing.
 const STORAGE_KEY = 'pult.layout';
 
-export const layouts = collection('layouts');
+export const workspaces = collection('workspaces');
 
-export const tree = writable<LayoutNode>(DEFAULT_PRESET.tree);
+export const tree = writable<WorkspaceNode>(DEFAULT_PRESET.tree);
 export const active = writable<Active>({ kind: 'preset', key: DEFAULT_PRESET.key });
 export const dirty = writable(false);
 /** One panel filling the workspace, for a moment of needing all the room. */
@@ -57,12 +59,12 @@ function remember() {
 }
 
 /** Put back what this browser was looking at. Falls back to the first preset. */
-export function restoreLayout(): void {
+export function restoreWorkspace(): void {
 	if (!browser) return;
 	try {
 		const saved = localStorage.getItem(STORAGE_KEY);
 		if (!saved) return;
-		const parsed = JSON.parse(saved) as { active?: Active; tree?: LayoutNode; dirty?: boolean };
+		const parsed = JSON.parse(saved) as { active?: Active; tree?: WorkspaceNode; dirty?: boolean };
 		if (!parsed?.tree || (parsed.tree.type !== 'Split' && parsed.tree.type !== 'Tabs')) return;
 		tree.set(tidy(parsed.tree));
 		if (parsed.active) active.set(parsed.active);
@@ -73,7 +75,7 @@ export function restoreLayout(): void {
 }
 
 /** The tree changed by hand: keep it, mark it unsaved. */
-function change(next: LayoutNode): void {
+function change(next: WorkspaceNode): void {
 	tree.set(next);
 	dirty.set(true);
 	remember();
@@ -91,7 +93,7 @@ export function applyPreset(key: string): void {
 	remember();
 }
 
-export function applyLayout(layout: Layout): void {
+export function applyWorkspace(layout: Workspace): void {
 	tree.set(tidy(layout.tree));
 	active.set({ kind: 'show', id: layout.id });
 	dirty.set(false);
@@ -99,11 +101,11 @@ export function applyLayout(layout: Layout): void {
 	remember();
 }
 
-export function resetLayout(): void {
+export function resetWorkspace(): void {
 	const current = get(active);
 	if (current.kind === 'preset') return applyPreset(current.key);
-	const layout = get(layouts).find((l) => l.id === current.id);
-	if (layout) applyLayout(layout);
+	const layout = get(workspaces).find((l) => l.id === current.id);
+	if (layout) applyWorkspace(layout);
 	else applyPreset(DEFAULT_PRESET.key);
 }
 
@@ -113,25 +115,25 @@ export async function save(): Promise<void> {
 	const current = get(active);
 	// A preset is not a place to save to: it is the way back from having saved.
 	if (current.kind !== 'show') return;
-	await showData().layouts.byId(current.id).tree.set(get(tree));
+	await showData().workspaces.byId(current.id).tree.set(get(tree));
 	dirty.set(false);
 	remember();
 }
 
 export async function saveAs(name: string): Promise<void> {
 	const id = uuid();
-	await showData().layouts.create({ id, name, tree: get(tree) });
+	await showData().workspaces.create({ id, name, tree: get(tree) });
 	active.set({ kind: 'show', id });
 	dirty.set(false);
 	remember();
 }
 
 export async function rename(id: string, name: string): Promise<void> {
-	await showData().layouts.byId(id).name.set(name);
+	await showData().workspaces.byId(id).name.set(name);
 }
 
-export async function removeLayout(id: string): Promise<void> {
-	await showData().layouts.byId(id).delete();
+export async function removeWorkspace(id: string): Promise<void> {
+	await showData().workspaces.byId(id).delete();
 	const current = get(active);
 	if (current.kind === 'show' && current.id === id) applyPreset(DEFAULT_PRESET.key);
 }
@@ -162,7 +164,7 @@ export function revealPanel(panel: string): void {
 }
 
 /** The path of the top-left tile, as somewhere to put a panel with no home. */
-export function firstTile(node: LayoutNode): Path {
+export function firstTile(node: WorkspaceNode): Path {
 	const path: Path = [];
 	let here = node;
 	while (here.type === 'Split') {

@@ -52,3 +52,6 @@ testdata/corpus/
 # wing support lives in tools/wing-explorer and is checked in.
 /tools/wing-probe/
 /docs/WING-METHOD.md
+
+# The upgrade fixture: a showfile on purpose, walked up by tests/upgrade.rs.
+!testdata/showfiles/*.db

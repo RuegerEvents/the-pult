@@ -18,6 +18,7 @@
 	import { addToast } from '$lib/toasts.js';
 	import { backendOrigin, type OpenShow } from '$lib/ws/endpoint.js';
 	import NameDialog from './NameDialog.svelte';
+	import { describeDefaultState } from '$lib/defaultState.js';
 	import { beginSwitch, endSwitch } from '$lib/stores/switching.js';
 	import { collection } from '$lib/stores/show.js';
 	import Drama from '@lucide/svelte/icons/drama';
@@ -38,6 +39,9 @@
 	 * back the last point to return to is, not whether anything is unsaved.
 	 */
 	const versions = collection('versions');
+	const sequences = collection('sequences');
+	const cues = collection('cues');
+	const timelines = collection('timelines');
 	let now = $state(Date.now());
 	$effect(() => {
 		const tick = setInterval(() => (now = Date.now()), 30_000);
@@ -82,6 +86,11 @@
 		if (!d) return 'none';
 		const on = d.sequences.filter((s) => s.cue_id).length;
 		return `${on} sequence${on === 1 ? '' : 's'}, ${d.timelines.length} timeline${d.timelines.length === 1 ? '' : 's'}`;
+	});
+	/** Which ones, in words, so nobody has to guess what starts when the show comes up. */
+	const defaultLines = $derived.by(() => {
+		const d = $openShow?.default_state;
+		return d ? describeDefaultState(d, $sequences, $cues, $timelines) : [];
 	});
 	async function defaultState(what: 'save' | 'apply' | 'clear') {
 		open = false;
@@ -177,6 +186,11 @@
 			<!-- How the show comes up: what runs when it opens with nothing running, and
 			     what Go to default state puts back. See `infra/default_state.rs`. -->
 			<span class="heading">Default state <span class="dim-note">{defaultText}</span></span>
+			{#if defaultLines.length}
+				<ul class="default-lines">
+					{#each defaultLines as line, i (i)}<li>{line}</li>{/each}
+				</ul>
+			{/if}
 			<button onclick={() => defaultState('save')}>Save as default state</button>
 			<button disabled={!hasDefault} onclick={() => defaultState('apply')}>Go to default state</button>
 			<button disabled={!hasDefault} onclick={() => defaultState('clear')}>Clear default state</button>
@@ -202,6 +216,16 @@
 {/if}
 
 <style>
+	.default-lines {
+		margin: 0 0 4px;
+		padding: 0 12px 0 24px;
+		font-size: var(--font-xs, 11px);
+		color: var(--text-dim);
+		max-width: 320px;
+	}
+	.default-lines li {
+		margin: 2px 0;
+	}
 	.dim-note {
 		font-weight: 400;
 		text-transform: none;

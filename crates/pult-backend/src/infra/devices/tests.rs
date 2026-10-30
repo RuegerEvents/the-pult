@@ -476,7 +476,7 @@ async fn adopting_a_node_patches_it_as_a_fixture_of_its_module_s_type() {
 async fn adopting_gives_the_show_an_openhaunt_output_once() {
     // The plugin that drives a node's ports only runs where an `outputs` row says
     // so. Adoption is the operator asking for the node to be driven, so the row
-    // appears then — and one row covers every node this station drives.
+    // appears then — and one row covers every node, on whichever station leads.
     let h = harness().await;
     assert!(h.outputs().await.is_empty(), "nothing is configured before anything is adopted");
 
@@ -487,7 +487,10 @@ async fn adopting_gives_the_show_an_openhaunt_output_once() {
     assert_eq!(outputs.len(), 1);
     assert_eq!(outputs[0].kind, OutputKind::OpenHaunt);
     assert!(outputs[0].enabled);
-    assert!(outputs[0].node_id.is_some(), "the output belongs to the station that drives");
+    assert!(
+        outputs[0].node_id.is_none(),
+        "no station, which for OpenHaunt is the leader: one row for whoever drives the nodes"
+    );
 
     h.resolve("4d5e6f", MAINS_RELAY, None).await;
     h.devices.adopt("4d5e6f".into()).await.unwrap();
@@ -644,6 +647,36 @@ async fn a_follower_refuses_to_adopt() {
     let error = h.devices.adopt("1a2b3c".into()).await.unwrap_err();
     assert!(error.contains("leading the session"), "{error}");
     assert!(h.fixtures().await.is_empty(), "a follower must patch nothing");
+}
+
+#[tokio::test]
+async fn a_follower_lists_a_node_as_adopted_when_the_leaders_fixture_arrives() {
+    // The leader adopts — a follower's Adopt is carried to it — and the fixture reaches
+    // the follower by replication, with no device event of its own to go with it.
+    let leader = harness().await;
+    leader.resolve("1a2b3c", DIGITAL_IN, None).await;
+    let fixture_id = leader.devices.adopt("1a2b3c".into()).await.unwrap();
+
+    let follower = harness().await;
+    follower.resolve("1a2b3c", DIGITAL_IN, None).await;
+    follower.become_follower().await;
+    assert_eq!(follower.state().await.discovered["1a2b3c"].adopted_fixture_id, None);
+
+    let create = |table: &str| vec![PathSegment::Key(table.into()), PathSegment::Key("__create".into())];
+    for t in leader.fixture_types().await {
+        follower.engine.set(create("fixture_types"), Lifecycle::Persisted, serde_json::to_value(t).unwrap()).await.unwrap();
+    }
+    for f in leader.fixtures().await {
+        follower.engine.set(create("fixtures"), Lifecycle::Persisted, serde_json::to_value(f).unwrap()).await.unwrap();
+    }
+
+    for _ in 0..100 {
+        if follower.state().await.discovered["1a2b3c"].adopted_fixture_id == Some(fixture_id) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("the follower never listed the node as adopted");
 }
 
 // ── Forgetting ────────────────────────────────────────────────────────────────

@@ -4,7 +4,7 @@
  * The sheets themselves are the show's — a PERSISTED `sheets` collection, seeded into a
  * new show — so they replicate, undo and travel like anything else. What lives here is
  * one operator's: which sheet they are looking at, which block they have hold of, and
- * how far they have zoomed the preview. The same split as `layouts`, for the same
+ * how far they have zoomed the preview. The same split as `workspaces`, for the same
  * reason: an arrangement is the show's and a scroll position is not.
  *
  * # Every verb is one act

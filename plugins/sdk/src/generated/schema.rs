@@ -379,6 +379,23 @@ pub enum Datum {
     Center,
 }
 
+/// How a reading that goes on and off is drawn: lit while on, then fading.
+///
+/// Every field is optional on an element, which falls back to its layout's.
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+pub struct Decay {
+    /// `#rrggbb` while on, and the color the fade starts from.
+    #[serde(default)]
+    pub active_color: Option<String>,
+    /// `#rrggbb` once the fade has finished, and for a reading that has never been on.
+    #[serde(default)]
+    pub idle_color: Option<String>,
+    /// How long the fade from active to idle takes, from the moment the reading went
+    /// off. Zero is a light that goes straight out.
+    #[serde(default)]
+    pub decay_ms: Option<u32>,
+}
+
 /// One sequence in a [`DefaultState`].
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DefaultSequence {
@@ -583,6 +600,63 @@ pub struct EffectTemplate {
     pub folder: Option<Uuid>,
 }
 
+/// What pressing an element does, on the desk. Never on the shared page.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind")]
+pub enum ElementPress {
+    /// Change the element's variable, through the `variable.*` RPCs, unattributed —
+    /// exactly as a surface tile does.
+    Variable { op: VariableOp },
+    /// Play the element's timeline if it is stopped, stop it if it is running.
+    Timeline {
+        /// Play from the top rather than from where it stopped.
+        from_start: bool,
+    },
+    /// Make the element's fixture the selection.
+    Select,
+}
+
+/// The outline an element is drawn with.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    serde::Serialize,
+    serde::Deserialize
+)]
+pub enum ElementShape {
+    #[default]
+    Rect,
+    Ellipse,
+}
+
+/// What an element is a drawing of.
+///
+/// Tagged by `kind`, as `TileTarget` is.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind")]
+pub enum ElementTarget {
+    /// One parameter of one fixture: what a device reported (a contact, a PIR, a
+    /// temperature) or what the console is putting out (a traffic light's color).
+    /// An on/off reading decays; a number is colored by `stops` and printed.
+    Parameter { fixture_id: Uuid, parameter: ParameterKind },
+    /// What a variable holds: a flag decays like a contact, a number is colored by
+    /// `stops` and printed.
+    Variable { variable_id: Uuid },
+    /// A timeline: running or not, how far through, and how long is left.
+    Timeline { timeline_id: Uuid },
+    /// A filled shape and nothing else — a room, a wall, a stage.
+    Shape,
+    /// A line through points, in canvas units, absolute rather than inside the
+    /// element's box: a wall that turns a corner. The box is the points' bounds.
+    Line { points: Vec<[f32; 2]> },
+    /// Words on the drawing, and nothing behind them.
+    Text,
+}
+
 /// One light source in the fixture.
 ///
 /// The list that makes a color mixable. Given a color and these, the console works
@@ -681,6 +755,16 @@ pub struct Fixture {
     /// as something a device reported.
     #[serde(default)]
     pub sensed_values: HashMap<String, ParameterValue>,
+    /// When each of `sensed_values` last *changed*, in console milliseconds, keyed the
+    /// same way.
+    ///
+    /// Stamped by the station that heard the device, and only on a change: a node
+    /// repeating the value it already reported moves nothing. What makes "somebody
+    /// was here thirty seconds ago" a reading every page agrees on — a page that only
+    /// noted when *it* saw a change would show nothing until the next one, and two
+    /// phones would disagree. A layout's decay reads it; see [`crate::types::layout`].
+    #[serde(default)]
+    pub sensed_at: HashMap<String, u64>,
     /// What shape is driving each of this fixture's parameters, keyed by parameter
     /// key.
     ///
@@ -1349,41 +1433,62 @@ pub struct Layer {
     pub sort_order: u32,
 }
 
-/// One saved arrangement of the workspace.
+/// One drawing.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Layout {
     pub id: Uuid,
     pub name: String,
-    /// The whole arrangement, as one JSON column.
-    pub tree: LayoutNode,
+    /// The canvas, in its own units. The drawing keeps this aspect on any screen.
+    pub width: f32,
+    pub height: f32,
+    /// What a dragged element snaps to, in canvas units. Zero is no snapping.
+    pub grid: f32,
+    /// A drawing somebody was handed, stretched over the canvas: the asset's sha256.
+    #[serde(default)]
+    pub backdrop: Option<String>,
+    /// The layout's answer to how a reading decays; an element may say otherwise.
+    pub decay: Decay,
+    /// The elements, back to front, as one JSON column.
+    pub elements: Vec<LayoutElement>,
+    /// The card's color, as `#rrggbb`, or `None` for its panel category's color.
+    #[serde(default)]
+    pub color: Option<String>,
     /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
     #[serde(default)]
     pub folder: Option<Uuid>,
 }
 
-/// One node of a workspace tree: either a division of the space, or panels in it.
-///
-/// Tagged by `type` so the TypeScript side discriminates on a field rather than on
-/// the shape of an object — the layout operations in the frontend are written against
-/// that tag, and a bare externally-tagged enum would make every one of them a
-/// two-key lookup.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "type")]
-pub enum LayoutNode {
-    /// Space divided among children, each taking its share of `sizes`.
-    Split {
-        direction: SplitDirection,
-        /// One fraction per child, summing to 1.
-        sizes: Vec<f32>,
-        children: Vec<LayoutNode>,
-    },
-    /// Panels sharing one rectangle, one of them on top.
-    Tabs {
-        /// Panel ids, in tab order.
-        panels: Vec<String>,
-        /// Which of them is showing.
-        active: usize,
-    },
+pub struct LayoutElement {
+    /// Stable across edits, so an element being dragged keeps its identity.
+    pub id: Uuid,
+    /// Where it is, in canvas units from the top left.
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    #[serde(default)]
+    pub shape: ElementShape,
+    /// What it says. Empty means the name of what it points at.
+    #[serde(default)]
+    pub label: String,
+    /// Whether the label is drawn at all.
+    #[serde(default)]
+    pub show_label: bool,
+    /// The fill of a `Shape`, the stroke of a `Line`, the ink of `Text`; ignored by
+    /// an element whose color comes from what it is showing.
+    #[serde(default)]
+    pub color: Option<String>,
+    pub target: ElementTarget,
+    /// This element's own answer to how it decays, over the layout's.
+    #[serde(default)]
+    pub decay: Decay,
+    /// The color for each value of a number, the highest stop not above it winning.
+    /// Empty means the layout's idle color with the figure printed on it.
+    #[serde(default)]
+    pub stops: Vec<ColorStop>,
+    #[serde(default)]
+    pub press: Option<ElementPress>,
 }
 
 /// How a drafting viewport draws a solid.
@@ -1676,6 +1781,19 @@ pub struct NodeAudioState {
     pub bytes_free: u64,
     /// The clip being uploaded now, if one is.
     pub uploading: Option<String>,
+    /// How far that upload has got: bytes sent of how many. Both zero with none
+    /// running. Sent, not acknowledged — the last few kilobytes are in a socket when
+    /// this says all of them, and `stored` is what says the node has the clip.
+    #[serde(default)]
+    pub upload_sent: u64,
+    #[serde(default)]
+    pub upload_total: u64,
+    /// The region each of the show's clips is on this node, by clip id: the sha to look
+    /// for in `stored` and `uploading`. A clip is cut and encoded per node, so its own
+    /// asset sha is not what a node holds, and a page could not otherwise tell which
+    /// of a node's clips is the one it is looking at.
+    #[serde(default)]
+    pub clips: BTreeMap<String, String>,
     /// How many clips the show wants on this node and does not have yet.
     pub pending: u32,
     /// An RTP stream is going to this node.
@@ -2811,7 +2929,7 @@ pub struct ServiceBinding {
 /// One sheet of the paperwork.
 ///
 /// Seeded into a new show rather than being a built-in preset the way a
-/// [`super::layout::Layout`] is. The consequence, recorded because it will be asked
+/// [`super::workspace::Workspace`] is. The consequence, recorded because it will be asked
 /// about: a showfile made before this feature existed opens with no sheets and stays
 /// that way, and a show made today never picks up a later version's better defaults.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -2842,7 +2960,7 @@ pub struct Sheet {
 
 /// One thing on a sheet.
 ///
-/// Tagged by `type` for the reason [`super::layout::LayoutNode`] is: the frontend
+/// Tagged by `type` for the reason [`super::workspace::WorkspaceNode`] is: the frontend
 /// discriminates on a field, and every operation over a sheet is written against that
 /// tag.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -3175,11 +3293,6 @@ pub struct Station {
     /// **The whole machine, not this console.** Every other figure in this row is what
     /// the console is responsible for; this is what the cable is actually carrying,
     /// which includes whatever else the box is doing. The two are worth having side by
-    /// How much decoded sound this station is holding, against what it may hold.
-    ///
-    /// Defaulted, and a `budget` of zero is a station on an older build that cannot say.
-    #[serde(default)]
-    pub audio_cache: AudioCacheStats,
     /// side and must never be confused: a station whose own output accounts for 2 MB/s
     /// on an interface carrying 90 MB/s has a network problem that is not its fault,
     /// and one where the two figures agree has found its own.
@@ -3436,7 +3549,7 @@ pub enum TileSize {
 
 /// What a tile shows, or does when it is pressed.
 ///
-/// Tagged by `kind` so the browser discriminates on a field, as `LayoutNode` does.
+/// Tagged by `kind` so the browser discriminates on a field, as `WorkspaceNode` does.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind")]
 pub enum TileTarget {
@@ -4051,6 +4164,43 @@ pub struct WingState {
     pub digital: Option<u8>,
     /// What the wing's operator has in hand, kept by the station.
     pub operator: WingOperator,
+}
+
+/// One saved arrangement of the panels.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Workspace {
+    pub id: Uuid,
+    pub name: String,
+    /// The whole arrangement, as one JSON column.
+    pub tree: WorkspaceNode,
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    #[serde(default)]
+    pub folder: Option<Uuid>,
+}
+
+/// One node of a workspace tree: either a division of the space, or panels in it.
+///
+/// Tagged by `type` so the TypeScript side discriminates on a field rather than on
+/// the shape of an object — the layout operations in the frontend are written against
+/// that tag, and a bare externally-tagged enum would make every one of them a
+/// two-key lookup.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type")]
+pub enum WorkspaceNode {
+    /// Space divided among children, each taking its share of `sizes`.
+    Split {
+        direction: SplitDirection,
+        /// One fraction per child, summing to 1.
+        sizes: Vec<f32>,
+        children: Vec<WorkspaceNode>,
+    },
+    /// Panels sharing one rectangle, one of them on top.
+    Tabs {
+        /// Panel ids, in tab order.
+        panels: Vec<String>,
+        /// Which of them is showing.
+        active: usize,
+    },
 }
 
 /// How this console reaches its group.

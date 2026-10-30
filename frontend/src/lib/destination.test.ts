@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
-import type { DevicesState, NodeReport, SpeakerZone } from '$lib/generated/index.js';
-import { audioNodes, bytesText, destinationText, nodeOf, zoneOf } from './destination.js';
+import type { DevicesState, NodeAudioState, NodeReport, SpeakerZone } from '$lib/generated/index.js';
+import {
+	audioNodes,
+	bytesText,
+	clipOnNode,
+	clipOnNodeText,
+	destinationText,
+	nodeOf,
+	zoneOf
+} from './destination.js';
 
 const ZONES = [{ id: 'z2', name: 'Area 2', color: null, width: 1, channels: {}, nodes: [], notes: '' } as SpeakerZone];
 
@@ -97,5 +105,45 @@ describe('where a clip goes', () => {
 		expect(bytesText(512)).toBe('512 B');
 		expect(bytesText(20_480)).toBe('20 kB');
 		expect(bytesText(10_264_576)).toBe('9.8 MB');
+	});
+});
+
+describe('a stored clip on a node', () => {
+	const state = (over: Partial<NodeAudioState> = {}): NodeAudioState => ({
+		stored: [],
+		bytes_total: 10_000_000,
+		bytes_free: 10_000_000,
+		uploading: null,
+		upload_sent: 0,
+		upload_total: 0,
+		clips: { c1: 'sha1' },
+		pending: 1,
+		streaming: false,
+		fault: null,
+		...over
+	});
+
+	it('is read by the region made for it, not by the clip', () => {
+		expect(clipOnNode(state({ stored: ['sha1'] }), 'c1')).toEqual({ kind: 'stored' });
+		expect(clipOnNode(state({ stored: ['c1'] }), 'c1').kind).toBe('waiting');
+	});
+
+	it('says how far its upload has got', () => {
+		const on = clipOnNode(state({ uploading: 'sha1', upload_sent: 1_572_864, upload_total: 3_145_728 }), 'c1');
+		expect(on).toEqual({ kind: 'uploading', fraction: 0.5, sent: 1_572_864, total: 3_145_728 });
+		expect(clipOnNodeText(on)).toBe('uploading 50% (1.5 MB of 3.0 MB)');
+	});
+
+	it('waits behind another clip, and says when the node refused', () => {
+		expect(clipOnNodeText(clipOnNode(state({ uploading: 'other' }), 'c1'))).toBe('waiting: another clip is uploading');
+		expect(clipOnNode(state({ fault: 'does not fit on the node (4096 kB)' }), 'c1')).toEqual({
+			kind: 'refused',
+			why: 'does not fit on the node (4096 kB)'
+		});
+	});
+
+	it('is being prepared until a region is made, and unknown with no report', () => {
+		expect(clipOnNode(state({ clips: {} }), 'c1').kind).toBe('preparing');
+		expect(clipOnNode(undefined, 'c1').kind).toBe('unknown');
 	});
 });

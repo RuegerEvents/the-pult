@@ -30,7 +30,7 @@
 	import { canEdit } from '$lib/stores/showLock.js';
 	import { beginEdit, editingCue } from '$lib/stores/programmer.js';
 	import { selectSubject } from '$lib/objects.js';
-	import { revealPanel } from '$lib/stores/layout.js';
+	import { revealPanel } from '$lib/stores/workspace.js';
 	import { getDataContext } from '$lib/ws/context.js';
 	import { OBJECT_MIME, readDropped } from '$lib/objects.js';
 	import { presetIntoCue } from '$lib/programmer.js';

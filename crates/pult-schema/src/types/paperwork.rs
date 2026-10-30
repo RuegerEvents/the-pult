@@ -506,7 +506,7 @@ fn default_text_mm() -> f32 {
 
 /// One thing on a sheet.
 ///
-/// Tagged by `type` for the reason [`super::layout::LayoutNode`] is: the frontend
+/// Tagged by `type` for the reason [`super::workspace::WorkspaceNode`] is: the frontend
 /// discriminates on a field, and every operation over a sheet is written against that
 /// tag.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -531,7 +531,7 @@ impl SheetBlock {
 /// One sheet of the paperwork.
 ///
 /// Seeded into a new show rather than being a built-in preset the way a
-/// [`super::layout::Layout`] is. The consequence, recorded because it will be asked
+/// [`super::workspace::Workspace`] is. The consequence, recorded because it will be asked
 /// about: a showfile made before this feature existed opens with no sheets and stays
 /// that way, and a show made today never picks up a later version's better defaults.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PultSchema)]
@@ -1382,7 +1382,7 @@ fn sheet(sort_order: i32, name: &str, blocks: Vec<SheetBlock>) -> Sheet {
 /// Vectorworks set this feature was designed against — an overview, the rig, sections,
 /// a labeled fixtures plan — with the tables that drawing set did not carry.
 ///
-/// **Rows in the show rather than built-in presets.** A [`super::layout::Layout`] does
+/// **Rows in the show rather than built-in presets.** A [`super::workspace::Workspace`] does
 /// it the other way, and the consequence of doing it this way is worth knowing: a show
 /// made today keeps these sheets exactly as they are, and never picks up a later
 /// version's better ones.

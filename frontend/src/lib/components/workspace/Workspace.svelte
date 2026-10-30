@@ -7,10 +7,10 @@
 	 * programming needs.
 	 */
 
-	import { type PanelMeta } from '$lib/layout/panels.js';
-	import { dragging, maximized, tree } from '$lib/stores/layout.js';
+	import { type PanelMeta } from '$lib/workspace/panels.js';
+	import { dragging, maximized, tree } from '$lib/stores/workspace.js';
 	import { allPanels } from '$lib/stores/plugins.js';
-	import { categoryColor } from '$lib/layout/categories.js';
+	import { categoryColor } from '$lib/workspace/categories.js';
 	import Tile from './Tile.svelte';
 	import CompactWorkspace from './CompactWorkspace.svelte';
 	import { compact } from '$lib/stores/viewport.js';

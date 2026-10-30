@@ -19,6 +19,7 @@ pub mod stage;
 pub mod programmer;
 pub mod speedmaster;
 pub mod user;
+pub mod workspace;
 pub mod layout;
 pub mod plugin;
 pub mod catalog;
@@ -95,7 +96,8 @@ pub use stage::{StagePlan, StagePlanCreate, StagePlanPatch};
 pub use programmer::{
     programmer_entry_id, ProgrammerValue, ProgrammerValueCreate, ProgrammerValuePatch,
 };
-pub use layout::{Layout, LayoutCreate, LayoutNode, LayoutPatch, SplitDirection};
+pub use workspace::{SplitDirection, Workspace, WorkspaceCreate, WorkspaceNode, WorkspacePatch};
+pub use layout::{Decay, ElementPress, ElementShape, ElementTarget, Layout, LayoutCreate, LayoutElement, LayoutPatch};
 pub use effect_template::{
     default_effect_templates, EffectLayer, EffectTemplate, EffectTemplateCreate, EffectTemplatePatch,
 };

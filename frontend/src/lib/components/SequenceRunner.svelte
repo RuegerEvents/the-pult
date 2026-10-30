@@ -16,7 +16,7 @@
 	import { canEdit } from '$lib/stores/showLock.js';
 	import { beginGesture, endGesture } from '$lib/stores/gesture.js';
 	import { sequenceInView } from '$lib/stores/cues.js';
-	import { revealPanel } from '$lib/stores/layout.js';
+	import { revealPanel } from '$lib/stores/workspace.js';
 	import Dialog from './Dialog.svelte';
 	import PlaybackFader from './PlaybackFader.svelte';
 	import NameDialog from './NameDialog.svelte';

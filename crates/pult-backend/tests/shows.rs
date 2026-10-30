@@ -431,7 +431,7 @@ async fn a_restored_show_is_the_show_as_it_was() {
 
     // As writes, in place: the station stays up, and a peer would follow it.
     let user = pult_schema::types::user::User::DEFAULT_ID;
-    rpcs::restore_a_show(id, &shows, &engine, user).await.expect("it restores");
+    rpcs::restore_a_show(id, false, &shows, &engine, user).await.expect("it restores");
 
     for _ in 0..200 {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;

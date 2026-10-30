@@ -10,9 +10,9 @@
 	 * does.
 	 */
 
-	import { categoryColor } from '$lib/layout/categories.js';
-	import { findPanel, panelsIn, panelsShown } from '$lib/layout.js';
-	import { closePanel, firstTile, tree } from '$lib/stores/layout.js';
+	import { categoryColor } from '$lib/workspace/categories.js';
+	import { findPanel, panelsIn, panelsShown } from '$lib/workspace.js';
+	import { closePanel, firstTile, tree } from '$lib/stores/workspace.js';
 	import { allPanels } from '$lib/stores/plugins.js';
 	import { compactPanel } from '$lib/stores/viewport.js';
 	import PanelPicker from './PanelPicker.svelte';

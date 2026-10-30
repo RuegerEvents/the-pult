@@ -19,7 +19,7 @@
 	 */
 
 	import Dialog from '$lib/components/Dialog.svelte';
-	import { PANELS, panelHome, type PanelId, type PanelMeta } from '$lib/layout/panels.js';
+	import { PANELS, panelHome, type PanelId, type PanelMeta } from '$lib/workspace/panels.js';
 	import { closeSetup, openSetup, setupSection } from '$lib/stores/setup.js';
 
 	/**

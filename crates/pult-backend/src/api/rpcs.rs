@@ -282,8 +282,8 @@ pub const LOCAL_RPCS: &[LocalRpcMeta] = &[
     },
     LocalRpcMeta {
         method: "show.open",
-        args_schema: r#"[{"name":"path","type":"string","optional":false}]"#,
-        doc: "Open the show bundle at this path.",
+        args_schema: r#"[{"name":"path","type":"string","optional":false},{"name":"upgrade","type":"boolean","optional":true}]"#,
+        doc: "Open the show bundle at this path. A show from an older build answers {needsUpgrade: {from, to}} and opens nothing, until it is asked again with upgrade: true.",
     },
     LocalRpcMeta {
         method: "show.close",
@@ -297,8 +297,8 @@ pub const LOCAL_RPCS: &[LocalRpcMeta] = &[
     },
     LocalRpcMeta {
         method: "show.restore",
-        args_schema: r#"[{"name":"versionId","type":"string","optional":false}]"#,
-        doc: "Put a saved version back as the show, as one undoable edit that every station in the session follows.",
+        args_schema: r#"[{"name":"versionId","type":"string","optional":false},{"name":"upgrade","type":"boolean","optional":true}]"#,
+        doc: "Put a saved version back as the show, as one undoable edit that every station in the session follows. A version from an older build answers {needsUpgrade: {from, to}} and restores nothing, until it is asked again with upgrade: true.",
     },
     LocalRpcMeta {
         method: "show.list",
@@ -965,7 +965,8 @@ pub async fn dispatch(method: &str, args: Value, deps: &LocalRpcDeps) -> Result<
         "show.restore" => {
             let version: uuid::Uuid = serde_json::from_value(args["versionId"].clone())
                 .map_err(|e| format!("invalid versionId: {e}"))?;
-            restore_a_show(version, &deps.shows, &deps.engine, asking_user(deps)).await
+            let upgrade = args["upgrade"].as_bool().unwrap_or(false);
+            restore_a_show(version, upgrade, &deps.shows, &deps.engine, asking_user(deps)).await
         }
         "show.list" => list_shows(&deps.shows).await,
         "paperwork.tables" => {
@@ -1290,10 +1291,20 @@ pub async fn open_a_show(
             // into — instead of taking the console down and bringing it back with
             // nothing open and an error in the log.
             let bundle = bundle::Bundle::open(path).map_err(|e| format!("{e:#}"))?;
+            // Asked here, for the reason the bundle is opened here: an upgrade is a
+            // one-way door, so the person in front of the dialog is the one asked —
+            // not a console that has already stopped to find out.
+            let upgrade = args["upgrade"].as_bool().unwrap_or(false);
+            if !upgrade {
+                if let Some(asking) = needs_upgrade(&bundle.db_path()).await {
+                    return Ok(asking);
+                }
+            }
             crate::ShowSwitch::Open {
                 path: bundle.path().to_path_buf(),
                 then_join: None,
                 demo: None,
+                upgrade,
             }
         }
         "show.new" => {
@@ -1319,7 +1330,7 @@ pub async fn open_a_show(
                 ),
                 _ => None,
             };
-            crate::ShowSwitch::Open { path, then_join, demo }
+            crate::ShowSwitch::Open { path, then_join, demo, upgrade: false }
         }
         "show.saveAs" => {
             let name = args["name"].as_str().unwrap_or_default().trim().to_string();
@@ -1356,11 +1367,17 @@ pub async fn open_a_show(
 /// restore anything: it briefly shows an older show and then loses it again.
 pub async fn restore_a_show(
     version: uuid::Uuid,
+    upgrade: bool,
     shows: &crate::ShowsHandle,
     engine: &EngineHandle,
     user: uuid::Uuid,
 ) -> Result<Value, String> {
     let bundle = shows.bundle.as_ref().ok_or_else(|| "no show is open".to_string())?;
+    if !upgrade {
+        if let Some(asking) = needs_upgrade(&bundle.version_path(version)).await {
+            return Ok(asking);
+        }
+    }
 
     // A point to come back *from*, taken before the show is overwritten. Restoring is
     // the one act in this console that throws work away, and an operator who restores
@@ -1387,10 +1404,22 @@ pub async fn restore_a_show(
     }
 
     // In place, as writes: see `versions::restore_in_place` for why not a file swap.
-    let changed = crate::infra::showfile::versions::restore_in_place(bundle, version, engine, user)
+    let changed = crate::infra::showfile::versions::restore_in_place(bundle, version, upgrade, engine, user)
         .await
         .map_err(|e| format!("{e:#}"))?;
     Ok(serde_json::json!({ "ok": true, "changed": changed }))
+}
+
+/// `{needsUpgrade: {from, to}}` for a file an upgrade would have to touch, or `None`.
+///
+/// The answer rather than an error, the way `xchange.apply` answers `needsConfirm`:
+/// nothing went wrong, a person has a question to answer.
+async fn needs_upgrade(db: &std::path::Path) -> Option<Value> {
+    use crate::infra::showfile::upgrade;
+    let from = upgrade::generation_of(db).await?;
+    upgrade::upgradable(from).then(|| {
+        serde_json::json!({ "needsUpgrade": { "from": from, "to": upgrade::CURRENT } })
+    })
 }
 
 /// What to call the version taken just before a restore.
@@ -1459,6 +1488,9 @@ pub async fn list_shows(shows: &crate::ShowsHandle) -> Result<Value, String> {
             .collect::<Vec<_>>(),
         "showsDir": shows.shows_dir,
         "open": shows.bundle.as_ref().map(|b| b.path()),
+        // A show this console could not open without an upgrade, and is waiting for
+        // another station to have made: the welcome screen says so on its card.
+        "waitingToUpgrade": shows.waiting_to_upgrade,
         "recent": recents,
         "inDir": in_dir,
     }))

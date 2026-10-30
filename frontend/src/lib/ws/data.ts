@@ -43,6 +43,7 @@ import type { Timeline } from '../generated/Timeline.js';
 import type { User } from '../generated/User.js';
 import type { Variable } from '../generated/Variable.js';
 import type { Version } from '../generated/Version.js';
+import type { Workspace } from '../generated/Workspace.js';
 
 // ── Entity handles ───────────────────────────────────────────────────────────
 
@@ -204,6 +205,10 @@ export type VariableEntity = PathProxy<Variable> & {
 };
 
 export type VersionEntity = PathProxy<Version> & {
+  delete(): Promise<void>;
+};
+
+export type WorkspaceEntity = PathProxy<Workspace> & {
   delete(): Promise<void>;
 };
 
@@ -741,6 +746,20 @@ export type VersionCollection = {
   [n: number]: VersionEntity;
 };
 
+export type WorkspaceCollection = {
+  get(): Promise<Workspace[]>;
+  set(value: Workspace[]): Promise<void>;
+  subscribe(cb: (value: Workspace[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: Workspace[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): WorkspaceEntity;
+  nth(n: number): WorkspaceEntity;
+  create(entity: Workspace): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
+  [n: number]: WorkspaceEntity;
+};
+
 // ── DataRoot ─────────────────────────────────────────────────────────────────
 
 /** Typed root for the pult:data context. Every field maps to a live path proxy. */
@@ -784,6 +803,7 @@ export type DataRoot = {
   users: UserCollection;
   variables: VariableCollection;
   versions: VersionCollection;
+  workspaces: WorkspaceCollection;
 };
 
 /** Create the typed root proxy. The runtime proxy handles all DataRoot operations generically. */

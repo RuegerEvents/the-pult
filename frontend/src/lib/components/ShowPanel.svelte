@@ -24,10 +24,11 @@
 	import { collection, show as openShow } from '$lib/stores/show.js';
 	import { users } from '$lib/stores/user.js';
 	import { addToast } from '$lib/toasts.js';
-	import { asSize, parentPath } from '$lib/shows.js';
+	import { asSize, parentPath, upgradeAsked, type Upgrade } from '$lib/shows.js';
 	import { readPreferences } from '$lib/preferences.js';
 	import Dialog from '$lib/components/Dialog.svelte';
 	import Help from '$lib/components/Help.svelte';
+	import UpgradeDialog from '$lib/components/UpgradeDialog.svelte';
 	import Pencil from '@lucide/svelte/icons/pencil';
 	import Trash2 from '@lucide/svelte/icons/trash-2';
 	import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
@@ -55,6 +56,8 @@
 	/** The version an operator has asked to restore and not yet confirmed. */
 	let confirming = $state<Version | null>(null);
 	let restoreRefusal = $state('');
+	/** A version from an older build, asked about before a copy of it is upgraded. */
+	let upgrading = $state<{ version: Version; upgrade: Upgrade } | null>(null);
 	/** Which snapshots this station actually holds. */
 	let here = $state<string[]>([]);
 	let autosave = $state<{ minutes: number; keep: number } | null>(null);
@@ -140,11 +143,19 @@
 	 * station in the session follows, nobody restarts, and Ctrl-Z takes it back. What is
 	 * running — cues up, timelines rolling — stays running.
 	 */
-	async function restore(version: Version) {
+	async function restore(version: Version, upgrade = false) {
 		confirming = null;
+		upgrading = null;
 		restoreRefusal = '';
 		try {
-			const answer = (await client.call('show.restore', { versionId: version.id })) as { changed?: number } | null;
+			const answer = (await client.call('show.restore', { versionId: version.id, upgrade })) as {
+				changed?: number;
+			} | null;
+			const asked = upgradeAsked(answer);
+			if (asked) {
+				upgrading = { version, upgrade: asked };
+				return;
+			}
 			const n = answer?.changed ?? 0;
 			addToast(n === 0 ? 'The show already was that version' : `Restored “${label(version)}”: ${n} ${n === 1 ? 'change' : 'changes'}`, 'success');
 		} catch (e) {
@@ -354,6 +365,17 @@
 			<button class="btn btn-primary" onclick={saveNamed}>Save</button>
 		{/snippet}
 	</Dialog>
+{/if}
+
+{#if upgrading}
+	{@const asking = upgrading}
+	<UpgradeDialog
+		name={label(asking.version)}
+		upgrade={asking.upgrade}
+		restoring
+		onclose={() => (upgrading = null)}
+		onaccept={() => restore(asking.version, true)}
+	/>
 {/if}
 
 {#if confirming}

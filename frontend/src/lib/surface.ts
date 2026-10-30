@@ -31,7 +31,7 @@ import type { PultWsClient } from './ws/client.js';
 import { offer } from './stores/learn.js';
 import type { DataRoot } from './ws/data.js';
 import { uuid } from '$lib/uuid.js';
-import { clipSpan } from './waveform.js';
+import { clipSpan, clock } from './waveform.js';
 
 /** What a surface's tiles can point at: the show, as far as a surface reads it. */
 export type SurfaceShow = {
@@ -291,6 +291,14 @@ export function timelineProgress(
 	if (position === null || length === null || length <= 0) return null;
 	const at = Math.min(Math.max(position, 0), length);
 	return { remainingMs: length - at, fraction: at / length };
+}
+
+/**
+ * Time left, the way a countdown is read: rounded up to the second, so it says `−0:00`
+ * only once it is over. What a timeline tile prints, and a timeline on a layout.
+ */
+export function timeLeft(remainingMs: number): string {
+	return `−${clock(Math.ceil(Math.max(0, remainingMs) / 1000) * 1000).slice(0, -3)}`;
 }
 
 // ── Editing a tile list ───────────────────────────────────────────────────────

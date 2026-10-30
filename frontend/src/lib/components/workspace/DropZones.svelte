@@ -7,8 +7,8 @@
 	 * nobody could click.
 	 */
 
-	import type { DropSide, Path } from '$lib/layout.js';
-	import { dropId, dropTarget } from '$lib/stores/layout.js';
+	import type { DropSide, Path } from '$lib/workspace.js';
+	import { dropId, dropTarget } from '$lib/stores/workspace.js';
 
 	let { path }: { path: Path } = $props();
 

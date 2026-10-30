@@ -19,7 +19,7 @@
 
 	import type { Snippet } from 'svelte';
 	import { longPress } from '$lib/actions.js';
-	import { categoryColor } from '$lib/layout/categories.js';
+	import { categoryColor } from '$lib/workspace/categories.js';
 	import {
 		isSubject,
 		kindOf,

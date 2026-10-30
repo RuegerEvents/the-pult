@@ -9,19 +9,19 @@
 	 */
 
 	import { dropdown } from '$lib/actions.js';
-	import { PRESETS } from '$lib/layout/presets.js';
+	import { PRESETS } from '$lib/workspace/presets.js';
 	import {
 		active,
-		applyLayout,
+		applyWorkspace,
 		applyPreset,
 		dirty,
-		layouts,
-		removeLayout,
+		workspaces,
+		removeWorkspace,
 		rename,
-		resetLayout,
+		resetWorkspace,
 		save,
 		saveAs
-	} from '$lib/stores/layout.js';
+	} from '$lib/stores/workspace.js';
 	import NameDialog from '$lib/components/NameDialog.svelte';
 	import LayoutGrid from '@lucide/svelte/icons/layout-grid';
 
@@ -31,8 +31,8 @@
 
 	const current = $derived.by(() => {
 		const a = $active;
-		if (a.kind === 'preset') return PRESETS.find((p) => p.key === a.key)?.name ?? 'Layout';
-		return $layouts.find((l) => l.id === a.id)?.name ?? 'Layout';
+		if (a.kind === 'preset') return PRESETS.find((p) => p.key === a.key)?.name ?? 'Workspace';
+		return $workspaces.find((l) => l.id === a.id)?.name ?? 'Workspace';
 	});
 	const savedHere = $derived($active.kind === 'show' ? $active.id : null);
 
@@ -72,16 +72,16 @@
 			{/each}
 
 			<span class="heading">In this show</span>
-			{#if $layouts.length === 0}
+			{#if $workspaces.length === 0}
 				<span class="none">None yet — arrange the tiles and Save as…</span>
 			{:else}
-				{#each $layouts as layout (layout.id)}
+				{#each $workspaces as layout (layout.id)}
 					<div class="row">
 						<button
 							class="grow"
 							class:on={$active.kind === 'show' && $active.id === layout.id}
 							onclick={() => {
-								applyLayout(layout);
+								applyWorkspace(layout);
 								open = false;
 							}}
 						>{layout.name}</button>
@@ -89,7 +89,7 @@
 							class="icon"
 							aria-label="Delete {layout.name}"
 							title="Delete"
-							onclick={() => removeLayout(layout.id)}
+							onclick={() => removeWorkspace(layout.id)}
 						>✕</button>
 					</div>
 				{/each}
@@ -116,7 +116,7 @@
 			<button
 				disabled={!$dirty}
 				onclick={() => {
-					resetLayout();
+					resetWorkspace();
 					open = false;
 				}}
 			>Discard changes</button>
@@ -127,7 +127,7 @@
 {#if naming}
 	<NameDialog
 		title={naming === 'new' ? 'Save the layout as new' : 'Rename the layout'}
-		placeholder="Layout name…"
+		placeholder="Workspace name…"
 		initial={draft}
 		confirm={naming === 'new' ? 'Save' : 'Rename'}
 		onsubmit={commit}

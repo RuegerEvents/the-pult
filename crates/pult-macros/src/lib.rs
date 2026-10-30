@@ -667,10 +667,16 @@ fn gen_entity_meta_submit(meta: &StructMeta) -> syn::Result<TokenStream2> {
     } else {
         (quote! { None }, quote! { None })
     };
+    // A singleton's write replaces the row whatever its id: see `db::replace_singleton`.
+    let write_one = if meta.is_singleton {
+        quote! { ::pult_schema::db::replace_singleton(&pool, &entity).await }
+    } else {
+        quote! { ::pult_schema::db::upsert(&pool, &entity).await }
+    };
     let (upsert_one_body, delete_one_body) = if has_table {
         (quote! {
             let entity: #name = ::serde_json::from_value(value)?;
-            ::pult_schema::db::upsert(&pool, &entity).await
+            #write_one
         }, quote! {
             ::pult_schema::db::delete::<#name>(&pool, id).await
         })
@@ -700,7 +706,7 @@ fn gen_entity_meta_submit(meta: &StructMeta) -> syn::Result<TokenStream2> {
                 let Some(val) = state_json.get(#table_str) else { return Ok(()); };
                 if val.is_null() { return Ok(()); }
                 let entity: #name = ::serde_json::from_value(val.clone())?;
-                ::pult_schema::db::upsert(&pool, &entity).await
+                ::pult_schema::db::replace_singleton(&pool, &entity).await
             }, quote! {
                 let entities = ::pult_schema::db::get_all::<#name>(&pool).await?;
                 Ok(::serde_json::to_value(entities.into_iter().next())?)

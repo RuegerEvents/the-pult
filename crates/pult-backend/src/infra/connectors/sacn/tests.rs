@@ -135,6 +135,7 @@ fn a_dimmer_patch(universe: u16, level: f32) -> Patch {
         address: FixtureAddress::dmx(universe, 1),
         position: None,
         sensed_values: HashMap::new(),
+        sensed_at: Default::default(),
         live_effects: Default::default(),
         live_fades: Default::default(),
         live_htp: Default::default(),

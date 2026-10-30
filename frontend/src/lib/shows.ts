@@ -19,6 +19,10 @@ export type ShowSummary = {
 	bytes?: number;
 	/** The station could not read it — its stamp disagrees with this build. */
 	madeByAnotherBuild?: boolean;
+	/** Which generation of the stored shape it is, where it could be read. */
+	generation?: number | null;
+	/** Older than this build, and an upgrade reaches it: opening it asks first. */
+	upgradable?: boolean;
 	/** Whatever went wrong reading it, where something did. */
 	problem?: string | null;
 	/** The folder is not there any more. Recent shows only. */
@@ -34,6 +38,11 @@ export type DemoCardInfo = { id: string; title: string; blurb: string };
 export type ShowList = {
 	showsDir: string | null;
 	open: string | null;
+	/**
+	 * A show this console was told to open and could not without an upgrade. It opens
+	 * by itself, upgraded, as soon as a station on this build is found running it.
+	 */
+	waitingToUpgrade?: string | null;
 	demos: DemoCardInfo[];
 	recent: ShowSummary[];
 	inDir: ShowSummary[];
@@ -124,12 +133,25 @@ export function asSize(bytes: number | undefined): string {
 export function describe(show: ShowSummary): string {
 	if (show.missing) return 'not where it was';
 	if (show.problem) return show.problem;
+	if (show.upgradable) return 'needs upgrading to open here';
 	if (show.madeByAnotherBuild) return 'made by another version of this console';
 	const parts: string[] = [];
 	parts.push(`${show.fixtures ?? 0} ${show.fixtures === 1 ? 'fixture' : 'fixtures'}`);
 	parts.push(`${show.cues ?? 0} ${show.cues === 1 ? 'cue' : 'cues'}`);
 	if (show.versions) parts.push(`${show.versions} saved`);
 	return parts.join(' · ');
+}
+
+/** What `show.open` and `show.restore` answer for a file an upgrade would touch. */
+export type Upgrade = { from: number; to: number };
+
+/**
+ * Whether an answer is the station asking before an upgrade rather than having
+ * done what it was asked. Nothing went wrong: a person has a question to answer.
+ */
+export function upgradeAsked(answer: unknown): Upgrade | null {
+	const asked = (answer as { needsUpgrade?: Upgrade } | null)?.needsUpgrade;
+	return asked && typeof asked.from === 'number' && typeof asked.to === 'number' ? asked : null;
 }
 
 /**

@@ -13,6 +13,12 @@ pub struct DiscoveredSession {
     pub show_name: String,
     /// Sync endpoint as "ip:port" string.
     pub sync_addr: String,
+    /// The showfile generation the leader's build reads, or `None` from a build that
+    /// did not say. What lets a station waiting to upgrade a show tell a leader that
+    /// has upgraded it from one that has not.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub generation: Option<i64>,
 }
 
 /// A station on the local network, found over mDNS whether or not it is in a session:

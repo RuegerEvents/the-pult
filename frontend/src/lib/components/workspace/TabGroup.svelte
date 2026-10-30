@@ -11,17 +11,17 @@
 	 * rig would be two scenes rendering the same room.
 	 */
 
-	import type { LayoutNode } from '$lib/generated/index.js';
-	import { type Path } from '$lib/layout.js';
-	import { categoryColor } from '$lib/layout/categories.js';
-	import { type PanelMeta } from '$lib/layout/panels.js';
+	import type { WorkspaceNode } from '$lib/generated/index.js';
+	import { type Path } from '$lib/workspace.js';
+	import { categoryColor } from '$lib/workspace/categories.js';
+	import { type PanelMeta } from '$lib/workspace/panels.js';
 	import {
 		beginTabDrag,
 		closePanel,
 		dragging,
 		maximized,
 		openPanel
-	} from '$lib/stores/layout.js';
+	} from '$lib/stores/workspace.js';
 	import { allPanels } from '$lib/stores/plugins.js';
 	import DropZones from './DropZones.svelte';
 	import PanelPicker from './PanelPicker.svelte';
@@ -30,7 +30,7 @@
 	import Plus from '@lucide/svelte/icons/plus';
 	import X from '@lucide/svelte/icons/x';
 
-	let { node, path }: { node: Extract<LayoutNode, { type: 'Tabs' }>; path: Path } = $props();
+	let { node, path }: { node: Extract<WorkspaceNode, { type: 'Tabs' }>; path: Path } = $props();
 
 	let adding = $state(false);
 

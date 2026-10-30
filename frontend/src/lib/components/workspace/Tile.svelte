@@ -7,14 +7,14 @@
 	 * shortest way to say "a tree" in a template.
 	 */
 
-	import type { LayoutNode } from '$lib/generated/index.js';
-	import type { Path } from '$lib/layout.js';
-	import { dragGutter } from '$lib/stores/layout.js';
+	import type { WorkspaceNode } from '$lib/generated/index.js';
+	import type { Path } from '$lib/workspace.js';
+	import { dragGutter } from '$lib/stores/workspace.js';
 	import Gutter from './Gutter.svelte';
 	import TabGroup from './TabGroup.svelte';
 	import Tile from './Tile.svelte';
 
-	let { node, path = [] }: { node: LayoutNode; path?: Path } = $props();
+	let { node, path = [] }: { node: WorkspaceNode; path?: Path } = $props();
 
 	let width = $state(0);
 	let height = $state(0);

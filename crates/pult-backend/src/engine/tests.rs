@@ -131,6 +131,7 @@ fn a_fixture(name: &str, address: u16) -> Fixture {
         address: FixtureAddress::dmx(1, address),
         position: None,
         sensed_values: Default::default(),
+        sensed_at: Default::default(),
         live_effects: Default::default(),
         live_fades: Default::default(),
         live_htp: Default::default(),
@@ -155,6 +156,24 @@ async fn set_show_then_get_it_back() {
     let got = h.engine.get(key("show")).await.unwrap();
     assert_eq!(got["name"], "Hamlet");
     assert_eq!(got["id"], show.id.to_string());
+}
+
+#[tokio::test]
+async fn a_show_with_another_id_replaces_the_one_on_disk() {
+    // A follower joining is handed the leader's show, under the leader's id. Written as
+    // a row beside its own, the next start loaded whichever came first: the stale one.
+    let mut h = harness().await;
+    let mine = a_show();
+    h.engine.set(key("show"), Lifecycle::Persisted, json(&mine)).await.unwrap();
+    let leaders = Show { id: Uuid::new_v4(), name: "HHG 2026".into(), ..a_show() };
+    h.engine.set(key("show"), Lifecycle::Persisted, json(&leaders)).await.unwrap();
+    let _ = h.engine.get(key("show")).await;
+
+    let rows: Vec<String> = sqlx::query_scalar("SELECT id FROM show").fetch_all(&*h.pool).await.unwrap();
+    assert_eq!(rows, vec![leaders.id.to_string()], "one row, the one written last");
+
+    h.reload().await;
+    assert_eq!(h.engine.get(key("show")).await.unwrap()["name"], "HHG 2026");
 }
 
 #[tokio::test]
@@ -980,6 +999,31 @@ async fn a_later_reading_replaces_the_earlier_one_on_the_same_key() {
 
     let values = h.engine.get(field_path("fixtures", fixture.id, "sensed_values")).await.unwrap();
     assert_eq!(values["Contact:0"]["value"], false);
+}
+
+#[tokio::test]
+async fn a_reading_is_stamped_when_it_changes_and_only_then() {
+    let h = harness().await;
+    let fixture = a_fixture("Sensor", 1);
+    h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
+    let contact = |value: bool| serde_json::json!({ "type": "Bool", "value": value });
+    let stamp = || async {
+        h.engine.get(field_path("fixtures", fixture.id, "sensed_at")).await.unwrap()["Contact:0"].as_u64()
+    };
+
+    // A node reporting in says what it is, not that anything happened.
+    h.engine.set_sensed_value(fixture.id, "Contact:0".into(), contact(false)).await.unwrap();
+    assert_eq!(stamp().await, None, "a first report is not a change");
+    h.engine.set_sensed_value(fixture.id, "Contact:0".into(), contact(false)).await.unwrap();
+    assert_eq!(stamp().await, None, "nor is a repeat");
+
+    let before = pult_schema::clock::now_ms();
+    h.engine.set_sensed_value(fixture.id, "Contact:0".into(), contact(true)).await.unwrap();
+    let stepped_on = stamp().await.expect("a change is stamped");
+    assert!(stepped_on >= before);
+
+    h.engine.set_sensed_value(fixture.id, "Contact:0".into(), contact(true)).await.unwrap();
+    assert_eq!(stamp().await, Some(stepped_on), "a heartbeat restating it moves nothing");
 }
 
 #[tokio::test]
@@ -5123,7 +5167,6 @@ async fn a_peers_station_row_is_seen_without_its_create() {
         net_sent: 0,
         net_window_ms: 0,
         clock: Default::default(),
-        audio_cache: Default::default(),
         sacn_slot: None,
         wing: None,
         last_seen: Utc::now(),

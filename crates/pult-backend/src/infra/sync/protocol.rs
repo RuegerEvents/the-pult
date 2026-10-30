@@ -41,7 +41,10 @@ use pult_schema::{
 // own file with whatever that follower had happened to receive, and one that had not
 // been linked to every station took a rename and a flow edit back out of the show
 // (the gig, 2026-10-27).
-pub const PROTOCOL_VERSION: u32 = 11;
+// 12 is no message at all: showfile generation 10 renamed `layouts` to `workspaces`
+// and made `layouts` the 2D drawings, so a station of each build would replicate one
+// collection into the other's.
+pub const PROTOCOL_VERSION: u32 = 12;
 
 const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024; // 8 MiB safety cap
 

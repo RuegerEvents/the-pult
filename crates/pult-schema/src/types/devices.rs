@@ -264,6 +264,19 @@ pub struct NodeAudioState {
     pub bytes_free: u64,
     /// The clip being uploaded now, if one is.
     pub uploading: Option<String>,
+    /// How far that upload has got: bytes sent of how many. Both zero with none
+    /// running. Sent, not acknowledged — the last few kilobytes are in a socket when
+    /// this says all of them, and `stored` is what says the node has the clip.
+    #[serde(default)]
+    pub upload_sent: u64,
+    #[serde(default)]
+    pub upload_total: u64,
+    /// The region each of the show's clips is on this node, by clip id: the sha to look
+    /// for in `stored` and `uploading`. A clip is cut and encoded per node, so its own
+    /// asset sha is not what a node holds, and a page could not otherwise tell which
+    /// of a node's clips is the one it is looking at.
+    #[serde(default)]
+    pub clips: BTreeMap<String, String>,
     /// How many clips the show wants on this node and does not have yet.
     pub pending: u32,
     /// An RTP stream is going to this node.
