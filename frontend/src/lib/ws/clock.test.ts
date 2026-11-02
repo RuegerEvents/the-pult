@@ -104,6 +104,11 @@ describe('the station clock, as a browser sees it', () => {
 
 		vi.advanceTimersByTime(60_000);
 		expect(asked.length).toBeGreaterThan(afterTheFirstEstimate);
+		// And at the pace it says: a round every 30 s, not a chain that doubles. An
+		// answer inside `ask` once left a timer behind each round, and this test took
+		// longer than vitest allows on a CI runner.
+		expect(asked.length).toBeLessThanOrEqual(afterTheFirstEstimate * 3);
+		expect(vi.getTimerCount()).toBe(1);
 		sync.stop();
 	});
 

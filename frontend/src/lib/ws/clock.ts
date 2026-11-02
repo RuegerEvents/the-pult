@@ -187,10 +187,13 @@ export class ClockSync {
 		if (this.timer !== null) clearTimeout(this.timer);
 		this.timer = setTimeout(
 			() => {
-				this.timer = null;
-				this.transport.ask(Date.now());
-				// If the answer never comes, ask again rather than waiting for ever.
+				// If the answer never comes, ask again rather than waiting for ever. Set
+				// before asking, so whichever answer arrives replaces it: set after, an
+				// answer that came back inside `ask` had already scheduled the next
+				// question, and this overwrote that timer without clearing it — two
+				// chains of questions, doubling every round.
 				this.timer = setTimeout(() => this.schedule(0), RETRY_MS);
+				this.transport.ask(Date.now());
 			},
 			delayMs
 		);
