@@ -8,11 +8,13 @@
 	 * which one is remembered per browser (`lastShownLayout`), the way the timeline panel
 	 * remembers its timeline, and each tile then keeps its own pick.
 	 *
-	 * Built on the drawing itself, with the Show lock open: drag a fixture from the list
-	 * beside it (or from the Plan's tray) to place one element per thing it reports, or
-	 * add the selection's sensors in one go; anything else comes from + Add. What an
-	 * element is, is edited in the Inspector. `/layout/<id>` is the same drawing with
-	 * none of the desk round it, for a phone, and presses nothing.
+	 * Built on the drawing itself, with the Show lock open: + Add → Sensor… picks which
+	 * readings of which node to place, a fixture dragged from the Plan's tray places one
+	 * element per thing it reports, and the selection's sensors go on in one go;
+	 * anything else comes from + Add too. What an element is, is edited in the
+	 * Inspector. `/layout/<id>` is the same drawing with none of the desk round it, for
+	 * a phone, read-only; with the layout's `operate_key` in its address it presses too,
+	 * and the phone dialog hands out both links side by side.
 	 */
 
 	import { get } from 'svelte/store';
@@ -20,8 +22,8 @@
 	import type { Fixture, Layout } from '$lib/generated/index.js';
 	import {
 		boxOf,
-		FIXTURE_MIME,
 		layoutUrl,
+		newOperateKey,
 		newElement,
 		NEW_LAYOUT,
 		sensingFixtures,
@@ -32,9 +34,9 @@
 		type TargetKind
 	} from '$lib/layoutView.js';
 	import { phoneHosts, phoneLocation } from '$lib/surface.js';
-	import { selectSubject } from '$lib/objects.js';
+	import { selectSubject, subject } from '$lib/objects.js';
 	import { connection } from '$lib/stores/connection.js';
-	import { lastShownLayout, layouts, writeElements } from '$lib/stores/layouts.js';
+	import { currentLayout, lastShownLayout, layouts, writeElements } from '$lib/stores/layouts.js';
 	import { selection } from '$lib/stores/selection.js';
 	import { collection } from '$lib/stores/show.js';
 	import { canEdit } from '$lib/stores/showLock.js';
@@ -48,6 +50,7 @@
 	import NameDialog from '$lib/components/NameDialog.svelte';
 	import QrCode from '$lib/components/surface/QrCode.svelte';
 	import LayoutDesk from './LayoutDesk.svelte';
+	import SensorPicker from './SensorPicker.svelte';
 
 	const data = getDataContext();
 	const station = getStationContext();
@@ -57,7 +60,7 @@
 	let creating = $state(false);
 	let showLink = $state(false);
 	let adding = $state(false);
-	let listing = $state(false);
+	let pickingSensor = $state(false);
 
 	const layout = $derived<Layout | null>($layouts.find((l) => l.id === chosen) ?? $layouts[0] ?? null);
 
@@ -74,10 +77,19 @@
 	const onLoopback = $derived(
 		typeof window !== 'undefined' && /^(localhost|127\.|\[::1\])/.test(window.location.hostname)
 	);
+	const phoneAt = () => phoneLocation(window.location, chosenHost, $station?.port ?? null);
+	/** The read-only link: it shows, and presses nothing. */
 	const link = $derived.by(() => {
 		if (!layout || typeof window === 'undefined') return '';
-		return layoutUrl(phoneLocation(window.location, chosenHost, $station?.port ?? null), layout.id);
+		return layoutUrl(phoneAt(), layout.id);
 	});
+	/** The operating link, while the layout has a key: the same page, pressing. */
+	const operateLink = $derived.by(() => {
+		if (!layout?.operate_key || typeof window === 'undefined') return '';
+		return layoutUrl(phoneAt(), layout.id, layout.operate_key);
+	});
+
+	const copy = (text: string) => copyText(text).then(() => addToast('Link copied', 'success'), (e) => addToast(String(e)));
 
 	// ── Making and adding ─────────────────────────────────────────────────────
 
@@ -91,7 +103,8 @@
 			decay: {},
 			elements: [],
 			color: null,
-			folder: null
+			folder: null,
+			operate_key: null
 		});
 		choose(id);
 		selectSubject({ kind: 'layout', id });
@@ -125,9 +138,17 @@
 		return { x: gap, y: y + gap < l.height ? y : gap };
 	}
 
-	async function placeSensors(fixtures: Fixture[], at?: { x: number; y: number }) {
+	async function placeSensors(fixtures: Fixture[], at?: { x: number; y: number }, keys?: Set<string>) {
 		if (!layout) return;
-		const added = sensorElements(fixtures, $surfaceShow.types, at ?? freeRow(layout), layout, layout.grid);
+		const added = sensorElements(
+			fixtures,
+			$surfaceShow.types,
+			at ?? freeRow(layout),
+			layout,
+			layout.grid,
+			undefined,
+			keys ? (_, key) => keys.has(key) : undefined
+		);
 		if (added.length === 0) {
 			addToast(
 				fixtures.length === 1
@@ -153,6 +174,29 @@
 	}
 
 	const sensing = $derived(sensingFixtures($surfaceShow));
+
+	/** The sensors picked in the dialog, under what is drawn, made the selection. */
+	async function addPicked(fixture: Fixture, keys: Set<string>) {
+		pickingSensor = false;
+		if (!layout) return;
+		const before = new Set(layout.elements.map((e) => e.id));
+		await placeSensors([fixture], undefined, keys);
+		const fresh = (currentLayout(layout.id)?.elements ?? []).filter((e) => !before.has(e.id));
+		if (fresh.length) subject.set(fresh.map((e) => ({ kind: 'layout-element', id: e.id })));
+	}
+
+	/**
+	 * Allow operating with a fresh key, or take the key away. Allowing it again makes a
+	 * new one, so it is also how an operating link that went too far is revoked.
+	 */
+	async function setOperable(on: boolean) {
+		if (!layout) return;
+		try {
+			await data.layouts.byId(layout.id).operate_key.set(on ? newOperateKey() : null);
+		} catch (e) {
+			addToast(e instanceof Error ? e.message : String(e));
+		}
+	}
 </script>
 
 <div class="layout-panel">
@@ -211,47 +255,36 @@
 									onclick={() => add(k.kind)}>{k.label}</button
 								>
 							{/each}
+							<hr />
+							<button
+								role="menuitem"
+								disabled={sensing.length === 0}
+								title={sensing.length ? 'Which reading of which node' : 'No fixture reports anything yet'}
+								onclick={() => {
+									adding = false;
+									pickingSensor = true;
+								}}>Sensor…</button
+							>
 						</div>
 					{/if}
 				</span>
 				<button class="btn btn-ghost btn-small" onclick={addSelection} title="One element per thing each selected fixture reports">
 					Add sensors of the selection{$selection.length ? ` (${$selection.length})` : ''}
 				</button>
-				<button class="btn btn-ghost btn-small" class:on={listing} aria-pressed={listing} onclick={() => (listing = !listing)}>Sensor list</button>
 				<span class="spacer"></span>
 				<span class="hint">Drag to move · grips resize · tap the empty canvas for its settings</span>
 			</div>
 		{/if}
 
 		<div class="work">
-			{#if $canEdit && listing}
-				<!-- Fixtures that report something, to drag onto the drawing: one element per
-				     reported parameter lands where it is dropped. A click adds them below. -->
-				<aside class="list" aria-label="Fixtures that report something">
-					{#if sensing.length === 0}
-						<p class="hint">No fixture reports anything. A sensor node's contacts and readings appear here once it is adopted.</p>
-					{/if}
-					{#each sensing as fixture (fixture.id)}
-						<button
-							class="fixture"
-							draggable="true"
-							title="Drag onto the layout, or click to add below what is there"
-							ondragstart={(e) => {
-								e.dataTransfer?.setData(FIXTURE_MIME, fixture.id);
-								e.dataTransfer?.setData('text/plain', fixture.name);
-								if (e.dataTransfer) e.dataTransfer.effectAllowed = 'copy';
-							}}
-							onclick={() => placeSensors([fixture])}
-						>
-							{fixture.name}
-						</button>
-					{/each}
-				</aside>
-			{/if}
 			<LayoutDesk {layout} show={$surfaceShow} live={$connection.connected} />
 		</div>
 	{/if}
 </div>
+
+{#if pickingSensor && layout}
+	<SensorPicker {layout} show={$surfaceShow} onadd={addPicked} onclose={() => (pickingSensor = false)} />
+{/if}
 
 {#if creating}
 	<NameDialog
@@ -263,25 +296,49 @@
 {/if}
 
 {#if showLink && layout}
-	<Dialog title="Open “{layout.name}” on a phone" onclose={() => (showLink = false)}>
-		<section class="link">
-			<QrCode text={link} size={168} />
-			<div class="link-text">
-				<p>Scan it on a phone on the same network as this station, or type:</p>
+	<Dialog title="Open “{layout.name}” on a phone" size="wide" onclose={() => (showLink = false)}>
+		<p class="intro">
+			Scan one on a phone on the same network as this station. Either opens this layout full-screen, with nothing
+			else of the console around it, and both can be handed out at once.
+		</p>
+		{#if onLoopback && hosts.length > 1}
+			<label class="check">
+				over
+				<select class="input" value={chosenHost} onchange={(e) => (host = e.currentTarget.value)}>
+					{#each hosts as h (h.address)}<option value={h.address}>{h.name} — {h.address}</option>{/each}
+				</select>
+			</label>
+		{/if}
+		<div class="links">
+			<section class="link">
+				<h3>Read-only</h3>
+				<QrCode text={link} size={150} />
 				<a class="url" href={link} target="_blank" rel="noopener">{link}</a>
-				{#if onLoopback && hosts.length > 1}
-					<label class="check">
-						over
-						<select class="input" value={chosenHost} onchange={(e) => (host = e.currentTarget.value)}>
-							{#each hosts as h (h.address)}<option value={h.address}>{h.name} — {h.address}</option>{/each}
-						</select>
-					</label>
+				<p class="hint">It shows, and nothing on it can be pressed.</p>
+				<button class="btn btn-ghost btn-small" onclick={() => copy(link)}>Copy link</button>
+			</section>
+			<section class="link">
+				<h3>Operating</h3>
+				{#if operateLink}
+					<QrCode text={operateLink} size={150} />
+					<a class="url" href={operateLink} target="_blank" rel="noopener">{operateLink}</a>
+					<p class="hint">
+						Presses what the desk presses: flow buttons, variables, timelines. Selecting a fixture stays the desk's.
+					</p>
+					<button class="btn btn-ghost btn-small" onclick={() => copy(operateLink)}>Copy link</button>
+				{:else}
+					<p class="hint">No operating link yet. Allow operating to make one.</p>
 				{/if}
-				<p class="hint">It opens this layout full-screen, with nothing else of the console around it. It shows; nothing on it can be pressed.</p>
-			</div>
-		</section>
+				<label class="check operable">
+					<input type="checkbox" checked={!!layout.operate_key} disabled={!$canEdit} onchange={(e) => setOperable(e.currentTarget.checked)} />
+					Allow operating
+				</label>
+				{#if layout.operate_key}
+					<p class="hint">Untick to stop every operating link handed out; ticking again makes a new one.</p>
+				{/if}
+			</section>
+		</div>
 		{#snippet footer()}
-			<button class="btn btn-ghost" onclick={() => copyText(link).then(() => addToast('Link copied', 'success'), (e) => addToast(String(e)))}>Copy link</button>
 			<button class="btn btn-primary" onclick={() => (showLink = false)}>Done</button>
 		{/snippet}
 	</Dialog>
@@ -327,37 +384,10 @@
 		border-radius: 6px;
 		overflow: hidden;
 	}
-	.list {
-		flex: 0 0 170px;
-		overflow-y: auto;
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
-		padding: 8px;
-		border-right: 1px solid #2a2a2a;
-		background: #17191d;
-	}
-	.fixture {
-		text-align: left;
-		padding: 6px 8px;
-		border-radius: 4px;
-		border: 1px solid #333;
-		background: #1f2227;
-		color: #ddd;
-		font-size: 12px;
-		cursor: grab;
-	}
-	.fixture:hover {
-		border-color: var(--accent, #4a90d9);
-	}
 	.btn-small {
 		min-height: 26px;
 		padding: 0 10px;
 		font-size: 12px;
-	}
-	.on {
-		border-color: var(--accent, #4a90d9);
-		color: #fff;
 	}
 	.menu-anchor {
 		position: relative;
@@ -394,6 +424,15 @@
 	.menu button:hover:not(:disabled) {
 		background: #2e2e2e;
 	}
+	.menu hr {
+		border: none;
+		border-top: 1px solid #333;
+		margin: 4px 2px;
+	}
+	.operable {
+		color: #ddd;
+		font-size: 13px;
+	}
 	.menu button:disabled {
 		color: #555;
 		cursor: default;
@@ -414,23 +453,35 @@
 		color: #999;
 		font-size: 12px;
 	}
-	.link {
-		display: flex;
-		gap: 16px;
-		align-items: center;
-		flex-wrap: wrap;
-	}
-	.link-text {
-		display: flex;
-		flex-direction: column;
-		gap: 6px;
-		min-width: 200px;
-		flex: 1;
+	.intro {
+		margin: 0 0 10px;
 		font-size: 13px;
 		color: #bbb;
+		line-height: 1.4;
+	}
+	.links {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+		gap: 16px;
+		margin-top: 10px;
+	}
+	.link {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 8px;
+		padding: 12px;
+		border: 1px solid #2a2a2a;
+		border-radius: 6px;
+	}
+	.link h3 {
+		margin: 0;
+		font-size: 13px;
+		font-weight: 600;
+		color: #ddd;
 	}
 	.url {
-		font-size: 18px;
+		font-size: 13px;
 		font-weight: 600;
 		color: #8ab4ff;
 		overflow-wrap: anywhere;

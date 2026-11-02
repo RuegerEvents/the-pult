@@ -261,7 +261,7 @@ impl Harness {
         serde_json::from_value(value).unwrap()
     }
 
-    async fn become_follower(&self) {
+    pub(super) async fn become_follower(&self) {
         self.engine
             .set(
                 vec![PathSegment::Key("session".into())],

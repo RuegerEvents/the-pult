@@ -892,8 +892,10 @@ to its middle to stack it, drag the gutters to resize, and pick a workspace from
 in the top bar. Presets are built in; *Save as…* writes an arrangement into the show
 as a `workspaces` row. Which workspace this browser is looking at is kept in `localStorage`,
 not in the show. (They were `layouts` until generation 10; that name is now the
-**`layout` panel**'s — 2D drawings with sensors, variables and timelines on them, shared
-read-only at `/layout/<id>` the way a surface is. See task 101.)
+**`layout` panel**'s — 2D drawings with sensors, variables, timelines and flow buttons on them, shared
+at `/layout/<id>` the way a surface is — read-only, and beside it an operating link
+`?key=<operate_key>` that presses what the desk presses, less selecting; allowing
+operating again makes a new key and revokes the old links. See task 101.)
 
 **Setup is a mode, not nine panels.** `PanelMeta.home` in `workspace/panels.ts` is
 `workspace | setup | both`: patching, fixture types, devices, I/O, network, session,
@@ -2286,6 +2288,11 @@ are the corpus that holds the two compilations of the evaluator to each other, a
 guard outside the default suite is a guard nobody runs. Its vitest half needs
 `scripts/build-evaluator.sh` to have been run, and says so loudly rather than passing
 quietly when it has not.
+
+**Cargo never empties `target/`**, and it reached 313 GB: every feature set, test target
+and toolchain it ever built leaves a copy behind. A dev build now keeps line tables only
+(`[profile.dev]` in `Cargo.toml` says why), and `scripts/sweep-target.sh [--days 7]
+[--dry-run]` deletes what has not been rebuilt in a week.
 
 Both the Rust build and `svelte-check` are kept at zero warnings, so a new one is
 visible rather than buried.

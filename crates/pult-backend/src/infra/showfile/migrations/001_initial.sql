@@ -139,7 +139,8 @@ CREATE TABLE IF NOT EXISTS layouts (
     "decay" TEXT NOT NULL,
     "elements" TEXT NOT NULL,
     "color" TEXT,
-    "folder" TEXT
+    "folder" TEXT,
+    "operate_key" TEXT
 );
 
 CREATE TABLE IF NOT EXISTS named_assets (

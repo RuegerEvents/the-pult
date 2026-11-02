@@ -257,8 +257,11 @@
 								class="btn btn-danger btn-icon"
 								title="Remove this tile"
 								onclick={() => {
+									// Read before letting go: `tile` is derived from the selection,
+									// and is gone the moment `selectedTile` is cleared.
+									const tiles = removeTile(surface.tiles, tile.id);
 									selectedTile = null;
-									write(removeTile(surface.tiles, tile.id));
+									void write(tiles);
 								}}>×</button
 							>
 							<button class="btn btn-ghost btn-small" onclick={() => (selectedTile = null)}>Done</button>

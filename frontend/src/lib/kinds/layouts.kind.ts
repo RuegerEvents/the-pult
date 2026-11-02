@@ -47,7 +47,9 @@ registerKind<Layout>({
 			// Fresh element ids: two layouts sharing one would select each other's.
 			elements: layout.elements.map((e) => ({ ...e, id: uuid() })),
 			backdrop: layout.backdrop ?? null,
-			folder: layout.folder ?? null
+			folder: layout.folder ?? null,
+			// A copy is not the layout somebody handed a key out for.
+			operate_key: null
 		});
 	},
 	remove: (layout) => showData().layouts.byId(layout.id).delete(),
@@ -55,10 +57,20 @@ registerKind<Layout>({
 	verbs: (layout) => [
 		{
 			id: 'copy-link',
-			label: 'Copy the phone link',
+			label: 'Copy the read-only phone link',
 			structural: false,
 			run: () => copyText(layoutUrl(window.location, layout.id))
-		}
+		},
+		...(layout.operate_key
+			? [
+					{
+						id: 'copy-operate-link',
+						label: 'Copy the operating phone link',
+						structural: false,
+						run: () => copyText(layoutUrl(window.location, layout.id, layout.operate_key))
+					}
+				]
+			: [])
 	]
 });
 

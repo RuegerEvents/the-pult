@@ -393,6 +393,10 @@ pub struct DeviceManager {
     /// Adopted nodes in the device list because the broker has them, before any browse
     /// on this station has. See [`DeviceManager::hear`].
     heard_only: std::collections::BTreeSet<String>,
+    /// The nodes this station's own browse shows now: in on a resolve, out on a
+    /// removal. What a node's `online` falls back to where the broker is not this
+    /// station's to judge by — see `MqttEvent::Status` and `reconsider_leadership`.
+    browsed: std::collections::BTreeSet<String>,
     /// Where such a node is asked over HTTP: the protocol's port, and a test's
     /// simulator's own.
     unseen_port: u16,
@@ -447,6 +451,7 @@ impl DeviceManager {
                 starts: BTreeMap::new(),
                 nets: BTreeMap::new(),
                 heard_only: Default::default(),
+                browsed: Default::default(),
                 unseen_port: NODE_HTTP_PORT,
                 clock_seq: 0,
                 door: None,
@@ -637,6 +642,13 @@ impl DeviceManager {
                 self.door = None;
                 self.brokers.clear();
                 self.state.broker_addr = None;
+                // And whether a node is on the network is the browse's to say again:
+                // what this broker said about it stopped meaning anything as the door
+                // closed. A node only the broker had shown is not seen from here.
+                for (serial, device) in self.state.discovered.iter_mut() {
+                    device.online = self.browsed.contains(serial);
+                }
+                self.on_broker.clear();
             }
         }
         // Always: joining a session changes what this node says about itself even
@@ -905,6 +917,13 @@ impl DeviceManager {
                 if online && self.hear(&serial).await {
                     return;
                 }
+                // Gone from the broker of a station that no longer drives the nodes is
+                // gone to the one that does — its door closed, and the node walked its
+                // list — not gone dark. Taken as offline, every node stayed offline on
+                // the audio MacBook after a moment's leadership while the Mini restarted,
+                // because mDNS had shown each one already and said nothing again
+                // (HHG, 2026-10-30). The leader still hears a node drop at once.
+                let online = online || (self.mqtt.is_none() && self.browsed.contains(&serial));
                 let Some(device) = self.state.discovered.get_mut(&serial) else { return };
                 if device.online == online && !moved {
                     return;
@@ -1119,6 +1138,7 @@ impl DeviceManager {
                 info!("[devices] {} ({}) at {ip}:{port}", device.name, device.module_name);
                 self.state.discovered.insert(serial.clone(), device);
                 self.heard_only.remove(&serial);
+                self.browsed.insert(serial.clone());
 
                 // Every resolve asks again, which is what makes a changed `desc` in the
                 // TXT record a refetch: the node re-announces when its description moves,
@@ -1146,6 +1166,7 @@ impl DeviceManager {
             }
 
             DeviceEvent::Removed { serial } => {
+                self.browsed.remove(&serial);
                 let Some(device) = self.state.discovered.get_mut(&serial) else { return };
                 device.online = false;
                 debug!("[devices] {serial} went quiet");

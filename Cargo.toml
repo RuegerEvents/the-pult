@@ -191,6 +191,19 @@ crossbeam-queue = "0.3"
 rten = { version = "0.26", features = ["fft"] }
 rten-tensor = "0.26"
 
+# A debug build keeps line tables and nothing else, and a dependency keeps none.
+#
+# Full debuginfo made a `pult_backend` rlib 540 MB, and every feature set, test target
+# and toolchain cargo has built leaves its own copy in `target/debug/deps` forever:
+# 313 GB on the machine this was written on. Line tables are what a backtrace and a
+# panic's file:line need; what goes is inspecting variables in lldb, which nobody here
+# does. A session that needs it sets `CARGO_PROFILE_DEV_DEBUG=full` for that build.
+# Old builds are still never removed by cargo itself: `scripts/sweep-target.sh` does that.
+[profile.dev]
+debug = "line-tables-only"
+[profile.dev.package."*"]
+debug = false
+
 # The inference runtime, optimized even in a debug build.
 #
 # Measured before it was written here: the beat detector's own test takes **63 seconds**

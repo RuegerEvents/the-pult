@@ -1,7 +1,8 @@
 <script lang="ts">
 	import NameDialog from '../NameDialog.svelte';
+	import Dialog from '../Dialog.svelte';
 	import Foldered from '$lib/components/objects/Foldered.svelte';
-	import { objectHandle } from '$lib/objectHandle.js';
+	import Card from '$lib/components/objects/Card.svelte';
 	import { onMount, untrack } from 'svelte';
 	import {
 		Background,
@@ -16,7 +17,6 @@
 	import '@xyflow/svelte/dist/style.css';
 
 	import { getDataContext } from '$lib/ws/context.js';
-	import { focusOnMount } from '$lib/actions.js';
 	import type {
 		Cue,
 		Fixture,
@@ -42,7 +42,6 @@
 		placeNear,
 		type FlowClip
 	} from '$lib/flow.js';
-	import { renaming } from '$lib/objects.js';
 	import { beginGesture, endGesture } from '$lib/stores/gesture.js';
 	import { keepView, showsAny, viewOf } from '$lib/stores/flowViews.js';
 	import FlowBridge from './FlowBridge.svelte';
@@ -70,24 +69,6 @@
 	let timelines = $state<Timeline[]>([]);
 
 	let selectedId = $state<string | null>(null);
-	// A flow's name is how an operator finds it in a list of twenty, so renaming is
-	// behind the lock along with deleting: both are edits to the show, done rarely.
-	// Which row is being renamed is the console's one `renaming`, so the context
-	// menu's Rename and a double-click open the same field.
-	const renamingId = $derived($renaming?.kind === 'flow' ? $renaming.id : null);
-	let draftName = $state('');
-	$effect(() => {
-		const id = renamingId;
-		if (id) draftName = untrack(() => flows.find((f) => f.id === id)?.name ?? '');
-	});
-
-	async function saveName(id: string) {
-		// Enter submits and the field then loses focus: only the first of the two saves.
-		if (renamingId !== id) return;
-		renaming.set(null);
-		const trimmed = draftName.trim();
-		if (trimmed) await data.flows.byId(id).name.set(trimmed);
-	}
 	let creating = $state(false);
 
 	setFlowContext({
@@ -460,6 +441,76 @@
 		}, 60);
 	});
 
+	// ── Two fingers on a touch screen ────────────────────────────────────────
+	//
+	// Svelte Flow's own touch zoom is d3-zoom's, and on the board it fought the lasso
+	// and the node drags for the second finger, so a pinch on a tablet did nothing
+	// useful. So two fingers are taken here, in the capture phase, before the board
+	// sees them: the view zooms about the fingers and follows them, and nothing under
+	// them is picked up. Only the starts and the moves are kept from the board — the
+	// ends go through, so whatever it had begun with the first finger is finished.
+
+	const MIN_ZOOM = 0.25;
+	const MAX_ZOOM = 2.5;
+
+	$effect(() => {
+		const target = board;
+		if (!target) return;
+		let pinch: { distance: number; mid: { x: number; y: number }; from: { x: number; y: number; zoom: number } } | null = null;
+		let active = false;
+		const spread = (e: TouchEvent) => {
+			const r = target.getBoundingClientRect();
+			const [a, b] = [e.touches[0], e.touches[1]];
+			return {
+				distance: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY) || 1,
+				mid: { x: (a.clientX + b.clientX) / 2 - r.left, y: (a.clientY + b.clientY) / 2 - r.top }
+			};
+		};
+		const start = (e: TouchEvent) => {
+			if (e.touches.length < 2 || !api) return;
+			e.stopPropagation();
+			e.preventDefault();
+			active = true;
+			pinch = { ...spread(e), from: api.getViewport() };
+		};
+		const move = (e: TouchEvent) => {
+			if (!active) return;
+			e.stopPropagation();
+			e.preventDefault();
+			if (!pinch || e.touches.length < 2 || !api) return;
+			const { distance, mid } = spread(e);
+			const from = pinch.from;
+			const zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, from.zoom * (distance / pinch.distance)));
+			// The point of the drawing that was under the fingers stays under them.
+			const fx = (pinch.mid.x - from.x) / from.zoom;
+			const fy = (pinch.mid.y - from.y) / from.zoom;
+			void api.setViewport({ x: mid.x - fx * zoom, y: mid.y - fy * zoom, zoom });
+		};
+		const end = (e: TouchEvent) => {
+			if (!active) return;
+			if (e.touches.length >= 2 && api) {
+				pinch = { ...spread(e), from: api.getViewport() };
+				return;
+			}
+			pinch = null;
+			if (e.touches.length === 0) {
+				active = false;
+				if (api) keepThisView(api.getViewport());
+			}
+		};
+		const opts = { capture: true, passive: false } as const;
+		target.addEventListener('touchstart', start, opts);
+		target.addEventListener('touchmove', move, opts);
+		target.addEventListener('touchend', end, opts);
+		target.addEventListener('touchcancel', end, opts);
+		return () => {
+			target.removeEventListener('touchstart', start, opts);
+			target.removeEventListener('touchmove', move, opts);
+			target.removeEventListener('touchend', end, opts);
+			target.removeEventListener('touchcancel', end, opts);
+		};
+	});
+
 	function keepThisView(viewport: { x: number; y: number; zoom: number }) {
 		if (selectedId && viewedFor === selectedId) keepView(selectedId, viewport);
 	}
@@ -470,11 +521,25 @@
 		selectedId = id;
 	}
 
+	/** The flow asked about in the delete dialog, or `null` while nobody is asking. */
+	let deleting = $state<Flow | null>(null);
+
+	/**
+	 * A flow and everything drawn in it, as one act — one Ctrl-Z puts the whole of it
+	 * back. Asked first, in the editor of the flow open: a flow is a night's worth of
+	 * wiring, and an × beside every name in the list was one slip from losing it.
+	 */
 	async function deleteFlow(flow: Flow) {
+		deleting = null;
 		const { nodes: mine, edges: wires } = graphOf(flow.id, nodes, edges);
-		await Promise.all(wires.map((e) => data.flow_edges.byId(e.id).delete()));
-		await Promise.all(mine.map((n) => data.flow_nodes.byId(n.id).delete()));
-		await data.flows.byId(flow.id).delete();
+		beginGesture();
+		try {
+			await Promise.all(wires.map((e) => data.flow_edges.byId(e.id).delete()));
+			await Promise.all(mine.map((n) => data.flow_nodes.byId(n.id).delete()));
+			await data.flows.byId(flow.id).delete();
+		} finally {
+			endGesture();
+		}
 		if (selectedId === flow.id) selectedId = null;
 	}
 
@@ -542,6 +607,21 @@
 
 <svelte:window onkeydown={onKey} onpointerdowncapture={onPagePress} />
 
+{#if deleting}
+	{@const flow = deleting}
+	{@const count = graphOf(flow.id, nodes, edges).nodes.length}
+	<Dialog title="Delete “{flow.name}”?" onclose={() => (deleting = null)} onaccept={() => deleteFlow(flow)}>
+		<p class="ask">
+			The flow and its {count} node{count === 1 ? '' : 's'} are deleted, with every wire between them. A surface
+			tile or layout button pressing one of its buttons is left pointing at nothing. Ctrl-Z brings it all back.
+		</p>
+		{#snippet footer()}
+			<button class="btn btn-ghost" onclick={() => (deleting = null)}>Cancel</button>
+			<button class="btn btn-danger" onclick={() => deleteFlow(flow)}>Delete</button>
+		{/snippet}
+	</Dialog>
+{/if}
+
 <div class="holder"><div class="flows">
 	<aside class="rail">
 		<header class="rail-head">
@@ -563,47 +643,17 @@
 		{:else}
 			<Foldered kind="flow" rows={flows} layout="column">
 				{#snippet item(flow)}
-					<div class="flow-row" use:objectHandle={{ kind: 'flow', id: flow.id }}>
-						{#if renamingId === flow.id && $canEdit}
-							<form
-								class="rename"
-								onsubmit={(e) => { e.preventDefault(); saveName(flow.id); }}
-							>
-								<input
-									class="input"
-									bind:value={draftName}
-									use:focusOnMount
-									onblur={() => saveName(flow.id)}
-									onkeydown={(e) => {
-										if (e.key === 'Escape') renaming.set(null);
-										e.stopPropagation();
-									}}
-								/>
-							</form>
-						{:else}
-							<button
-								class="pick"
-								class:current={flow.id === selectedId}
-								class:off={!flow.enabled}
-								title={$canEdit ? 'Click to open, double-click to rename' : undefined}
-								onclick={() => (selectedId = flow.id)}
-								ondblclick={() => {
-									if ($canEdit) renaming.set({ kind: 'flow', id: flow.id });
-								}}
-							>
-								{flow.name}
-							</button>
-						{/if}
-						<input
-							type="checkbox"
-							title={flow.enabled ? 'Switch off' : 'Switch on'}
-							checked={flow.enabled}
-							onchange={(e) => data.flows.byId(flow.id).enabled.set(e.currentTarget.checked)}
-						/>
-						{#if $canEdit}
-							<button class="danger" title="Delete flow" onclick={() => deleteFlow(flow)}>×</button>
-						{/if}
-					</div>
+					{@const count = nodes.filter((n) => n.flow_id === flow.id).length}
+					<!-- A card like every other pool's: a tap opens it, the menu renames it and
+					     switches it on and off, and deleting is the editor's, asked first. -->
+					<Card
+						ref={{ kind: 'flow', id: flow.id }}
+						name={flow.name}
+						state={flow.enabled ? `${count} node${count === 1 ? '' : 's'}` : 'off'}
+						dim={!flow.enabled}
+						on={flow.id === selectedId}
+						onact={() => (selectedId = flow.id)}
+					/>
 				{/snippet}
 			</Foldered>
 		{/if}
@@ -636,6 +686,14 @@
 						{item.label}
 					</button>
 				{/each}
+				<span class="grow"></span>
+				<label class="switch" title={selected.enabled ? 'Running: it acts on what it watches' : 'Off: it watches nothing and does nothing'}>
+					<input type="checkbox" checked={selected.enabled} onchange={(e) => data.flows.byId(selected.id).enabled.set(e.currentTarget.checked)} />
+					On
+				</label>
+				{#if $canEdit}
+					<button class="ghost danger-text" title="Delete this flow and everything in it" onclick={() => (deleting = selected)}>Delete flow…</button>
+				{/if}
 			</nav>
 			<!-- Selecting and moving the view, one way for each hand:
 			     trackpad — one finger drags a lasso, two fingers move the view, a pinch zooms;
@@ -671,6 +729,8 @@
 					panActivationKey={['Alt', 'Space']}
 					panOnScroll
 					zoomActivationKey={['Meta', 'Control']}
+					minZoom={MIN_ZOOM}
+					maxZoom={MAX_ZOOM}
 					multiSelectionKey={['Meta', 'Control', 'Shift']}
 					isValidConnection={validConnection}
 					onconnect={connect}
@@ -712,11 +772,6 @@
 	.rail { width: 200px; flex: none; border-right: 1px solid #2a2a2a; padding: 16px 12px; display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
 	.rail-head { display: flex; align-items: center; justify-content: space-between; }
 	h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: #999; }
-	.flow-row { display: flex; align-items: center; gap: 4px; }
-	.pick { flex: 1; text-align: left; background: none; border: none; color: #bbb; padding: 5px 7px; border-radius: 3px; font: inherit; font-size: 13px; cursor: pointer; }
-	.pick:hover { background: #252525; color: #fff; }
-	.pick.current { background: #1e3a5f44; color: #4a9eff; }
-	.pick.off { opacity: 0.5; }
 
 	.canvas { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 	.palette { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 10px 16px; border-bottom: 1px solid #2a2a2a; }
@@ -729,8 +784,9 @@
 	.ghost { background: none; border: 1px solid #3a3a3a; border-radius: 3px; color: #bbb; padding: 4px 10px; font: inherit; font-size: 12px; cursor: pointer; }
 	.ghost:hover:not(:disabled) { border-color: #555; color: #fff; }
 	.ghost:disabled { opacity: 0.4; cursor: not-allowed; }
-	.danger { background: none; border: none; color: #777; font-size: 15px; line-height: 1; padding: 2px 5px; cursor: pointer; }
-	.danger:hover { color: #e05555; }
+	.grow { flex: 1; }
+	.danger-text:hover:not(:disabled) { border-color: #e05555; color: #e05555; }
+	.ask { margin: 0; line-height: 1.45; }
 
 	/* Svelte Flow ships its own light-ish chrome; this is the rest of the console. */
 	.board :global(.svelte-flow) { background: #1a1a1a; }
@@ -739,11 +795,5 @@
 	.board :global(.svelte-flow__edge.selected .svelte-flow__edge-path) { stroke: #4a9eff; }
 	.board :global(.svelte-flow__controls-button) { background: #252525; border-bottom: 1px solid #2e2e2e; fill: #bbb; }
 	.board :global(.svelte-flow__controls-button:hover) { background: #2e2e2e; }
-	.rename {
-		flex: 1;
-		min-width: 0;
-	}
-	.rename .input {
-		width: 100%;
-	}
+	.switch { display: flex; align-items: center; gap: 5px; color: #bbb; font-size: 12px; }
 </style>

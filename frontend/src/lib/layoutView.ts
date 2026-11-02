@@ -43,6 +43,7 @@ import type {
 import { currentValue, variableLabel } from './flow.js';
 import { displayLabel, formatValue, inCell, kindLabel, parameterForKey, parameterKey } from './patch.js';
 import {
+	flowButtons,
 	inkOn,
 	stopColor,
 	timeLeft,
@@ -54,8 +55,17 @@ import {
 } from './surface.js';
 import { uuid } from './uuid.js';
 
-/** What a layout's elements can point at: the show, as far as a layout reads it. */
-export type LayoutShow = Pick<SurfaceShow, 'variables' | 'timelines' | 'fixtures' | 'types'>;
+/**
+ * What a layout's elements can point at: the show, as far as a layout reads it. The
+ * flows are optional because only a flow button needs them, and a page or a test that
+ * has none simply has no buttons to name.
+ */
+export type LayoutShow = Pick<SurfaceShow, 'variables' | 'timelines' | 'fixtures' | 'types'> &
+	Partial<Pick<SurfaceShow, 'flows' | 'flowNodes'>>;
+
+/** A layout's flow buttons, by name, as the surface lists them. */
+export const layoutButtons = (show: LayoutShow): { id: string; name: string }[] =>
+	flowButtons({ flows: show.flows ?? [], flowNodes: show.flowNodes ?? [] });
 
 // ── Decay ─────────────────────────────────────────────────────────────────────
 
@@ -165,6 +175,8 @@ export const SHAPE_COLOR = '#3a4250';
 export const LINE_COLOR = '#9aa4b2';
 /** Words when nobody chose a color for them. */
 export const TEXT_COLOR = '#e5e7eb';
+/** A flow button when nobody chose a color for it: the surface's button blue. */
+export const BUTTON_COLOR = '#2d3a4f';
 
 /** Everything an element needs drawn, worked out once per frame. */
 export type Look = {
@@ -228,6 +240,8 @@ export function targetName(target: ElementTarget, show: LayoutShow): string | nu
 			return show.variables.find((v) => v.id === target.variable_id)?.name ?? null;
 		case 'Timeline':
 			return show.timelines.find((t) => t.id === target.timeline_id)?.name ?? null;
+		case 'FlowButton':
+			return layoutButtons(show).find((b) => b.id === target.node_id)?.name ?? null;
 		default:
 			return '';
 	}
@@ -336,6 +350,11 @@ export function elementLook(element: LayoutElement, layout: Pick<Layout, 'decay'
 			return filled(numberColor(element, currentValue(variable), decay), { figure: variableLabel(variable) });
 		}
 
+		case 'FlowButton': {
+			if (!layoutButtons(show).some((b) => b.id === target.node_id)) return missing();
+			return filled(element.color || BUTTON_COLOR);
+		}
+
 		case 'Timeline': {
 			const timeline = show.timelines.find((t) => t.id === target.timeline_id);
 			if (!timeline) return missing();
@@ -374,6 +393,8 @@ export type LayoutPress = { kind: 'tile'; target: TileTarget } | { kind: 'select
 export function pressOf(element: LayoutElement): LayoutPress {
 	const press = element.press;
 	const target = element.target;
+	// A button is pressed by being one.
+	if (target.kind === 'FlowButton') return { kind: 'tile', target: { kind: 'FlowButton', node_id: target.node_id } };
 	if (!press) return null;
 	if (press.kind === 'Variable' && target.kind === 'Variable') {
 		return { kind: 'tile', target: { kind: 'VariableSetter', variable_id: target.variable_id, op: press.op } };
@@ -382,6 +403,51 @@ export function pressOf(element: LayoutElement): LayoutPress {
 		return { kind: 'tile', target: { kind: 'Timeline', timeline_id: target.timeline_id, from_start: press.from_start } };
 	}
 	if (press.kind === 'Select' && target.kind === 'Parameter') return { kind: 'select', fixtureId: target.fixture_id };
+	return null;
+}
+
+/**
+ * Whether a shared page opened with `key` presses: the layout has an operating key and
+ * this is it. Two links to one layout, so a read-only one and an operating one can be
+ * handed out at once — and a key rather than a flag, so the read-only link cannot be
+ * made to press by editing the address.
+ */
+export const operatesWith = (layout: Pick<Layout, 'operate_key'>, key: string | null): boolean =>
+	!!layout.operate_key && key === layout.operate_key;
+
+/** A fresh operating key: allowing operating again revokes the links handed out before. */
+export const newOperateKey = (): string => uuid().replace(/-/g, '');
+
+/**
+ * What pressing an element does on the shared page, when it was opened with the
+ * layout's operating key: the desk's presses, less selecting a fixture — a phone has no
+ * selection to make, and a press that silently did nothing would read as a fault.
+ */
+export function sharedPressOf(element: LayoutElement, layout: Pick<Layout, 'operate_key'>, key: string | null): LayoutPress {
+	if (!operatesWith(layout, key)) return null;
+	const press = pressOf(element);
+	return press?.kind === 'tile' ? press : null;
+}
+
+/**
+ * The frontmost element under a point in canvas units that `can` accepts, or `null`.
+ * `slop` widens every box by that much on each side, which is how a page makes a
+ * small dot a finger wide.
+ */
+export function elementAt(
+	elements: LayoutElement[],
+	point: { x: number; y: number },
+	can: (element: LayoutElement) => boolean,
+	slop = 0
+): LayoutElement | null {
+	for (let i = elements.length - 1; i >= 0; i--) {
+		const element = elements[i];
+		if (!can(element)) continue;
+		const b = boxOf(element);
+		if (point.x >= b.x - slop && point.x <= b.x + b.w + slop && point.y >= b.y - slop && point.y <= b.y + b.h + slop) {
+			return element;
+		}
+	}
 	return null;
 }
 
@@ -646,6 +712,7 @@ export const TARGET_KINDS: { kind: TargetKind; label: string }[] = [
 	{ kind: 'Parameter', label: 'Fixture parameter' },
 	{ kind: 'Variable', label: 'Variable' },
 	{ kind: 'Timeline', label: 'Timeline' },
+	{ kind: 'FlowButton', label: 'Flow button' },
 	{ kind: 'Shape', label: 'Shape' },
 	{ kind: 'Line', label: 'Line' },
 	{ kind: 'Text', label: 'Text' }
@@ -706,7 +773,9 @@ export function sensorElements(
 	origin: { x: number; y: number },
 	canvas: Size,
 	grid: number,
-	id: () => string = uuid
+	id: () => string = uuid,
+	/** Which reported parameters to place, by fixture and key; every one when absent. */
+	pick?: (fixtureId: string, key: string) => boolean
 ): LayoutElement[] {
 	const size = elementSize(canvas, grid);
 	const gap = smallest(grid) * (grid > 0 ? 1 : 2);
@@ -718,6 +787,7 @@ export function sensorElements(
 		const type = types.find((t) => t.id === fixture.fixture_type_id);
 		if (!type) continue;
 		for (const { kind, parameter } of inputsOf(type)) {
+			if (pick && !pick(fixture.id, parameterKey(kind))) continue;
 			const flag = parameter.default_value.type === 'Bool';
 			const w = flag ? size : size * 2;
 			if (x + w > canvas.width && x > left) {
@@ -781,6 +851,10 @@ export function newElement(
 			const timeline = show.timelines[0];
 			return timeline ? blank(id, at(size * 4, size), { kind: 'Timeline', timeline_id: timeline.id }) : null;
 		}
+		case 'FlowButton': {
+			const button = layoutButtons(show)[0];
+			return button ? blank(id, at(size * 2, size), { kind: 'FlowButton', node_id: button.id }) : null;
+		}
 		case 'Shape':
 			return { ...blank(id, at(size * 3, size * 2), { kind: 'Shape' }), color: SHAPE_COLOR, show_label: false };
 		case 'Line': {
@@ -814,11 +888,17 @@ export function labelSize(box: { w: number; h: number }, text: string, shared = 
 
 // ── The link ──────────────────────────────────────────────────────────────────
 
-/** Where a phone opens a layout — `surfaceUrl`'s rule, at `/layout/<id>`. */
-export function layoutUrl(location: { origin: string; search: string }, id: string): string {
+/**
+ * Where a phone opens a layout — `surfaceUrl`'s rule, at `/layout/<id>` — and with
+ * `key`, the operating link: the same page, pressing.
+ */
+export function layoutUrl(location: { origin: string; search: string }, id: string, key: string | null = null): string {
 	const port = new URLSearchParams(location.search).get('port');
-	const query = port && /^\d+$/.test(port) ? `?port=${port}` : '';
-	return `${location.origin}/layout/${encodeURIComponent(id)}${query}`;
+	const query = new URLSearchParams();
+	if (port && /^\d+$/.test(port)) query.set('port', port);
+	if (key) query.set('key', key);
+	const text = query.toString();
+	return `${location.origin}/layout/${encodeURIComponent(id)}${text ? `?${text}` : ''}`;
 }
 
 /** Whether a path is the shared page of a layout rather than the workspace. */

@@ -984,3 +984,33 @@ async fn patching_a_strip_is_one_ctrl_z() {
     assert_eq!(strip.address.strip().unwrap().mode, StripMode::Effect, "the mode");
     assert_eq!(strip.fixture_type_id, effect_type, "and its type, with it");
 }
+
+#[tokio::test]
+async fn stepping_down_hands_whether_a_node_is_online_back_to_the_browse() {
+    // The audio MacBook led for a moment while the Mini restarted, and the nodes came to
+    // its broker. When the Mini answered again they walked back to it — leaving this
+    // broker *before* the MacBook stepped down, so each one's "offline" will arrived
+    // while it still drove them, and was believed. mDNS had shown every node already
+    // and said nothing again: five nodes offline on that station for the rest of the
+    // night (HHG, 2026-10-30). What a broker this station no longer runs said stops
+    // counting when it steps down; what its own browse shows is the answer again.
+    let h = harness().await;
+    let sim = a_simulated_node(&h, ModuleKind::DigitalIn, "e2e-walk").await;
+    h.devices.adopt("e2e-walk".into()).await.unwrap();
+    eventually("the node to be on this station's broker", || async {
+        h.directory.borrow().entries.get("e2e-walk").is_some_and(|e| e.on_broker)
+    })
+    .await;
+
+    // The node leaves while this station still drives it: its will says offline, and
+    // while driving that is believed.
+    sim.stop.stop().await;
+    eventually("the will to be heard", || async { !h.state().await.discovered["e2e-walk"].online }).await;
+
+    h.become_follower().await;
+    eventually("the browse's answer to be the node's", || async {
+        let state = h.state().await;
+        !state.active && state.discovered["e2e-walk"].online
+    })
+    .await;
+}

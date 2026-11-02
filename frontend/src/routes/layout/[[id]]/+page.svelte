@@ -9,25 +9,34 @@
 	 * and when the console goes away the drawing stays, dimmed, under a banner that says
 	 * so, until the socket's own reconnect brings it back.
 	 *
-	 * **Nothing on it presses anything.** A layout's presses are the desk's; this page
-	 * only looks. What it does with a finger is look closer: pinch to zoom about the
-	 * fingers, drag to move about, double-tap to fit the whole drawing again — and turning
-	 * the phone refits it, unless somebody has zoomed in to look at one corner.
+	 * **It presses only when opened with the layout's key.** `/layout/<id>` only looks;
+	 * `/layout/<id>?key=<k>`, the operating link the desk's phone dialog hands out beside
+	 * it, presses when `k` is the layout's `operate_key` — so both can be out at once, and
+	 * ticking *Allow operating* again revokes the old ones. Then a tap on a flow button,
+	 * a variable or a timeline the desk would press presses it, through the same
+	 * `pressElement` — and selecting a fixture stays the desk's (`sharedPressOf`).
+	 * Otherwise a finger looks closer: pinch to zoom about the fingers, drag to move
+	 * about, double-tap anywhere that presses nothing to fit the whole drawing again —
+	 * and turning the phone refits it, unless somebody has zoomed in to look at one corner.
 	 */
 
 	import { page } from '$app/state';
 	import LayoutDrawing from '$lib/components/layouts/LayoutDrawing.svelte';
 	import {
 		clampView,
+		elementAt,
 		fitView,
 		isFitted,
 		layoutUrl,
+		operatesWith,
+		sharedPressOf,
+		toCanvas,
 		zoomAt,
 		type Size,
 		type View
 	} from '$lib/layoutView.js';
 	import { connection } from '$lib/stores/connection.js';
-	import { layouts } from '$lib/stores/layouts.js';
+	import { layouts, pressElement } from '$lib/stores/layouts.js';
 	import { surfaceShow } from '$lib/stores/surface.js';
 	import { getClientContext, getStationContext } from '$lib/ws/context.js';
 	import Maximize from '@lucide/svelte/icons/maximize';
@@ -39,6 +48,9 @@
 	const id = $derived(page.params.id ?? null);
 	const layout = $derived(id ? ($layouts.find((l) => l.id === id) ?? null) : null);
 	const live = $derived($connection.connected);
+	/** The key this page was opened with, for an operating link. */
+	const key = $derived(page.url.searchParams.get('key'));
+	const operating = $derived(!!layout && operatesWith(layout, key));
 
 	const linkTo = (layoutId: string) =>
 		new URL(layoutUrl({ origin: page.url.origin, search: page.url.search }, layoutId)).pathname + page.url.search;
@@ -184,6 +196,18 @@
 		if (pointers.size > 0) return;
 		pan = null;
 		if (travelled > 10) return;
+		// A tap on something this page may press presses it, and is not half a double-tap.
+		if (layout && view && live) {
+			const point = toCanvas(view, at.x, at.y);
+			// A finger is about 10 px across whatever the zoom: that much slop, in canvas units.
+			const hit = elementAt(layout.elements, point, (e) => sharedPressOf(e, layout, key) !== null, 10 / view.scale);
+			if (hit) {
+				lastTap = null;
+				flash(hit.id);
+				void pressElement(hit);
+				return;
+			}
+		}
 		const now = performance.now();
 		if (lastTap && now - lastTap.at < 320 && Math.hypot(at.x - lastTap.x, at.y - lastTap.y) < 40) {
 			view = fitView(canvas, screen);
@@ -192,6 +216,15 @@
 		} else {
 			lastTap = { at: now, x: at.x, y: at.y };
 		}
+	}
+
+	/** The element just pressed, ringed for a moment so a finger knows it landed. */
+	let pressed = $state<string | null>(null);
+	let pressedTimer: ReturnType<typeof setTimeout> | null = null;
+	function flash(id: string) {
+		pressed = id;
+		if (pressedTimer) clearTimeout(pressedTimer);
+		pressedTimer = setTimeout(() => (pressed = null), 250);
 	}
 
 	/** A wheel or a trackpad, for the page opened on a laptop. */
@@ -206,6 +239,7 @@
 <div class="phone">
 	<header class="bar">
 		<span class="title">{layout?.name ?? 'Layouts'}</span>
+		{#if operating}<span class="operating" title="Opened with the operating link: taps press">Operating</span>{/if}
 		<span class="status" class:live>
 			<span class="dot"></span>{live ? 'Connected' : 'Not connected'}
 		</span>
@@ -251,7 +285,7 @@
 			onwheel={wheel}
 		>
 			{#if view && screen.width > 0}
-				<LayoutDrawing {layout} show={$surfaceShow} {view} {screen} />
+				<LayoutDrawing {layout} show={$surfaceShow} {view} {screen} selected={pressed ? new Set([pressed]) : undefined} />
 			{/if}
 		</div>
 	{:else}
@@ -296,6 +330,16 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+	.operating {
+		padding: 2px 8px;
+		border-radius: 999px;
+		background: #7c2d12;
+		color: #fed7aa;
+		font-size: 11px;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
 	}
 	.status {
 		display: flex;

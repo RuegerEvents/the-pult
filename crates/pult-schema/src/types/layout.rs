@@ -16,9 +16,13 @@
 //! scales to whatever screen it is drawn on.
 //!
 //! **A layout shows; on the desk it may also press.** An element's `press` is the
-//! surface's idea — toggle a variable, play a timeline — and it is offered only on
-//! the desk. `/layout/<id>`, the page a phone is handed, draws the same layout and
-//! presses nothing.
+//! surface's idea — toggle a variable, play a timeline, press a flow's button.
+//! `/layout/<id>`, the page a phone is handed, draws the same layout and presses
+//! nothing. `/layout/<id>?key=<k>` is the same page, pressing — when `k` is the
+//! layout's [`Layout::operate_key`] — the desk's presses less making a selection,
+//! which a phone has no use for. Two links, so a read-only one and an operating one can
+//! be handed out at once, and a key rather than a flag in the address, so the
+//! read-only one cannot be turned into the other by editing it.
 //!
 //! The elements are one JSON column, the way a surface's tiles are: a layout is
 //! drawn as a whole by one person between shows.
@@ -55,6 +59,10 @@ pub enum ElementTarget {
     Variable { variable_id: Uuid },
     /// A timeline: running or not, how far through, and how long is left.
     Timeline { timeline_id: Uuid },
+    /// A flow's `Button` node, drawn as a button: pressing it presses the node, exactly
+    /// as the surface's `FlowButton` tile and the node's own Press do. Its press is
+    /// what it *is*, so it takes no `press` of its own.
+    FlowButton { node_id: Uuid },
     /// A filled shape and nothing else — a room, a wall, a stage.
     Shape,
     /// A line through points, in canvas units, absolute rather than inside the
@@ -188,6 +196,21 @@ pub struct Layout {
     #[ts(optional = nullable)]
     #[pult(lifecycle = PERSISTED)]
     pub folder: Option<Uuid>,
+    /// The key an operating link carries (`/layout/<id>?key=<k>`), or `None` while
+    /// there is none and every shared page only looks — which is what every layout
+    /// made before this was. Made fresh each time operating is allowed, so allowing it
+    /// again revokes the links handed out before. Not a password: anybody on the
+    /// network can open the desk itself. It keeps the read-only link read-only.
+    #[serde(default)]
+    #[pult(lifecycle = PERSISTED)]
+    pub operate_key: Option<String>,
+}
+
+impl Layout {
+    /// Whether a shared page opened with `key` presses.
+    pub fn shared_presses(&self, key: Option<&str>) -> bool {
+        matches!((self.operate_key.as_deref(), key), (Some(k), Some(given)) if !k.is_empty() && k == given)
+    }
 }
 
 impl Decay {
@@ -245,6 +268,23 @@ mod tests {
         .unwrap();
         assert!(element.show_label, "a label is drawn unless somebody said not to");
         assert_eq!(element.shape, ElementShape::Rect);
+    }
+
+    #[test]
+    fn only_the_operating_key_presses() {
+        let mut layout: Layout = serde_json::from_value(serde_json::json!({
+            "id": Uuid::nil(), "name": "Maze", "width": 200.0, "height": 120.0, "grid": 5.0,
+            "decay": {}, "elements": []
+        }))
+        .expect("a layout written before operating links reads");
+        assert!(!layout.shared_presses(None));
+        assert!(!layout.shared_presses(Some("")));
+        layout.operate_key = Some("k1".into());
+        assert!(!layout.shared_presses(None), "the read-only link stays read-only");
+        assert!(!layout.shared_presses(Some("k0")), "a revoked key presses nothing");
+        assert!(layout.shared_presses(Some("k1")));
+        layout.operate_key = Some(String::new());
+        assert!(!layout.shared_presses(Some("")));
     }
 
     #[test]

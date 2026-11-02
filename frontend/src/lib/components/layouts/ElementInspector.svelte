@@ -17,6 +17,7 @@
 		boxOf,
 		duplicated,
 		inputsOf,
+		layoutButtons,
 		newElement,
 		placed,
 		resolveDecay,
@@ -211,6 +212,9 @@
 		{:else if target.kind === 'Timeline'}
 			<span class="label">Timeline</span>
 			<Pick class="input" rows={$surfaceShow.timelines} value={target.timeline_id} disabled={!$canEdit} onpick={(id) => id && patch(row, { target: { kind: 'Timeline', timeline_id: id } })} />
+		{:else if target.kind === 'FlowButton'}
+			<span class="label">Button</span>
+			<Pick class="input" rows={layoutButtons($surfaceShow)} value={target.node_id} disabled={!$canEdit} onpick={(id) => id && patch(row, { target: { kind: 'FlowButton', node_id: id } })} />
 		{:else if target.kind === 'Line'}
 			<span class="label">Points</span>
 			<input
@@ -247,10 +251,10 @@
 			</select>
 		{/if}
 
-		{#if drawn(row)}
+		{#if drawn(row) || target.kind === 'FlowButton'}
 			<span class="label">Color</span>
 			<div class="inline">
-				<input type="color" disabled={!$canEdit} value={element.color || '#9aa4b2'} aria-label="Color" onchange={(e) => patch(row, { color: e.currentTarget.value })} />
+				<input type="color" disabled={!$canEdit} value={element.color || (target.kind === 'FlowButton' ? '#2d3a4f' : '#9aa4b2')} aria-label="Color" onchange={(e) => patch(row, { color: e.currentTarget.value })} />
 			</div>
 		{/if}
 
@@ -361,7 +365,11 @@
 			{/if}
 		{/if}
 
-		{#if !drawn(row)}
+		{#if target.kind === 'FlowButton'}
+			<span class="label">Press</span>
+			<span class="hint">presses the flow's button</span>
+			<span class="wide hint">{layout?.operate_key ? 'On the desk, and on the operating link.' : 'On the desk. An operating link presses it too, once the layout has one (Open on a phone).'}</span>
+		{:else if !drawn(row)}
 			{@const choices = pressChoices(row)}
 			{@const tag = pressTag(row)}
 			<span class="label">Press</span>
@@ -387,7 +395,11 @@
 					/>
 				{/if}
 			</div>
-			<span class="wide hint">On the desk only: the page a phone is handed presses nothing.</span>
+			<span class="wide hint">
+				{#if !layout?.operate_key}On the desk only: a phone presses nothing until the layout has an operating link (Open on a phone).
+				{:else if element.press?.kind === 'Select'}On the desk only: a phone has no selection to make.
+				{:else}On the desk, and on the operating link.{/if}
+			</span>
 		{/if}
 
 		{#if $canEdit && rows.length === 1 && layout}

@@ -2517,6 +2517,17 @@ impl LayoutEntity {
     pub fn folder(&self) -> Field<Option<Uuid>> {
         self.at.field("folder")
     }
+
+    /// The key an operating link carries (`/layout/<id>?key=<k>`), or `None` while
+    /// there is none and every shared page only looks — which is what every layout
+    /// made before this was. Made fresh each time operating is allowed, so allowing it
+    /// again revokes the links handed out before. Not a password: anybody on the
+    /// network can open the desk itself. It keeps the read-only link read-only.
+    ///
+    /// PERSISTED.
+    pub fn operate_key(&self) -> Field<Option<String>> {
+        self.at.field("operate_key")
+    }
 }
 
 // ── named_assets ────────────────────────────────────────────────────────

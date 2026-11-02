@@ -648,6 +648,10 @@ pub enum ElementTarget {
     Variable { variable_id: Uuid },
     /// A timeline: running or not, how far through, and how long is left.
     Timeline { timeline_id: Uuid },
+    /// A flow's `Button` node, drawn as a button: pressing it presses the node, exactly
+    /// as the surface's `FlowButton` tile and the node's own Press do. Its press is
+    /// what it *is*, so it takes no `press` of its own.
+    FlowButton { node_id: Uuid },
     /// A filled shape and nothing else — a room, a wall, a stage.
     Shape,
     /// A line through points, in canvas units, absolute rather than inside the
@@ -1456,6 +1460,13 @@ pub struct Layout {
     /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
     #[serde(default)]
     pub folder: Option<Uuid>,
+    /// The key an operating link carries (`/layout/<id>?key=<k>`), or `None` while
+    /// there is none and every shared page only looks — which is what every layout
+    /// made before this was. Made fresh each time operating is allowed, so allowing it
+    /// again revokes the links handed out before. Not a password: anybody on the
+    /// network can open the desk itself. It keeps the read-only link read-only.
+    #[serde(default)]
+    pub operate_key: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]

@@ -29,7 +29,9 @@
 	 * Several elements are a selection: a lasso on a one-finger or left-button drag over
 	 * the empty canvas, ⌘/Ctrl/Shift-click, ⌘A. Dragging one of them moves them all, as
 	 * one (`movedGroup`). The view moves with two fingers on a trackpad or Option, Space
-	 * or the middle button with a drag, and zooms with a pinch; *Fit* puts it back.
+	 * or the middle button with a drag, and zooms with a pinch — on a trackpad, and with
+	 * two fingers on a touch screen, which zoom about the fingers and move the view as
+	 * they go, whatever the first finger had started; *Fit* puts it back.
 	 * ⌘C, ⌘X and ⌘V copy elements through `localStorage`, across layouts and tabs, the
 	 * paste landing new, selected and in the middle of the view; ⌘D duplicates in place,
 	 * a cell off. The view is this tile's and not the show's.
@@ -181,7 +183,7 @@
 	}
 
 	function moved(event: PointerEvent) {
-		if (!drag) return;
+		if (!drag || pinching) return;
 		const dx = event.clientX - drag.startX;
 		const dy = event.clientY - drag.startY;
 		if (!drag.dragging) {
@@ -232,6 +234,19 @@
 	}
 
 	// ── Tapping ───────────────────────────────────────────────────────────────
+
+	/** A drag let go of by a second finger arriving: what was written stays, as one act. */
+	function dropDrag() {
+		if (!drag) return;
+		const was = drag;
+		if (was.frame !== null) cancelAnimationFrame(was.frame);
+		if (was.dragging) {
+			void commit();
+			endGesture();
+		}
+		drag = null;
+		overrides = null;
+	}
 
 	async function tap(event: MouseEvent, element: LayoutElement) {
 		event.stopPropagation();
@@ -383,6 +398,7 @@
 		const target = host;
 		target.setPointerCapture(event.pointerId);
 		const move = (e: PointerEvent) => {
+			if (pinching) return;
 			if (Math.hypot(e.clientX - start.x, e.clientY - start.y) > SLOP_PX) swept = true;
 			moved_ = clampView(
 				{ ...start.view, x: start.view.x + e.clientX - start.x, y: start.view.y + e.clientY - start.y },
@@ -416,6 +432,7 @@
 		target.setPointerCapture(event.pointerId);
 		let sweeping = false;
 		const move = (e: PointerEvent) => {
+			if (pinching) return;
 			const at = local(e);
 			if (!sweeping && Math.hypot(at.x - start.x, at.y - start.y) < SLOP_PX) return;
 			sweeping = true;
@@ -456,6 +473,85 @@
 		};
 		target.addEventListener('wheel', wheel, { passive: false });
 		return () => target.removeEventListener('wheel', wheel);
+	});
+
+	// ── Two fingers on a touch screen ────────────────────────────────────────
+	//
+	// Listened to in the capture phase on the desk, so a second finger is the view's
+	// whoever the first one was talking to: a drag it had started on an element is let go
+	// where it got to, a lasso is dropped, and nothing under the second finger is pressed
+	// or picked up. The pinch then lasts until the last finger is off the glass, so the
+	// finger left behind does not start a lasso of its own.
+
+	const touches = new Map<number, { x: number; y: number }>();
+	let pinch: { distance: number; mid: { x: number; y: number }; from: View } | null = null;
+	let pinching = false;
+
+	function spread() {
+		const [a, b] = [...touches.values()];
+		return { distance: Math.hypot(a.x - b.x, a.y - b.y) || 1, mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } };
+	}
+
+	$effect(() => {
+		if (!host) return;
+		const target = host;
+		const down = (e: PointerEvent) => {
+			// A fresh press starts a fresh gesture: whatever the last one left to swallow its
+			// click is spent, even where that click never came — as after a pinch.
+			if (!pinching && touches.size === 0) {
+				swept = false;
+				dragged = false;
+			}
+			if (e.pointerType !== 'touch') return;
+			touches.set(e.pointerId, local(e));
+			if (touches.size < 2) return;
+			e.stopPropagation();
+			e.preventDefault();
+			if (!pinching) {
+				pinching = true;
+				dropDrag();
+				lasso = null;
+				// Nothing the fingers were on is tapped when they come up.
+				dragged = true;
+				swept = true;
+			}
+			const { distance, mid } = spread();
+			pinch = { distance, mid, from: view };
+		};
+		const move = (e: PointerEvent) => {
+			if (e.pointerType !== 'touch' || !touches.has(e.pointerId)) return;
+			touches.set(e.pointerId, local(e));
+			if (!pinching) return;
+			e.stopPropagation();
+			if (!pinch || touches.size < 2) return;
+			const { distance, mid } = spread();
+			const zoomed = zoomAt(pinch.from, distance / pinch.distance, pinch.mid, canvas, screen);
+			moved_ = clampView({ ...zoomed, x: zoomed.x + mid.x - pinch.mid.x, y: zoomed.y + mid.y - pinch.mid.y }, canvas, screen);
+		};
+		const up = (e: PointerEvent) => {
+			if (e.pointerType !== 'touch' || !touches.has(e.pointerId)) return;
+			touches.delete(e.pointerId);
+			if (!pinching) return;
+			e.stopPropagation();
+			if (touches.size >= 2) {
+				const { distance, mid } = spread();
+				pinch = { distance, mid, from: view };
+			} else {
+				pinch = null;
+			}
+			if (touches.size === 0) pinching = false;
+		};
+		const options = { capture: true };
+		target.addEventListener('pointerdown', down, options);
+		target.addEventListener('pointermove', move, options);
+		target.addEventListener('pointerup', up, options);
+		target.addEventListener('pointercancel', up, options);
+		return () => {
+			target.removeEventListener('pointerdown', down, options);
+			target.removeEventListener('pointermove', move, options);
+			target.removeEventListener('pointerup', up, options);
+			target.removeEventListener('pointercancel', up, options);
+		};
 	});
 
 	function spaceKey(event: KeyboardEvent, down: boolean) {

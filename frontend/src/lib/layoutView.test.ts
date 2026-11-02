@@ -16,8 +16,10 @@ import {
 	draggedRect,
 	drivenKeys,
 	duplicated,
+	elementAt,
 	elementLabel,
 	elementLook,
+	sharedPressOf,
 	fitView,
 	inputsOf,
 	isLayoutPath,
@@ -332,6 +334,34 @@ describe('pressing an element', () => {
 		});
 	});
 
+	it('presses a flow button by being one', () => {
+		expect(pressOf(element({ target: { kind: 'FlowButton', node_id: 'b' } }))).toEqual({
+			kind: 'tile',
+			target: { kind: 'FlowButton', node_id: 'b' }
+		});
+	});
+
+	it('presses nothing on the shared page unless the layout lets it, and never selects there', () => {
+		const button = element({ target: { kind: 'FlowButton', node_id: 'b' } });
+		const select = element({ target: { kind: 'Parameter', fixture_id: 'f', parameter: 'Intensity' }, press: { kind: 'Select' } });
+		expect(sharedPressOf(button, { operate_key: null }, null)).toBeNull();
+		expect(sharedPressOf(button, { operate_key: null }, '')).toBeNull();
+		expect(sharedPressOf(button, { operate_key: 'k1' }, null)).toBeNull();
+		expect(sharedPressOf(button, { operate_key: 'k1' }, 'k0')).toBeNull();
+		expect(sharedPressOf(button, { operate_key: 'k1' }, 'k1')).toEqual(pressOf(button));
+		expect(sharedPressOf(select, { operate_key: 'k1' }, 'k1')).toBeNull();
+	});
+
+	it('finds the frontmost element under a finger, a dot made finger-wide by the slop', () => {
+		const back = element({ id: 'back', x: 0, y: 0, w: 100, h: 100 });
+		const dot = element({ id: 'dot', x: 50, y: 50, w: 2, h: 2 });
+		const all = () => true;
+		expect(elementAt([back, dot], { x: 51, y: 51 }, all)?.id).toBe('dot');
+		expect(elementAt([back, dot], { x: 55, y: 55 }, all)?.id).toBe('back');
+		expect(elementAt([back, dot], { x: 55, y: 55 }, (e) => e.id === 'dot', 4)?.id).toBe('dot');
+		expect(elementAt([back, dot], { x: 200, y: 200 }, all)).toBeNull();
+	});
+
 	it('does nothing for a press its target cannot take', () => {
 		expect(pressOf(element({ target: { kind: 'Shape' }, press: { kind: 'Select' } }))).toBeNull();
 		expect(pressOf(element({ target: { kind: 'Variable', variable_id: 'v' } }))).toBeNull();
@@ -423,6 +453,25 @@ describe('adding elements', () => {
 		expect(placedOnes[1].x).toBeGreaterThan(placedOnes[0].x);
 	});
 
+	it('places only the sensors picked', () => {
+		const out = sensorElements(show().fixtures, show().types, { x: 0, y: 0 }, { width: 200, height: 120 }, 5, undefined, (_, key) => key === 'Temperature');
+		expect(out.map((e) => e.target)).toEqual([{ kind: 'Parameter', fixture_id: 'pir1', parameter: 'Temperature' }]);
+		expect(out[0].x).toBe(0);
+	});
+
+	it('names, draws and starts a flow button from the show\'s flows', () => {
+		const withButton = show({
+			flows: [{ id: 'f', name: 'Reset', enabled: true } as never],
+			flowNodes: [{ id: 'b', flow_id: 'f', kind: 'Button', name: '' } as never]
+		});
+		const made = newElement('FlowButton', withButton, { x: 50, y: 50 }, { width: 200, height: 120 }, 5, null, 'n');
+		expect(made?.target).toEqual({ kind: 'FlowButton', node_id: 'b' });
+		expect(elementLabel(made!, withButton)).toBe('Reset');
+		expect(elementLook(made!, layout, withButton, ctx()).missing).toBe(false);
+		expect(elementLook(made!, layout, show(), ctx()).missing).toBe(true);
+		expect(newElement('FlowButton', show(), { x: 0, y: 0 }, { width: 200, height: 120 }, 5)).toBeNull();
+	});
+
 	it('wraps a row at the canvas edge', () => {
 		const many = Array.from({ length: 12 }, (_, i) => aFixture({ id: `p${i}`, fixture_type_id: 'pir' }));
 		const out = sensorElements(many, [pirType], { x: 0, y: 0 }, { width: 200, height: 120 }, 5);
@@ -456,6 +505,8 @@ describe('adding elements', () => {
 describe('the link', () => {
 	it('opens /layout/<id>, carrying a second station\'s port', () => {
 		expect(layoutUrl({ origin: 'http://10.0.0.2:7700', search: '?port=7701&x=1' }, 'a b')).toBe('http://10.0.0.2:7700/layout/a%20b?port=7701');
+		expect(layoutUrl({ origin: 'http://h', search: '?port=7701' }, 'a', 'k1')).toBe('http://h/layout/a?port=7701&key=k1');
+		expect(layoutUrl({ origin: 'http://h', search: '?key=k1' }, 'a')).toBe('http://h/layout/a');
 		expect(isLayoutPath('/layout/abc')).toBe(true);
 		expect(isLayoutPath('/layout')).toBe(true);
 		expect(isLayoutPath('/layouts')).toBe(false);

@@ -78,7 +78,22 @@ pub async fn open_for_writing(path: &std::path::Path) -> Result<SqlitePool> {
         .foreign_keys(true);
     // One, because there is one writer by construction and a second connection here
     // would be a second writer racing it for SQLite's write lock.
-    Ok(sqlx::sqlite::SqlitePoolOptions::new().max_connections(1).connect_with(opts).await?)
+    Ok(one_connection().connect_with(opts).await?)
+}
+
+/// A pool of exactly one connection that is **never recycled**.
+///
+/// `engine::writer` sends `BEGIN`, the batch and `COMMIT` through the pool rather than
+/// through a held connection — it has to, the generated upserts take a pool — so all
+/// of them landing on one connection is what makes the batch a transaction. sqlx's
+/// defaults close a connection 30 minutes after it opened and after 10 idle, and the
+/// replacement is opened between two statements: the open `BEGIN` dies with the old
+/// connection, the batch autocommits row by row on the new one, and `COMMIT` answers
+/// "no transaction is active". At HHG that was the autosave's warning every half hour
+/// all night. For a show in memory it is worse — a new `:memory:` connection is an
+/// empty database.
+fn one_connection() -> sqlx::sqlite::SqlitePoolOptions {
+    sqlx::sqlite::SqlitePoolOptions::new().max_connections(1).max_lifetime(None).idle_timeout(None)
 }
 
 /// Open a migrated in-memory showfile.
@@ -93,10 +108,7 @@ pub async fn open_for_writing(path: &std::path::Path) -> Result<SqlitePool> {
 /// asset store is what says no in that state, since nothing else has to.
 pub async fn open_in_memory() -> Result<SqlitePool> {
     let opts = SqliteConnectOptions::from_str("sqlite::memory:")?.foreign_keys(true);
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(opts)
-        .await?;
+    let pool = one_connection().connect_with(opts).await?;
     run_migrations(&pool, Upgrade::No, None).await?;
     Ok(pool)
 }
