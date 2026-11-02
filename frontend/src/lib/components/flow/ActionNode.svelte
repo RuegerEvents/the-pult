@@ -5,10 +5,11 @@
 		FlowNode,
 		IfRunning,
 		ParameterDefinition,
+		ParameterKind,
 		TriggerAction
 	} from '$lib/generated/index.js';
 	import { getDataContext } from '$lib/ws/context.js';
-	import { defaultValueFor, parameterKindLabel } from '$lib/patch.js';
+	import { defaultValueFor, parameterKindLabel, parameterName } from '$lib/patch.js';
 	import {
 		actionOf,
 		currentValue,
@@ -75,6 +76,10 @@
 			.map((cueId) => show.cues.find((c) => c.id === cueId))
 			.filter((c) => c !== undefined);
 	};
+
+	/// What an operator calls a parameter on one fixture: its label, or its kind.
+	const labelOn = (fixtureId: string, kind: ParameterKind) =>
+		parameterName(show.fixtures.find((f) => f.id === fixtureId), kind);
 
 	/// What an action can set on a fixture: what the console drives, never what the
 	/// fixture reports.
@@ -172,13 +177,13 @@
 			onchange={(e) => setParameter(target.fixture_id, e.currentTarget.value)}
 		>
 			{#each outputsOf(target.fixture_id) as param (parameterKindLabel(param.kind))}
-				<option value={parameterKindLabel(param.kind)}>{parameterKindLabel(param.kind)}</option>
+				<option value={parameterKindLabel(param.kind)}>{labelOn(target.fixture_id, param.kind)}</option>
 			{/each}
 		</select>
 		<div class="nodrag value">
 			<span class="unit">to</span>
 			<HomeValue
-				label={parameterKindLabel(target.parameter)}
+				label={labelOn(target.fixture_id, target.parameter)}
 				value={target.value}
 				onchange={(value) => set({ SetParameter: { ...target, value } })}
 			/>

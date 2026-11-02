@@ -41,7 +41,7 @@ import type {
 	Variable
 } from './generated/index.js';
 import { currentValue, variableLabel } from './flow.js';
-import { displayLabel, formatValue, inCell, kindLabel, parameterForKey, parameterKey } from './patch.js';
+import { parameterName, formatValue, inCell, kindLabel, parameterForKey, parameterKey } from './patch.js';
 import {
 	flowButtons,
 	inkOn,
@@ -234,7 +234,7 @@ export function targetName(target: ElementTarget, show: LayoutShow): string | nu
 	switch (target.kind) {
 		case 'Parameter': {
 			const fixture = show.fixtures.find((f) => f.id === target.fixture_id);
-			return fixture ? `${fixture.name} ${displayLabel(target.parameter)}` : null;
+			return fixture ? `${fixture.name} ${parameterName(fixture, target.parameter)}` : null;
 		}
 		case 'Variable':
 			return show.variables.find((v) => v.id === target.variable_id)?.name ?? null;

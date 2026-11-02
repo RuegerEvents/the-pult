@@ -14,7 +14,7 @@
 	 */
 
 	import Dialog from '$lib/components/Dialog.svelte';
-	import { displayLabel, parameterKey } from '$lib/patch.js';
+	import { parameterKey, parameterName } from '$lib/patch.js';
 	import { collection } from '$lib/stores/show.js';
 	import { canEdit } from '$lib/stores/showLock.js';
 	import { discardTake, mergeTake, reviewRows, reviewing, waiting, type ReviewRow } from '$lib/stores/takeReview.js';
@@ -72,7 +72,7 @@
 		const fixture = $fixtures.find((f) => f.id === row.fixtureId);
 		const type = fixture ? $types.find((t) => t.id === fixture.fixture_type_id) : undefined;
 		const parameter = type?.parameters.find((p) => parameterKey(p.kind) === row.key);
-		return `${fixture?.name ?? 'A fixture'} · ${parameter ? displayLabel(parameter.kind) : row.key}`;
+		return `${fixture?.name ?? 'A fixture'} · ${parameter ? parameterName(fixture, parameter.kind) : row.key}`;
 	}
 
 	async function answer(merge: boolean) {

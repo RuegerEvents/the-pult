@@ -25,7 +25,7 @@ import type {
 	VariableOp
 } from './generated/index.js';
 import { currentValue, variableLabel, variableOpLabel } from './flow.js';
-import { displayLabel, formatValue, parameterKey } from './patch.js';
+import { parameterName, formatValue, parameterKey } from './patch.js';
 import { rgbToHex } from './programmer.js';
 import type { PultWsClient } from './ws/client.js';
 import { offer } from './stores/learn.js';
@@ -126,7 +126,7 @@ export function targetName(target: TileTarget, show: SurfaceShow): string | null
 		}
 		case 'Parameter': {
 			const fixture = show.fixtures.find((f) => f.id === target.fixture_id);
-			return fixture ? `${fixture.name} ${displayLabel(target.parameter)}` : null;
+			return fixture ? `${fixture.name} ${parameterName(fixture, target.parameter)}` : null;
 		}
 	}
 }

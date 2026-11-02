@@ -1,9 +1,9 @@
 <script lang="ts">
 	import Pick from '$lib/components/objects/Pick.svelte';
 	import type { NodeProps } from '@xyflow/svelte';
-	import type { FlowNode, ParameterDefinition } from '$lib/generated/index.js';
+	import type { FlowNode, ParameterDefinition, ParameterKind } from '$lib/generated/index.js';
 	import { getDataContext } from '$lib/ws/context.js';
-	import { formatValue, parameterKey, parameterKindLabel } from '$lib/patch.js';
+	import { formatValue, parameterKey, parameterKindLabel, parameterName } from '$lib/patch.js';
 	import { sourceOf, variableLabel } from '$lib/flow.js';
 	import { getFlowContext } from './context.js';
 	import NodeShell from './NodeShell.svelte';
@@ -34,6 +34,10 @@
 		if (value.type === 'Bool') return { text: value.value ? 'on' : 'off', on: value.value };
 		return { text: formatValue(value), on: node.active };
 	});
+
+	/// What an operator calls a parameter on one fixture: its label, or its kind.
+	const labelOn = (fixtureId: string, kind: ParameterKind) =>
+		parameterName(show.fixtures.find((f) => f.id === fixtureId), kind);
 
 	/// Inputs first: a flow almost always watches something the rig reports rather
 	/// than something the console drives.
@@ -93,7 +97,7 @@
 		>
 			{#each parametersOf(watched.fixture_id) as param (parameterKindLabel(param.kind))}
 				<option value={parameterKindLabel(param.kind)}>
-					{parameterKindLabel(param.kind)}{param.direction === 'Input' ? '' : ' (driven)'}
+					{labelOn(watched.fixture_id, param.kind)}{param.direction === 'Input' ? '' : ' (driven)'}
 				</option>
 			{/each}
 		</select>

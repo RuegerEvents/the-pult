@@ -219,7 +219,7 @@ impl Harness {
 
     /// Send an event and wait for the manager to have finished with it. Every
     /// command is answered in order, so a round trip through Identify orders behind.
-    async fn event(&self, event: DeviceEvent) {
+    pub(super) async fn event(&self, event: DeviceEvent) {
         self.devices.0.send(DeviceCommand::Event(event)).await.unwrap();
         let _ = self.devices.identify("wait-for-the-queue-to-drain".into()).await;
     }

@@ -7,9 +7,12 @@
 	import OutputGaps from './OutputGaps.svelte';
 	import StripPatch from './StripPatch.svelte';
 	import Dialog from './Dialog.svelte';
+	import AdoptDialog from './AdoptDialog.svelte';
+	import NameConflictsDialog from './NameConflictsDialog.svelte';
+	import { portRows, tooLong, withLabel, type PortRow } from '$lib/nodeNames.js';
 	import { bytesText } from '$lib/destination.js';
 	import { collection, showData } from '$lib/stores/show.js';
-	import type { DevicesState, DiscoveredDevice, Fixture } from '$lib/generated/index.js';
+	import type { DevicesState, DiscoveredDevice, Fixture, FixtureType } from '$lib/generated/index.js';
 
 	const client = getClientContext();
 
@@ -50,6 +53,25 @@
 
 	const listed = $derived(Object.values(devices.discovered) as DiscoveredDevice[]);
 	const fixtures = collection('fixtures');
+	const types = collection('fixture_types');
+
+	/** The node an Adopt was pressed on, while its dialog is open. */
+	let adopting = $state<DiscoveredDevice | null>(null);
+	/** The node whose differing names are being settled. */
+	let settling = $state<DiscoveredDevice | null>(null);
+	/** Nodes the show is patched to and that are not here: what an adoption may replace. */
+	const gone = $derived(listed.filter((d) => !!d.adopted_fixture_id && !d.online));
+	const differing = $derived(listed.filter((d) => d.name_conflicts?.length > 0));
+
+	/**
+	 * Name a port: its parameter's label on the fixture, which the station passes on to
+	 * the node — now, or when it is next up. One Ctrl-Z.
+	 */
+	function label(row: PortRow, value: string) {
+		if (!row.fixture || !row.key || value.trim() === row.label) return;
+		if (tooLong(value)) addToast('A node keeps 31 bytes of a name; the rest is cut off on the node');
+		void showData().fixtures.byId(row.fixture.id).parameter_labels.set(withLabel(row.fixture, row.key, value));
+	}
 
 	/// The node's own fixture, where its address says whether its stream goes down
 	/// every path it is on.
@@ -62,7 +84,7 @@
 		const fixture = ownFixture(device);
 		const name = value.trim();
 		if (!fixture || !name || name === fixture.name) return;
-		if (new TextEncoder().encode(name).length > 31) addToast('A node keeps 31 bytes of its name; the rest is cut off on the node');
+		if (tooLong(name)) addToast('A node keeps 31 bytes of its name; the rest is cut off on the node');
 		void showData().fixtures.byId(fixture.id).name.set(name);
 	}
 
@@ -168,6 +190,14 @@
 		{:else}
 			<span class="badge badge--green">● Driving</span>
 		{/if}
+		{#if differing.length > 0}
+			<span
+				class="badge badge--warn"
+				title="A node and the show call something differently; open the node's Names differ to pick"
+			>
+				Names differ on {differing.length === 1 ? differing[0].name : `${differing.length} nodes`}
+			</span>
+		{/if}
 	</div>
 
 	{#if devices.active}
@@ -231,6 +261,15 @@
 						{/if}
 					</div>
 					<div class="device-actions">
+						{#if device.name_conflicts?.length > 0}
+							<button
+								class="chip-btn conflict"
+								title="The node and the show call {device.name_conflicts.length === 1 ? 'something' : `${device.name_conflicts.length} things`} differently"
+								onclick={() => (settling = device)}
+							>
+								Names differ
+							</button>
+						{/if}
 						{#if device.adopted_fixture_id}
 							<button
 								class="chip-btn"
@@ -254,7 +293,7 @@
 								class="chip-btn adopt"
 								disabled={busy === device.serial || !ports(device)}
 								title={ports(device) ? undefined : UNDESCRIBED}
-								onclick={() => act('adopt', device)}
+								onclick={() => (adopting = device)}
 							>
 								Adopt
 							</button>
@@ -296,6 +335,7 @@
 					{/if}
 
 					{#if open.has(device.serial)}
+						{@const rows = portRows(device, $fixtures as Fixture[], $types as FixtureType[])}
 						<!-- Everything the node has told this console about itself. Behind a
 						     disclosure because it is what you look at when something is
 						     wrong, and clutter the rest of the time. -->
@@ -355,20 +395,38 @@
 								{/if}
 							</dl>
 
-							{#if device.description?.ports?.length}
+							{#if rows.length}
 								<table class="ports">
 									<thead>
 										<tr><th>#</th><th>Name</th><th>Flow</th><th>Type</th><th>Can trace</th></tr>
 									</thead>
 									<tbody>
-										{#each device.description.ports as port (port.port)}
-											{@const traces = device.effects?.ports?.find((p) => p.port === port.port)}
+										{#each rows as row (row.port)}
+											{@const traces = device.effects?.ports?.find((p) => p.port === row.port)}
 											<tr>
-												<td class="mono">{port.port}</td>
-												<td>{port.name}</td>
-												<td>{port.access === 'readonly' ? 'read' : 'driven'}</td>
+												<td class="mono">{row.port}</td>
 												<td>
-													{port.dataType}{#if port.unit}<span class="dim"> {port.unit}</span>{/if}
+													{#if $canEdit && row.fixture && row.key}
+														<!-- What the operator calls it; the module's word is the
+														     placeholder, and stays the parameter's key. -->
+														<input
+															class="rename label"
+															value={row.label}
+															placeholder={row.name}
+															aria-label="Name of port {row.port}, {row.name}"
+															title={device.online ? 'Names the port on the node too' : 'Names the port on the node too, when it is next online'}
+															onchange={(e) => label(row, e.currentTarget.value)}
+															onkeydown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+														/>
+														{#if row.label}<span class="dim module-name">{row.name}</span>{/if}
+													{:else}
+														{row.label || row.name}
+														{#if row.label}<span class="dim module-name">{row.name}</span>{/if}
+													{/if}
+												</td>
+												<td>{row.access === null ? '—' : row.access === 'readonly' ? 'read' : 'driven'}</td>
+												<td>
+													{row.dataType ?? '—'}{#if row.unit}<span class="dim"> {row.unit}</span>{/if}
 												</td>
 												<td>
 													<!-- What the node said it can do for itself. Absent is the
@@ -423,6 +481,17 @@
 			<button class="btn btn-danger" onclick={() => forget(device)}>Forget</button>
 		{/snippet}
 	</Dialog>
+{/if}
+
+{#if adopting}
+	<AdoptDialog device={adopting} gone={gone} onclose={() => (adopting = null)} />
+{/if}
+
+{#if settling}
+	{@const current = listed.find((d) => d.serial === settling?.serial)}
+	{#if current && current.name_conflicts.length > 0}
+		<NameConflictsDialog device={current} onclose={() => (settling = null)} />
+	{/if}
 {/if}
 
 <style>
@@ -587,6 +656,11 @@
 	.chip-btn:hover:not(:disabled) { border-color: #888; color: #ccc; }
 	.chip-btn:disabled { cursor: not-allowed; opacity: 0.4; }
 	.chip-btn.adopt { border-color: #4a9eff44; color: #4a9eff; }
+	.chip-btn.conflict { border-color: #a16207; color: #fbbf24; }
+	.chip-btn.conflict:hover:not(:disabled) { background: #a1620722; border-color: #fbbf24; }
+	.badge--warn  { background: #a1620722; color: #fbbf24; border: 1px solid #a16207; }
+	.rename.label { width: 11rem; font-size: inherit; }
+	.module-name { margin-left: 4px; font-size: 0.65rem; }
 	.chip-btn.adopt:hover:not(:disabled) { background: #4a9eff22; border-color: #4a9eff; }
 
 	.hint {

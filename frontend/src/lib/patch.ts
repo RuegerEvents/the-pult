@@ -144,6 +144,23 @@ export function displayLabel(kind: ParameterKind): string {
 	return `Contact ${kind.Contact}`;
 }
 
+/**
+ * What an operator calls one fixture's parameter: what somebody named it — "Ausgang
+ * PIR", kept on the fixture and, for an OpenHaunt node, on the node too — or else
+ * [`displayLabel`]. Wherever a parameter is shown *on a fixture*, this is the word; a
+ * parameter of a type, with no fixture to ask, is still `displayLabel`.
+ *
+ * A label is never the key. `Named:Sensor 1` is what cues and flows hold, and it stays
+ * that when somebody calls the port something else.
+ */
+export function parameterName(
+	fixture: { parameter_labels?: { [key in string]?: string } | null } | null | undefined,
+	kind: ParameterKind
+): string {
+	const label = fixture?.parameter_labels?.[parameterKey(kind)]?.trim();
+	return label ? label : displayLabel(kind);
+}
+
 /** A parameter kind as a string, including the tagged variants. */
 export function parameterKindLabel(kind: ParameterKind): string {
 	if (typeof kind === 'string') return kind;

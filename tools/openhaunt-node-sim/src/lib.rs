@@ -78,6 +78,10 @@ pub struct PortDescription {
     /// `OpenHaunt/node/docs/14-pixels.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub head: Option<u8>,
+    /// What somebody called the port — "Ausgang PIR" — where anybody did. Not its
+    /// `name`, which is the module's word for it and what a console keys it by.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 impl PortDescription {
@@ -99,6 +103,7 @@ impl PortDescription {
             class: None,
             effects: None,
             head: None,
+            label: None,
         }
     }
 
@@ -721,6 +726,80 @@ struct Node {
     audio: Arc<audio::Audio>,
     /// Its strip outputs, whose mode a console sets.
     pixels: Arc<pixels::Pixels>,
+    /// What it and its ports and heads are called now. A console renames them.
+    names: Arc<Mutex<Names>>,
+    /// Its mDNS registration, to say the new name and `desc` when they change.
+    stop: Stopper,
+    http_port: Arc<std::sync::atomic::AtomicU16>,
+}
+
+/// What a node is called, and what somebody called its ports and heads: the part of
+/// `POST /api/v1/config` that is about names.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Names {
+    name: String,
+    ports: BTreeMap<u8, String>,
+    heads: BTreeMap<u8, String>,
+    /// Counts every change, so the TXT record's `desc` moves with it.
+    generation: u32,
+}
+
+/// What the firmware keeps of a name: `OH_NAME_MAX`, 32 bytes with the terminator.
+const NAME_MAX: usize = 31;
+
+impl Names {
+    fn from(config: &NodeConfig) -> Names {
+        Names {
+            name: config.name.clone(),
+            ports: config.ports.iter().filter_map(|p| Some((p.port, p.label.clone()?))).collect(),
+            heads: BTreeMap::new(),
+            generation: 0,
+        }
+    }
+
+    /// Apply the `name` and `labels` of a config body, the whole of it or none: a label
+    /// on a port this node does not have, or one longer than the firmware keeps, refuses
+    /// the body. An empty label clears one.
+    fn apply(&mut self, body: &Value, ports: &[u8], heads: &[u8]) -> std::result::Result<bool, String> {
+        let mut next = self.clone();
+        let fits = |label: &str| -> std::result::Result<String, String> {
+            let label = label.trim();
+            if label.len() > NAME_MAX {
+                return Err(format!("\"{label}\" is longer than {NAME_MAX} bytes"));
+            }
+            if label.chars().any(char::is_control) {
+                return Err("a name has no control characters".into());
+            }
+            Ok(label.to_string())
+        };
+        if let Some(name) = body["name"].as_str() {
+            let name = fits(name)?;
+            if !name.is_empty() {
+                next.name = name;
+            }
+        }
+        for (key, which, known) in [("ports", &mut next.ports, ports), ("heads", &mut next.heads, heads)] {
+            let Some(given) = body["labels"][key].as_object() else { continue };
+            for (number, label) in given {
+                let n: u8 = number.parse().map_err(|_| format!("{key}: \"{number}\" is not a number"))?;
+                if !known.contains(&n) {
+                    return Err(format!("{key}: there is no {n}"));
+                }
+                let label = fits(label.as_str().ok_or_else(|| format!("{key}: {n} is not a string"))?)?;
+                if label.is_empty() {
+                    which.remove(&n);
+                } else {
+                    which.insert(n, label);
+                }
+            }
+        }
+        let changed = next != *self;
+        if changed {
+            next.generation += 1;
+            *self = next;
+        }
+        Ok(changed)
+    }
 }
 
 impl Node {
@@ -848,7 +927,11 @@ pub async fn start(config: SimConfig) -> Result<SimHandle> {
 
     let (pixels, pixel_frames) = pixels::Pixels::new(node_config.pixels.clone());
     let pixels = Arc::new(pixels);
+    let stop = Stopper::default();
     let node = Node {
+        names: Arc::new(Mutex::new(Names::from(&node_config))),
+        stop: stop.clone(),
+        http_port: Arc::new(std::sync::atomic::AtomicU16::new(0)),
         pixels: pixels.clone(),
         config: node_config.clone(),
         config_tx: Arc::new(config_tx),
@@ -859,9 +942,9 @@ pub async fn start(config: SimConfig) -> Result<SimHandle> {
         clock: Arc::new(Mutex::new(motion::ClockOffset::default())),
         audio: Arc::new(audio::Audio::new(audio_tx)),
     };
-    let stop = Stopper::default();
 
     let http_addr = serve_http(node.clone(), &stop, broker_tx).await?;
+    node.http_port.store(http_addr.port(), std::sync::atomic::Ordering::Relaxed);
     let audio_handle = node.audio.clone();
 
     // A node listens for sACN exactly when it says it forwards a universe. There
@@ -886,7 +969,7 @@ pub async fn start(config: SimConfig) -> Result<SimHandle> {
     stop.holds(tokio::spawn(run_mqtt(node, broker_rx, inputs_rx, auto)));
 
     if node_config.advertise {
-        advertise(&node_config, http_addr, &stop)?;
+        advertise(&node_config, &Names::from(&node_config), http_addr, &stop)?;
     }
 
     info!("[sim] {} on {http_addr}", node_config.serial);
@@ -926,6 +1009,15 @@ async fn serve_http(
                     let broker = broker.clone();
                     async move {
                         info!("[sim] {} configured: {body}", node.config.serial);
+                        // The names first, because they are the part that can be refused,
+                        // and a body that is refused changes nothing.
+                        if let Err(why) = rename(&node, &body) {
+                            warn!("[sim] {} refused names: {why}", node.config.serial);
+                            return (
+                                axum::http::StatusCode::BAD_REQUEST,
+                                Json(json!({ "ok": false, "error": why })),
+                            );
+                        }
                         let list = brokers::from_json(&body["mqtt"]);
                         if !list.is_empty() {
                             node.describe(|s| s.brokers = list.clone());
@@ -943,7 +1035,7 @@ async fn serve_http(
                         }
                         node.describe(|s| s.adopted = true);
                         let _ = node.config_tx.send(Some(body));
-                        Json(json!({ "ok": true }))
+                        (axum::http::StatusCode::OK, Json(json!({ "ok": true })))
                     }
                 }
             }),
@@ -969,13 +1061,43 @@ async fn serve_http(
     Ok(addr)
 }
 
+/// Take the names in a config body, and say so wherever a node says what it is called:
+/// its snapshot, and its TXT record, whose `desc` moving is what tells a console to ask
+/// `/info` again.
+fn rename(node: &Node, body: &Value) -> std::result::Result<(), String> {
+    let ports: Vec<u8> = node.config.ports.iter().map(|p| p.port).chain(node.pixels.ports().iter().map(|p| p.port)).collect();
+    let heads: Vec<u8> = node.pixels.heads().as_array().into_iter().flatten().filter_map(|h| h["head"].as_u64().map(|h| h as u8)).collect();
+    let names = {
+        let mut names = node.names.lock().unwrap();
+        if !names.apply(body, &ports, &heads)? {
+            return Ok(());
+        }
+        names.clone()
+    };
+    info!("[sim] {} is called \"{}\" now, with {} port label(s)", node.config.serial, names.name, names.ports.len());
+    node.describe(|s| {
+        s.config.name = names.name.clone();
+        for port in &mut s.config.ports {
+            port.label = names.ports.get(&port.port).cloned();
+        }
+    });
+    if node.config.advertise {
+        let port = node.http_port.load(std::sync::atomic::Ordering::Relaxed);
+        if let Err(e) = advertise(&node.config, &names, SocketAddr::from(([0, 0, 0, 0], port)), &node.stop) {
+            warn!("[sim] could not say the new name: {e}");
+        }
+    }
+    Ok(())
+}
+
 async fn info(State(node): State<Node>) -> Json<Value> {
     let module = &node.config.module;
+    let names = node.names.lock().unwrap().clone();
     let mut info = json!({
         "v": "1",
         "fw": "0.0.0-sim",
         "sn": node.config.serial,
-        "name": node.config.name,
+        "name": names.name,
         "module": {
             "type": format!("{:#06x}", module.type_id),
             "name": module.name,
@@ -986,10 +1108,24 @@ async fn info(State(node): State<Node>) -> Json<Value> {
         },
         // Only the device knows what it is. A controller reads this and builds its
         // fixture type from it; it carries no catalog of module types.
-        "ports": node.config.ports.iter().cloned().chain(node.pixels.ports()).collect::<Vec<_>>(),
+        "ports": node
+            .config
+            .ports
+            .iter()
+            .cloned()
+            .chain(node.pixels.ports())
+            .map(|p| PortDescription { label: names.ports.get(&p.port).cloned(), ..p })
+            .collect::<Vec<_>>(),
     });
     if !node.pixels.is_empty() {
-        info["heads"] = node.pixels.heads();
+        let mut heads = node.pixels.heads();
+        for head in heads.as_array_mut().into_iter().flatten() {
+            let label = head["head"].as_u64().and_then(|h| names.heads.get(&(h as u8)));
+            if let Some(label) = label {
+                head["label"] = json!(label);
+            }
+        }
+        info["heads"] = heads;
         info["pixels"] = node.pixels.describe();
     }
     // `dmx` is present only on a node that forwards a universe: its absence is
@@ -1501,7 +1637,7 @@ pub fn parse_e131(packet: &[u8]) -> Option<(u16, Vec<u8>)> {
 
 // ── mDNS ──────────────────────────────────────────────────────────────────────
 
-fn advertise(config: &NodeConfig, http_addr: SocketAddr, stop: &Stopper) -> Result<()> {
+fn advertise(config: &NodeConfig, names: &Names, http_addr: SocketAddr, stop: &Stopper) -> Result<()> {
     // The daemon skips every interface it may not send on and says so only at `debug`,
     // so a node nobody can find would look exactly like one that is advertising. The
     // usual cause on a Mac is the Local Network privacy setting of whatever app started
@@ -1516,7 +1652,12 @@ fn advertise(config: &NodeConfig, http_addr: SocketAddr, stop: &Stopper) -> Resu
             );
         }
     }
-    let daemon = mdns_sd::ServiceDaemon::new()?;
+    // Said again on a rename: the same daemon, the record replaced.
+    let held = stop.mdns.lock().unwrap().as_ref().map(|(daemon, _)| daemon.clone());
+    let daemon = match held {
+        Some(daemon) => daemon,
+        None => mdns_sd::ServiceDaemon::new()?,
+    };
     let mut txt = std::collections::HashMap::new();
     txt.insert("v".to_string(), "1".to_string());
     txt.insert("fw".to_string(), "0.0.0-sim".to_string());
@@ -1526,7 +1667,9 @@ fn advertise(config: &NodeConfig, http_addr: SocketAddr, stop: &Stopper) -> Resu
     txt.insert("modsn".to_string(), format!("mod-{}", config.serial));
     txt.insert("modrev".to_string(), config.module.rev.clone());
     txt.insert("caps".to_string(), config.module.caps.clone());
-    txt.insert("name".to_string(), config.name.clone());
+    txt.insert("name".to_string(), names.name.clone());
+    // Only that it moved matters to a console: it asks `/info` again.
+    txt.insert("desc".to_string(), format!("{:04x}", names.generation));
     // The one fact worth stating before anybody asks: a mains warning is more use
     // early than correct-and-late.
     if config.module.switches_mains() {
@@ -1716,6 +1859,26 @@ mod tests {
         assert!(silent.ports.is_empty());
         assert_eq!(silent.dmx, None);
         assert!(silent.problems().is_empty(), "saying nothing is not a malformed config");
+    }
+
+    #[test]
+    fn names_are_taken_whole_or_not_at_all() {
+        let mut names = Names { name: "Node".into(), ..Names::default() };
+        let body = json!({ "name": "Hof", "labels": { "ports": { "4": "Ausgang PIR", "9": "x" } } });
+        assert!(names.apply(&body, &[0, 4], &[]).is_err(), "there is no port 9");
+        assert_eq!(names.name, "Node", "and so nothing was taken");
+
+        let body = json!({ "name": "Hof", "labels": { "ports": { "4": "Ausgang PIR" }, "heads": { "1": "LED Streifen Tor" } } });
+        assert_eq!(names.apply(&body, &[0, 4], &[1]), Ok(true));
+        assert_eq!(names.name, "Hof");
+        assert_eq!(names.ports[&4], "Ausgang PIR");
+        assert_eq!(names.heads[&1], "LED Streifen Tor");
+        assert_eq!(names.apply(&body, &[0, 4], &[1]), Ok(false), "the same again is no change");
+
+        assert_eq!(names.apply(&json!({ "labels": { "ports": { "4": "" } } }), &[0, 4], &[1]), Ok(true));
+        assert!(names.ports.is_empty(), "an empty label clears it");
+        let long = "Ä".repeat(16);
+        assert!(names.apply(&json!({ "labels": { "ports": { "0": long } } }), &[0, 4], &[1]).is_err(), "32 bytes");
     }
 
     #[test]

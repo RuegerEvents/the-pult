@@ -7,7 +7,7 @@
  */
 
 import type { Fixture, FixtureType, ParameterKind } from '$lib/generated/index.js';
-import { displayLabel, parameterKey } from '$lib/patch.js';
+import { parameterName, parameterKey } from '$lib/patch.js';
 
 /** What `POST /api/import/obc/read` says about one controller. */
 export type Described = {
@@ -85,7 +85,7 @@ function ports(
 				fixtureId: fixture.id,
 				key: parameterKey(parameter.kind),
 				kind: parameter.kind,
-				label: `${fixture.name} · ${displayLabel(parameter.kind)}`,
+				label: `${fixture.name} · ${parameterName(fixture, parameter.kind)}`,
 				fixture: fixture.name
 			});
 		}

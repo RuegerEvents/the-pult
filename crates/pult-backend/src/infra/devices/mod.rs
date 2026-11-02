@@ -40,6 +40,9 @@ use crate::{
 
 pub mod broker;
 pub mod mqtt;
+mod names;
+
+pub use names::{AdoptNames, Comparison};
 
 pub const SERVICE_TYPE: &str = "_openhaunt._tcp.local.";
 
@@ -86,8 +89,18 @@ pub enum DeviceEvent {
 
 #[allow(dead_code, reason = "SetOutput gains its caller with the output plugin")]
 pub enum DeviceCommand {
-    /// Turn a discovered device into a patched fixture.
-    Adopt { serial: String, reply: oneshot::Sender<Result<Uuid, String>> },
+    /// Turn a discovered device into a patched fixture — or into the fixtures of a
+    /// node that is gone, `replaces` — calling things what `names` says.
+    Adopt {
+        serial: String,
+        replaces: Option<String>,
+        names: Option<AdoptNames>,
+        reply: oneshot::Sender<Result<Uuid, String>>,
+    },
+    /// Settle where a node and the show call something differently.
+    Names { serial: String, choices: Vec<pult_schema::types::devices::NameChoice>, reply: oneshot::Sender<Result<(), String>> },
+    /// What adopting `serial` in place of `replaces` would leave without a port.
+    Compare { serial: String, replaces: String, reply: oneshot::Sender<Result<Comparison, String>> },
     /// Make the node blink, so the operator can tell which box it is.
     Identify { serial: String, reply: oneshot::Sender<Result<(), String>> },
     /// Unpatch a device's fixture. The device stays discovered.
@@ -130,8 +143,36 @@ pub struct DeviceHandle(pub mpsc::Sender<DeviceCommand>);
 #[allow(dead_code, reason = "set_output gains its caller with the output plugin")]
 impl DeviceHandle {
     pub async fn adopt(&self, serial: String) -> Result<Uuid, String> {
+        self.adopt_named(serial, None, None).await
+    }
+
+    /// Adopt, perhaps in place of a node that is gone, with the names the operator gave.
+    pub async fn adopt_named(
+        &self,
+        serial: String,
+        replaces: Option<String>,
+        names: Option<AdoptNames>,
+    ) -> Result<Uuid, String> {
         let (tx, rx) = oneshot::channel();
-        let _ = self.0.send(DeviceCommand::Adopt { serial, reply: tx }).await;
+        let _ = self.0.send(DeviceCommand::Adopt { serial, replaces, names, reply: tx }).await;
+        rx.await.unwrap_or_else(|_| Err("device manager is gone".into()))
+    }
+
+    /// Settle name conflicts on one node, each for the node's side or the show's.
+    pub async fn settle_names(
+        &self,
+        serial: String,
+        choices: Vec<pult_schema::types::devices::NameChoice>,
+    ) -> Result<(), String> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.0.send(DeviceCommand::Names { serial, choices, reply: tx }).await;
+        rx.await.unwrap_or_else(|_| Err("device manager is gone".into()))
+    }
+
+    /// What adopting `serial` in place of `replaces` would leave without a port.
+    pub async fn compare(&self, serial: String, replaces: String) -> Result<Comparison, String> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.0.send(DeviceCommand::Compare { serial, replaces, reply: tx }).await;
         rx.await.unwrap_or_else(|_| Err("device manager is gone".into()))
     }
 
@@ -416,6 +457,9 @@ pub struct DeviceManager {
     vitals: BTreeMap<String, pult_schema::types::devices::NodeVitals>,
     /// What this station last said in its `node_health` row.
     health_said: Option<pult_schema::types::devices::NodeHealthReport>,
+    /// The names each node was last told, so that one which keeps none of them —
+    /// firmware from before labels — is not told again on every comparison.
+    names_told: BTreeMap<String, serde_json::Value>,
 }
 
 impl DeviceManager {
@@ -460,6 +504,7 @@ impl DeviceManager {
                     .map(|_| std::time::Instant::now() + REJOIN_GRACE),
                 vitals: BTreeMap::new(),
                 health_said: None,
+                names_told: BTreeMap::new(),
             },
             DeviceHandle(tx),
             directory_rx,
@@ -499,8 +544,12 @@ impl DeviceManager {
             self.engine.subscribe_pattern(PathPattern::new("fixtures/*")).await,
             self.engine.subscribe_pattern(PathPattern::new("fixtures/*/address")).await,
         ]);
-        // A node's own fixture renamed is the node renamed.
-        let mut names = self.engine.subscribe_pattern(PathPattern::new("fixtures/*/name")).await;
+        // A node's own fixture renamed is the node renamed, a strip's is the strip's
+        // label, and a parameter's label is its port's.
+        let mut names = futures::stream::select_all([
+            self.engine.subscribe_pattern(PathPattern::new("fixtures/*/name")).await,
+            self.engine.subscribe_pattern(PathPattern::new("fixtures/*/parameter_labels")).await,
+        ]);
 
         self.push_state().await;
         // Every node the show is patched to is in the list from the start, offline until
@@ -544,8 +593,14 @@ impl DeviceManager {
                     match cmd {
                         DeviceCommand::Stop => break,
                         DeviceCommand::Event(event) => self.handle_event(event).await,
-                        DeviceCommand::Adopt { serial, reply } => {
-                            let _ = reply.send(self.adopt(&serial).await);
+                        DeviceCommand::Adopt { serial, replaces, names, reply } => {
+                            let _ = reply.send(self.adopt_named(&serial, replaces.as_deref(), names).await);
+                        }
+                        DeviceCommand::Names { serial, choices, reply } => {
+                            let _ = reply.send(self.settle_names(&serial, &choices).await);
+                        }
+                        DeviceCommand::Compare { serial, replaces, reply } => {
+                            let _ = reply.send(self.compare(&serial, &replaces).await);
                         }
                         DeviceCommand::Identify { serial, reply } => {
                             let _ = reply.send(self.identify(&serial).await);
@@ -579,12 +634,12 @@ impl DeviceManager {
                     // to come along (the audio MacBook, HHG 2026-10-30).
                     self.reconcile_adoptions().await;
                     self.name_heads().await;
-                    self.push_renamed().await;
+                    self.sync_all_names().await;
                     self.publish().await;
                 }
                 Some(_) = names.next() => {
                     self.name_heads().await;
-                    self.push_renamed().await;
+                    self.sync_all_names().await;
                 }
                 _ = clock.tick() => self.publish_clock().await,
                 _ = strips.tick() => self.reconcile_all_strips().await,
@@ -1133,6 +1188,13 @@ impl DeviceManager {
                     health: self.state.discovered.get(&serial).and_then(|d| d.health.clone()),
                     last_seen: Utc::now(),
                     net: self.nets.get(&serial).cloned().unwrap_or_default(),
+                    labels: self.state.discovered.get(&serial).and_then(|d| d.labels.clone()),
+                    name_conflicts: self
+                        .state
+                        .discovered
+                        .get(&serial)
+                        .map(|d| d.name_conflicts.clone())
+                        .unwrap_or_default(),
                 };
 
                 info!("[devices] {} ({}) at {ip}:{port}", device.name, device.module_name);
@@ -1160,6 +1222,7 @@ impl DeviceManager {
                 if adopted {
                     self.reconsider_leadership().await;
                     self.push_config(&serial).await;
+                    self.sync_names(&serial).await;
                 }
 
                 self.publish().await;
@@ -1167,6 +1230,8 @@ impl DeviceManager {
 
             DeviceEvent::Removed { serial } => {
                 self.browsed.remove(&serial);
+                // Whatever it was told, a node that comes back may have been reset.
+                self.names_told.remove(&serial);
                 let Some(device) = self.state.discovered.get_mut(&serial) else { return };
                 device.online = false;
                 debug!("[devices] {serial} went quiet");
@@ -1203,10 +1268,11 @@ impl DeviceManager {
         let audio = NodeAudio::from_info(&info);
         let pixels = NodePixels::from_info(&info);
         let identity = Identity::from_info(&info);
+        let labels = openhaunt::NodeLabels::from_info(&info);
         // The whole body, not just the two keys: `ports` and `dmx` both default,
         // so firmware that predates self-description parses as having neither.
         let description = serde_json::from_value(info).unwrap_or_default();
-        Some(WhatItIs { mains, description, effects, audio, pixels, identity })
+        Some(WhatItIs { mains, description, effects, audio, pixels, identity, labels })
     }
 
     /// Ask the node what it is, and keep the answer.
@@ -1222,6 +1288,7 @@ impl DeviceManager {
             device.effects = what.effects;
             device.audio = what.audio;
             device.pixels = what.pixels;
+            device.labels = Some(what.labels);
         }
     }
 
@@ -1252,6 +1319,7 @@ impl DeviceManager {
             self.reconcile_adoptions().await;
             for serial in &waiting {
                 self.retype(serial).await;
+                self.sync_names(serial).await;
             }
             self.publish().await;
         }
@@ -1373,7 +1441,6 @@ impl DeviceManager {
         // One fixture per head: the node's own ports on head 0, and each strip (or
         // whatever else the node calls a head) a fixture of its own, so two strips do
         // not collide on one color.
-        let effects = device.pixels.as_ref().map(|p| p.effects.clone()).unwrap_or_default();
         // A node carries a universe exactly when it says it forwards one.
         let universe = match description.dmx {
             Some(_) => Some(self.next_free_universe().await),
@@ -1381,43 +1448,7 @@ impl DeviceManager {
         };
         let mut fixture = None;
         for head in description.head_numbers() {
-            let node_type = openhaunt::head_type_from(
-                device.module_type,
-                &device.module_name,
-                description,
-                head,
-                &effects,
-            );
-            let strip = device
-                .pixels
-                .as_ref()
-                .and_then(|p| p.strip_for_head(head))
-                .map(PixelStrip::from_node);
-            // A strip the node is already running in `sacn` mode is a strip of cells.
-            let fixture_type = match strip.as_ref().filter(|s| s.mode == StripMode::Sacn) {
-                Some(strip) => pixels::strip_type(strip),
-                None => node_type.clone(),
-            };
-            self.ensure_fixture_type(&fixture_type).await?;
-            let name = match head {
-                0 => device.name.clone(),
-                _ => format!("{} {}", device.name, node_type.name),
-            };
-            let this = Fixture {
-                // Head 0 is the node's own fixture and was always a fresh id; every other
-                // head is derived, so a second console adopting the node makes the same row.
-                id: if head == 0 { Uuid::new_v4() } else { openhaunt::head_fixture_id(serial, head) },
-                name,
-                fixture_type_id: fixture_type.id,
-                address: FixtureAddress::OpenHaunt {
-                    serial: serial.to_string(),
-                    universe: if head == 0 { universe } else { None },
-                    head: (head != 0).then_some(head),
-                    strip: strip.clone(),
-                    redundant_stream: None,
-                },
-                ..Fixture::default()
-            };
+            let this = self.head_fixture(serial, &device, description, head, universe).await?;
             self.write(create_path("fixtures"), &this).await?;
             if head == 0 {
                 fixture = Some(this);
@@ -1442,6 +1473,51 @@ impl DeviceManager {
 
         self.publish().await;
         Ok(fixture.id)
+    }
+
+    /// The fixture one head of a node becomes, its type made sure of: what adoption
+    /// writes for each head, and what replacing a node writes for a head the old one
+    /// did not have. `universe` is head 0's, for a node that forwards one.
+    async fn head_fixture(
+        &self,
+        serial: &str,
+        device: &DiscoveredDevice,
+        description: &openhaunt::NodeDescription,
+        head: u8,
+        universe: Option<u16>,
+    ) -> Result<Fixture, String> {
+        let effects = device.pixels.as_ref().map(|p| p.effects.clone()).unwrap_or_default();
+        let node_type =
+            openhaunt::head_type_from(device.module_type, &device.module_name, description, head, &effects);
+        let strip = device.pixels.as_ref().and_then(|p| p.strip_for_head(head)).map(PixelStrip::from_node);
+        // A strip the node is already running in `sacn` mode is a strip of cells.
+        let fixture_type = match strip.as_ref().filter(|s| s.mode == StripMode::Sacn) {
+            Some(strip) => pixels::strip_type(strip),
+            None => node_type.clone(),
+        };
+        self.ensure_fixture_type(&fixture_type).await?;
+        // A head somebody named on the node is called that; any other after its node.
+        let label = device.labels.as_ref().and_then(|l| l.heads.get(&head)).filter(|l| !l.is_empty());
+        let name = match (head, label) {
+            (0, _) => device.name.clone(),
+            (_, Some(label)) => label.clone(),
+            _ => format!("{} {}", device.name, node_type.name),
+        };
+        Ok(Fixture {
+            // Head 0 is the node's own fixture and was always a fresh id; every other
+            // head is derived, so a second console adopting the node makes the same row.
+            id: if head == 0 { Uuid::new_v4() } else { openhaunt::head_fixture_id(serial, head) },
+            name,
+            fixture_type_id: fixture_type.id,
+            address: FixtureAddress::OpenHaunt {
+                serial: serial.to_string(),
+                universe: if head == 0 { universe } else { None },
+                head: (head != 0).then_some(head),
+                strip,
+                redundant_stream: None,
+            },
+            ..Fixture::default()
+        })
     }
 
     async fn forget(&mut self, serial: &str) -> Result<(), String> {
@@ -1573,32 +1649,7 @@ impl DeviceManager {
         if let Some(universe) = self.gateway_universe(serial).await {
             config["dmx"] = serde_json::json!({ "protocol": "sacn", "universe": universe });
         }
-        // The node is called what its own fixture is called: the show is the truth, so a
-        // node renamed in the console says so in its own TXT record and on its own page,
-        // and one that was off when it was renamed is told when it is back.
-        if let Some(name) = self.node_name(serial).await {
-            config["name"] = serde_json::json!(name);
-        }
         Some(config)
-    }
-
-    /// The name a node should carry: its own fixture's (head 0), cut to what the firmware
-    /// stores — `OH_NAME_MAX`, 32 bytes with the terminator — at a character boundary.
-    async fn node_name(&self, serial: &str) -> Option<String> {
-        const NAME_MAX: usize = 31;
-        let fixture = self
-            .fixtures()
-            .await
-            .into_iter()
-            .find(|f| f.address.serial() == Some(serial) && f.address.head() == Some(0))?;
-        let mut name = fixture.name.trim().to_string();
-        if name.is_empty() {
-            return None;
-        }
-        while name.len() > NAME_MAX {
-            name.pop();
-        }
-        Some(name)
     }
 
     /// Keep each strip called after its node: `<node> Strip 1`, where `<node>` is what
@@ -1609,7 +1660,7 @@ impl DeviceManager {
     /// left every strip reading `Node V0 f674adc8 Strip 1`. Only a name that is still
     /// that shape is touched: the head's own name after the serial, or after what the
     /// node announced before it was renamed. A strip somebody named themselves is
-    /// theirs. Run before [`Self::push_renamed`], which is what moves the announced
+    /// theirs. Run before [`Self::sync_all_names`], which is what moves the announced
     /// name on. The leader's alone, so two stations do not both write it.
     async fn name_heads(&mut self) {
         if self.is_follower().await {
@@ -1658,30 +1709,15 @@ impl DeviceManager {
         }
     }
 
-    /// Tell every node whose own fixture was renamed: the name in the show against the
-    /// one it announced. Only the leader speaks to nodes, and only to one that is up.
-    async fn push_renamed(&mut self) {
+    /// Compare the names on every adopted node that is up. See [`names`].
+    async fn sync_all_names(&mut self) {
         if self.is_follower().await {
             return;
         }
         let serials: Vec<String> =
             self.state.discovered.values().filter(|d| d.online && d.adopted_fixture_id.is_some()).map(|d| d.serial.clone()).collect();
         for serial in serials {
-            let Some(name) = self.node_name(&serial).await else { continue };
-            let said = self.state.discovered.get(&serial).map(|d| d.name.clone()).unwrap_or_default();
-            if said == name {
-                continue;
-            }
-            info!("[devices] {serial} is called \"{name}\" in the show; telling it");
-            if let Err(e) = self.post(&serial, "config", serde_json::json!({ "name": name })).await {
-                debug!("[devices] could not rename {serial}: {e}");
-                continue;
-            }
-            // Shown at once rather than when the node's TXT record next resolves.
-            if let Some(device) = self.state.discovered.get_mut(&serial) {
-                device.name = name;
-            }
-            self.publish().await;
+            self.sync_names(&serial).await;
         }
     }
 
@@ -1966,6 +2002,7 @@ struct WhatItIs {
     effects: Option<EffectCapability>,
     audio: Option<NodeAudio>,
     pixels: Option<NodePixels>,
+    labels: openhaunt::NodeLabels,
     identity: Identity,
 }
 
@@ -2445,6 +2482,8 @@ fn heard(serial: &str, port: u16) -> DiscoveredDevice {
         health: None,
         last_seen: Utc::now(),
         net: Vec::new(),
+        labels: None,
+        name_conflicts: Vec::new(),
     }
 }
 

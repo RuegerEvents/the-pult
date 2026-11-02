@@ -1014,3 +1014,293 @@ async fn stepping_down_hands_whether_a_node_is_online_back_to_the_browse() {
     })
     .await;
 }
+
+// ── Names ─────────────────────────────────────────────────────────────────────
+
+/// What the node calls itself and its ports now, from its own `/info`.
+async fn node_names(sim: &SimHandle) -> (String, openhaunt::NodeLabels) {
+    let info: serde_json::Value = reqwest::get(format!("http://{}/api/v1/info", loopback(sim.http_addr)))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    (info["name"].as_str().unwrap_or_default().to_string(), openhaunt::NodeLabels::from_info(&info))
+}
+
+/// Name a parameter in the show, as the Devices panel does: the whole map, one write.
+async fn label_in_show(h: &Harness, fixture: Uuid, key: &str, label: &str) {
+    let mut labels = h.fixtures().await.into_iter().find(|f| f.id == fixture).unwrap().labels();
+    labels.insert(key.to_string(), label.to_string());
+    h.engine
+        .set(
+            vec![
+                PathSegment::Key("fixtures".into()),
+                PathSegment::Id(fixture),
+                PathSegment::Key("parameter_labels".into()),
+            ],
+            pult_schema::lifecycle::Lifecycle::Persisted,
+            serde_json::json!(labels),
+        )
+        .await
+        .unwrap();
+}
+
+/// Rename on the node itself, as its own web page would.
+async fn rename_on_the_node(sim: &SimHandle, body: serde_json::Value) {
+    let response = reqwest::Client::new()
+        .post(format!("http://{}/api/v1/config", loopback(sim.http_addr)))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert!(response.status().is_success());
+}
+
+async fn show_label(h: &Harness, fixture: Uuid, key: &str) -> Option<String> {
+    h.fixtures().await.into_iter().find(|f| f.id == fixture)?.labels().get(key).cloned()
+}
+
+#[tokio::test]
+async fn a_port_named_in_the_show_is_named_on_the_node() {
+    let h = harness().await;
+    let sim = a_simulated_node(&h, ModuleKind::DigitalIn, "e2e-label").await;
+    let fixture = h.devices.adopt("e2e-label".into()).await.unwrap();
+
+    label_in_show(&h, fixture, "Contact:2", "Ausgang PIR").await;
+    eventually("the node to carry the label", || async {
+        node_names(&sim).await.1.ports.get(&2).map(String::as_str) == Some("Ausgang PIR")
+    })
+    .await;
+    eventually("the two to have agreed", || async {
+        let f = h.fixtures().await.into_iter().find(|f| f.id == fixture).unwrap();
+        f.agreed_names.is_some_and(|a| a.parameters.get("Contact:2").map(String::as_str) == Some("Ausgang PIR"))
+    })
+    .await;
+    assert!(h.state().await.discovered["e2e-label"].name_conflicts.is_empty());
+    // The label is not the parameter: the key every cue holds is the same one.
+    let types = types(&h).await;
+    let own = h.fixtures().await.into_iter().find(|f| f.id == fixture).unwrap();
+    assert!(type_of(&types, &own).parameters.iter().any(|p| crate::model::playback::parameter_key(&p.kind) == "Contact:2"));
+}
+
+#[tokio::test]
+async fn a_node_already_named_names_the_show_when_it_is_adopted() {
+    let h = harness().await;
+    let mut config = SimConfig::new(ModuleKind::DigitalIn, "e2e-named");
+    config.node.ports[4].label = Some("Relay Horn".into());
+    let sim = openhaunt_node_sim::start(config).await.unwrap();
+    h.resolve_at("e2e-named", ModuleKind::DigitalIn.type_id(), loopback(sim.http_addr)).await;
+    let fixture = h.devices.adopt("e2e-named".into()).await.unwrap();
+    assert_eq!(show_label(&h, fixture, "Contact:4").await.as_deref(), Some("Relay Horn"));
+    assert!(h.state().await.discovered["e2e-named"].name_conflicts.is_empty(), "the show had none, so nothing to ask");
+}
+
+#[tokio::test]
+async fn every_port_named_on_the_node_is_taken_not_only_the_last() {
+    let h = harness().await;
+    let mut config = SimConfig::new(ModuleKind::DigitalIn, "e2e-many");
+    for (port, label) in [(0, "Donkey"), (1, "Horn"), (4, "Spinnengang"), (5, "Donkey")] {
+        config.node.ports[port].label = Some(label.into());
+    }
+    let sim = openhaunt_node_sim::start(config).await.unwrap();
+    h.resolve_at("e2e-many", ModuleKind::DigitalIn.type_id(), loopback(sim.http_addr)).await;
+    let fixture = h.devices.adopt("e2e-many".into()).await.unwrap();
+
+    for (key, label) in [("Contact:0", "Donkey"), ("Contact:1", "Horn"), ("Contact:4", "Spinnengang"), ("Contact:5", "Donkey")] {
+        assert_eq!(show_label(&h, fixture, key).await.as_deref(), Some(label), "{key}");
+    }
+    // And nothing was told to the node to take them back.
+    h.resolve_at("e2e-many", ModuleKind::DigitalIn.type_id(), loopback(sim.http_addr)).await;
+    assert_eq!(node_names(&sim).await.1.ports.len(), 4);
+    assert!(h.state().await.discovered["e2e-many"].name_conflicts.is_empty());
+}
+
+#[tokio::test]
+async fn a_name_changed_on_the_node_is_asked_about_and_settled_either_way() {
+    use pult_schema::types::devices::{NameChoice, NameSide};
+
+    let h = harness().await;
+    let sim = a_simulated_node(&h, ModuleKind::DigitalIn, "e2e-ask").await;
+    let fixture = h.devices.adopt("e2e-ask".into()).await.unwrap();
+    label_in_show(&h, fixture, "Contact:1", "Tor").await;
+    eventually("the node to carry the label", || async {
+        node_names(&sim).await.1.ports.get(&1).map(String::as_str) == Some("Tor")
+    })
+    .await;
+
+    // Somebody renames it on the node's own page; the node announces itself again.
+    rename_on_the_node(&sim, serde_json::json!({ "labels": { "ports": { "1": "Gate" } } })).await;
+    h.resolve_at("e2e-ask", ModuleKind::DigitalIn.type_id(), loopback(sim.http_addr)).await;
+    let conflicts = h.state().await.discovered["e2e-ask"].name_conflicts.clone();
+    assert_eq!(conflicts.len(), 1, "{conflicts:?}");
+    assert_eq!((conflicts[0].port, conflicts[0].node.as_str(), conflicts[0].show.as_str()), (Some(1), "Gate", "Tor"));
+    assert_eq!(node_names(&sim).await.1.ports[&1], "Gate", "nothing is written either way before somebody picks");
+    assert_eq!(show_label(&h, fixture, "Contact:1").await.as_deref(), Some("Tor"));
+
+    // The show's.
+    h.devices
+        .settle_names("e2e-ask".into(), vec![NameChoice { head: 0, port: Some(1), take: NameSide::Show }])
+        .await
+        .unwrap();
+    assert_eq!(node_names(&sim).await.1.ports[&1], "Tor");
+    assert!(h.state().await.discovered["e2e-ask"].name_conflicts.is_empty());
+
+    // And again, the node's.
+    rename_on_the_node(&sim, serde_json::json!({ "labels": { "ports": { "1": "Gate" } } })).await;
+    h.resolve_at("e2e-ask", ModuleKind::DigitalIn.type_id(), loopback(sim.http_addr)).await;
+    h.devices
+        .settle_names("e2e-ask".into(), vec![NameChoice { head: 0, port: Some(1), take: NameSide::Node }])
+        .await
+        .unwrap();
+    assert_eq!(show_label(&h, fixture, "Contact:1").await.as_deref(), Some("Gate"));
+    assert!(h.state().await.discovered["e2e-ask"].name_conflicts.is_empty());
+}
+
+#[tokio::test]
+async fn a_name_given_while_the_node_was_off_is_passed_on_without_asking() {
+    let h = harness().await;
+    let sim = a_simulated_node(&h, ModuleKind::DigitalIn, "e2e-off").await;
+    let fixture = h.devices.adopt("e2e-off".into()).await.unwrap();
+    label_in_show(&h, fixture, "Contact:0", "Erst").await;
+    eventually("the first label to arrive", || async {
+        node_names(&sim).await.1.ports.get(&0).map(String::as_str) == Some("Erst")
+    })
+    .await;
+    eventually("the two to have agreed", || async {
+        let f = h.fixtures().await.into_iter().find(|f| f.id == fixture).unwrap();
+        f.agreed_names.is_some_and(|a| a.parameters.get("Contact:0").map(String::as_str) == Some("Erst"))
+    })
+    .await;
+
+    // Off: its will is heard, so the station knows.
+    let port = sim.http_addr.port();
+    sim.stop.stop().await;
+    eventually("the node to be off", || async { !h.state().await.discovered["e2e-off"].online }).await;
+
+    label_in_show(&h, fixture, "Contact:0", "Später").await;
+    // And the node's own name, which follows the same rule.
+    h.engine
+        .set(
+            vec![PathSegment::Key("fixtures".into()), PathSegment::Id(fixture), PathSegment::Key("name".into())],
+            pult_schema::lifecycle::Lifecycle::Persisted,
+            serde_json::json!("Hof"),
+        )
+        .await
+        .unwrap();
+
+    // Back, on the same address, saying what it said before it went.
+    let mut config = SimConfig::new(ModuleKind::DigitalIn, "e2e-off");
+    config.node.http_port = port;
+    config.node.name = "Node e2e-off".into();
+    config.node.ports[0].label = Some("Erst".into());
+    let sim = openhaunt_node_sim::start(config).await.unwrap();
+    h.resolve_at("e2e-off", ModuleKind::DigitalIn.type_id(), loopback(sim.http_addr)).await;
+    let (name, labels) = node_names(&sim).await;
+    assert_eq!(labels.ports[&0], "Später");
+    assert_eq!(name, "Hof");
+    assert!(h.state().await.discovered["e2e-off"].name_conflicts.is_empty());
+}
+
+#[tokio::test]
+async fn a_node_that_was_reset_is_asked_about_rather_than_overwritten() {
+    let h = harness().await;
+    let sim = a_simulated_node(&h, ModuleKind::DigitalIn, "e2e-reset").await;
+    let fixture = h.devices.adopt("e2e-reset".into()).await.unwrap();
+    label_in_show(&h, fixture, "Contact:6", "Nebel").await;
+    eventually("the two to have agreed", || async {
+        let f = h.fixtures().await.into_iter().find(|f| f.id == fixture).unwrap();
+        f.agreed_names.is_some_and(|a| a.parameters.get("Contact:6").map(String::as_str) == Some("Nebel"))
+    })
+    .await;
+
+    // Reset at the bench: it comes back knowing nothing.
+    let port = sim.http_addr.port();
+    sim.stop.stop().await;
+    eventually("the node to be off", || async { !h.state().await.discovered["e2e-reset"].online }).await;
+    let mut config = SimConfig::new(ModuleKind::DigitalIn, "e2e-reset");
+    config.node.http_port = port;
+    let sim = openhaunt_node_sim::start(config).await.unwrap();
+    h.resolve_at("e2e-reset", ModuleKind::DigitalIn.type_id(), loopback(sim.http_addr)).await;
+
+    let conflicts = h.state().await.discovered["e2e-reset"].name_conflicts.clone();
+    assert_eq!(conflicts.len(), 1, "{conflicts:?}");
+    assert_eq!((conflicts[0].node.as_str(), conflicts[0].show.as_str()), ("", "Nebel"));
+    assert!(node_names(&sim).await.1.ports.get(&6).is_none(), "not written before somebody picks");
+}
+
+#[tokio::test]
+async fn a_new_node_takes_the_place_of_one_that_is_gone() {
+    let h = harness().await;
+    let old = a_simulated_node(&h, ModuleKind::DigitalIn, "e2e-old").await;
+    let fixture = h.devices.adopt("e2e-old".into()).await.unwrap();
+    label_in_show(&h, fixture, "Contact:3", "Ausgang PIR").await;
+    old.stop.stop().await;
+    h.event(super::DeviceEvent::Removed { serial: "e2e-old".into() }).await;
+
+    let new = a_simulated_node(&h, ModuleKind::DigitalIn, "e2e-new").await;
+    let comparison = h.devices.compare("e2e-new".into(), "e2e-old".into()).await.unwrap();
+    assert!(!comparison.module_differs && comparison.missing.is_empty(), "{comparison:?}");
+
+    let names = crate::infra::devices::AdoptNames {
+        name: Some("Hof links".into()),
+        ports: [(3, "Ausgang PIR".to_string()), (5, "Relay Horn".to_string())].into(),
+        ..Default::default()
+    };
+    let id = h.devices.adopt_named("e2e-new".into(), Some("e2e-old".into()), Some(names)).await.unwrap();
+    assert_eq!(id, fixture, "the same fixture, so every cue that names it drives the new node");
+
+    let own = h.fixtures().await.into_iter().find(|f| f.id == fixture).unwrap();
+    assert_eq!(own.address.serial(), Some("e2e-new"));
+    assert_eq!(own.name, "Hof links");
+    assert_eq!(own.labels().get("Contact:5").map(String::as_str), Some("Relay Horn"));
+    let state = h.state().await;
+    assert!(!state.discovered.contains_key("e2e-old"), "the old node is not coming back as itself");
+    assert!(state.discovered["e2e-new"].name_conflicts.is_empty());
+
+    let (name, labels) = node_names(&new).await;
+    assert_eq!(name, "Hof links");
+    assert_eq!(labels.ports[&3], "Ausgang PIR");
+    assert_eq!(labels.ports[&5], "Relay Horn");
+}
+
+#[tokio::test]
+async fn a_replacement_with_other_ports_says_what_it_leaves_behind() {
+    let h = harness().await;
+    let old = a_simulated_node(&h, ModuleKind::DigitalIn, "e2e-was").await;
+    let fixture = h.devices.adopt("e2e-was".into()).await.unwrap();
+    label_in_show(&h, fixture, "Contact:7", "Klingel").await;
+    old.stop.stop().await;
+    h.event(super::DeviceEvent::Removed { serial: "e2e-was".into() }).await;
+
+    let _new = a_simulated_node(&h, ModuleKind::Environment, "e2e-is").await;
+    let comparison = h.devices.compare("e2e-is".into(), "e2e-was".into()).await.unwrap();
+    assert!(comparison.module_differs);
+    assert_eq!(comparison.missing.len(), 8, "every contact: {comparison:?}");
+    assert!(comparison.missing.iter().any(|m| m.label == "Klingel"), "under the name it was given");
+}
+
+#[tokio::test]
+async fn a_strip_named_on_the_node_is_called_that_in_the_show() {
+    let h = harness().await;
+    let sim = a_simulated_node(&h, ModuleKind::NodeV0, "e2e-strip-name").await;
+    rename_on_the_node(&sim, serde_json::json!({ "labels": { "heads": { "1": "LED Streifen Tor" } } })).await;
+    h.resolve_at("e2e-strip-name", ModuleKind::NodeV0.type_id(), loopback(sim.http_addr)).await;
+    h.devices.adopt("e2e-strip-name".into()).await.unwrap();
+    let strip = h.fixtures().await.into_iter().find(|f| f.id == openhaunt::head_fixture_id("e2e-strip-name", 1)).unwrap();
+    assert_eq!(strip.name, "LED Streifen Tor");
+
+    // Renamed in the show, it is renamed on the node.
+    h.engine
+        .set(
+            vec![PathSegment::Key("fixtures".into()), PathSegment::Id(strip.id), PathSegment::Key("name".into())],
+            pult_schema::lifecycle::Lifecycle::Persisted,
+            serde_json::json!("Streifen Hof"),
+        )
+        .await
+        .unwrap();
+    eventually("the head's label to follow", || async {
+        node_names(&sim).await.1.heads.get(&1).map(String::as_str) == Some("Streifen Hof")
+    })
+    .await;
+}

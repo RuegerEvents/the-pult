@@ -36,7 +36,7 @@
 	import { drivenBy, drivingKey } from '$lib/driving.js';
 	import { recordingKeys } from '$lib/evaluator.js';
 	import { CURVE_LABELS, CURVES, fadeGroup } from '$lib/fade.js';
-	import { displayLabel, formatValue, hasCells, inCell, parameterKey, splitCell } from '$lib/patch.js';
+	import { formatValue, hasCells, inCell, parameterKey, parameterName, splitCell } from '$lib/patch.js';
 	import { asFloat, hexToRgb, rgbToHex, withFloat } from '$lib/programmer.js';
 	import { SOURCE_LABELS, source, trackedSource, type Source } from '$lib/sheet.js';
 	import { collection } from '$lib/stores/show.js';
@@ -208,7 +208,8 @@
 					found.set(key, {
 						key,
 						kind: parameter.kind,
-						label: displayLabel(parameter.kind),
+						// The first row's word for it, where somebody named it.
+						label: parameterName(fixture, parameter.kind),
 						shape: parameter.default_value
 					});
 				}

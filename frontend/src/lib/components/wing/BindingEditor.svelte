@@ -8,7 +8,7 @@
 
 	import { untrack } from 'svelte';
 	import type { BindingAction, Cue, ParameterKind, SurfaceControl, TileTarget } from '$lib/generated/index.js';
-	import { displayLabel, parameterKey } from '$lib/patch.js';
+	import { parameterKey, parameterName } from '$lib/patch.js';
 	import { editableParameters } from '$lib/programmer.js';
 	import { selection } from '$lib/stores/selection.js';
 	import { collection } from '$lib/stores/show.js';
@@ -85,6 +85,11 @@
 	let parameterKeyChosen = $state('');
 	/** The parameter a control is bound to now, kept until the selection offers another. */
 	let boundParameter = $state<{ fixture_id: string; parameter: ParameterKind } | null>(null);
+	/** What the bound parameter is called on its fixture. */
+	const boundLabel = $derived.by(() => {
+		const bound = boundParameter;
+		return bound ? parameterName($fixtures.find((f) => f.id === bound.fixture_id), bound.parameter) : '';
+	});
 
 	$effect(() => {
 		const c = control;
@@ -300,7 +305,7 @@
 		{:else if selectedRows.length === 0}
 			{#if boundParameter}
 				<span class="dim"
-					>{fixtureName(boundParameter.fixture_id)} · {displayLabel(boundParameter.parameter)} — select fixtures
+					>{fixtureName(boundParameter.fixture_id)} · {boundLabel} — select fixtures
 					to bind it to something else.</span
 				>
 			{:else}

@@ -34,7 +34,7 @@
 		tileLabel,
 		type TileKind
 	} from '$lib/surface.js';
-	import { displayLabel, parameterKey } from '$lib/patch.js';
+	import { parameterKey, parameterName } from '$lib/patch.js';
 	import { collection } from '$lib/stores/show.js';
 	import { canEdit } from '$lib/stores/showLock.js';
 	import { beginGesture, endGesture } from '$lib/stores/gesture.js';
@@ -386,7 +386,7 @@
 									onchange={(e) => pickParameter(tile, target.fixture_id, e.currentTarget.value)}
 								>
 									{#each parametersOf(target.fixture_id) as p (parameterKey(p.kind))}
-										<option value={parameterKey(p.kind)}>{displayLabel(p.kind)}</option>
+										<option value={parameterKey(p.kind)}>{parameterName($surfaceShow.fixtures.find((f) => f.id === target.fixture_id), p.kind)}</option>
 									{/each}
 								</select>
 							{/if}

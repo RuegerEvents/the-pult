@@ -240,7 +240,9 @@
 						live_effects: {},
 						live_fades: {},
 						live_htp: {},
-						home_values: {}
+						home_values: {},
+						parameter_labels: null,
+						agreed_names: null
 					});
 					made.push(id);
 				}

@@ -28,7 +28,7 @@
 		withPoints,
 		type TargetKind
 	} from '$lib/layoutView.js';
-	import { controls, displayLabel, parameterKey } from '$lib/patch.js';
+	import { controls, parameterKey, parameterName } from '$lib/patch.js';
 	import { selectSubject } from '$lib/objects.js';
 	import { editElements, layouts } from '$lib/stores/layouts.js';
 	import { canEdit } from '$lib/stores/showLock.js';
@@ -68,8 +68,8 @@
 		const type = fixture && $surfaceShow.types.find((t) => t.id === fixture.fixture_type_id);
 		if (!type) return [];
 		return [
-			...inputsOf(type).map(({ kind }) => ({ key: parameterKey(kind), kind, label: `${displayLabel(kind)} (reported)` })),
-			...controls(type).map(({ kind }) => ({ key: parameterKey(kind), kind, label: displayLabel(kind) }))
+			...inputsOf(type).map(({ kind }) => ({ key: parameterKey(kind), kind, label: `${parameterName(fixture, kind)} (reported)` })),
+			...controls(type).map(({ kind }) => ({ key: parameterKey(kind), kind, label: parameterName(fixture, kind) }))
 		];
 	}
 

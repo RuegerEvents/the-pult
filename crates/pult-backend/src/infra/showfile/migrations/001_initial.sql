@@ -49,7 +49,9 @@ CREATE TABLE IF NOT EXISTS fixtures (
     "focus" TEXT,
     "fixture_number" TEXT,
     "unit_number" TEXT,
-    "home_values" TEXT NOT NULL
+    "home_values" TEXT NOT NULL,
+    "parameter_labels" TEXT,
+    "agreed_names" TEXT
 );
 
 CREATE TABLE IF NOT EXISTS fixture_types (

@@ -50,7 +50,7 @@
 	import type { AtEnd, AudioClip, AudioDestination, Detected, GridSegment, Marker, Timeline, TimelineAction } from '$lib/generated/index.js';
 	import { audioNodes, destinationText } from '$lib/destination.js';
 	import { clearSubject, openMenu, selectSubject, subject, type ObjectRef } from '$lib/objects.js';
-	import { displayLabel, parameterKey } from '$lib/patch.js';
+	import { parameterKey, parameterName } from '$lib/patch.js';
 	import { beginGesture, endGesture } from '$lib/stores/gesture.js';
 	import { peaksFor } from '$lib/stores/peaks.js';
 	import { collection, showData } from '$lib/stores/show.js';
@@ -259,7 +259,7 @@
 		const fixture = $fixtures.find((f) => f.id === fixtureId);
 		const type = fixture ? $types.find((t) => t.id === fixture.fixture_type_id) : undefined;
 		const parameter = type?.parameters.find((p) => parameterKey(p.kind) === key);
-		return parameter ? displayLabel(parameter.kind) : key;
+		return parameter ? parameterName(fixture, parameter.kind) : key;
 	}
 
 	/** The take being recorded, as one more lane, while it has moved anything. */

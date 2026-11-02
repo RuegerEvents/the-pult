@@ -18,10 +18,10 @@
 
 	import { untrack } from 'svelte';
 
-	import type { Cue, Easing, Sequence, StoreOnto } from '$lib/generated/index.js';
+	import type { Cue, Easing, ParameterKind, Sequence, StoreOnto } from '$lib/generated/index.js';
 	import { defaultCueName, newCueNumber, DEFAULT_FADE_MS } from '$lib/cues.js';
 	import { CURVE_LABELS, CURVES, curveForKey } from '$lib/fade.js';
-	import { displayLabel, formatValue, parameterKey } from '$lib/patch.js';
+	import { formatValue, parameterKey, parameterName } from '$lib/patch.js';
 	import { clear, entries, store as storeProgrammer, storePreset, updatePreset } from '$lib/stores/programmer.js';
 	import { storeDialogs, wingStoreTarget } from '$lib/stores/wing.js';
 	import { collection, show } from '$lib/stores/show.js';
@@ -190,6 +190,8 @@
 		typedName ??
 			(sequence ? defaultCueName(newCueNumber(sequence, $cues, insertAfter)) : defaultCueName(1))
 	);
+	const labelOf = (fixtureId: string, kind: ParameterKind) =>
+		parameterName($fixtures.find((f) => f.id === fixtureId), kind);
 	const nameOf = (fixtureId: string) =>
 		$fixtures.find((f) => f.id === fixtureId)?.name ?? fixtureId.slice(0, 6);
 
@@ -350,12 +352,12 @@
 										<input
 											type="checkbox"
 											checked={include.has(entry.id)}
-											aria-label="Store {nameOf(entry.fixture_id)} {displayLabel(entry.parameter_kind)}"
+											aria-label="Store {nameOf(entry.fixture_id)} {labelOf(entry.fixture_id, entry.parameter_kind)}"
 											onchange={(e) => tick(entry.id, e.currentTarget.checked)}
 										/>
 									</td>
 									<td>{nameOf(entry.fixture_id)}</td>
-									<td>{displayLabel(entry.parameter_kind)}</td>
+									<td>{labelOf(entry.fixture_id, entry.parameter_kind)}</td>
 									<td class="mono">
 										{#if entry.effect}
 											<!-- What is stored is the shape, not the value under it. -->
@@ -377,7 +379,7 @@
 												step="100"
 												placeholder="cue"
 												value={timingFor(entry.id).fade || ''}
-												aria-label="Fade for {displayLabel(entry.parameter_kind)}"
+												aria-label="Fade for {labelOf(entry.fixture_id, entry.parameter_kind)}"
 												onchange={(e) => setTiming(entry.id, { fade: Number(e.currentTarget.value) || 0 })}
 											/>
 										</td>
@@ -389,14 +391,14 @@
 												step="100"
 												placeholder="0"
 												value={timingFor(entry.id).delay || ''}
-												aria-label="Delay for {displayLabel(entry.parameter_kind)}"
+												aria-label="Delay for {labelOf(entry.fixture_id, entry.parameter_kind)}"
 												onchange={(e) => setTiming(entry.id, { delay: Number(e.currentTarget.value) || 0 })}
 											/>
 										</td>
 										<td>
 											<select
 												value={timingFor(entry.id).easing ?? ''}
-												aria-label="Curve for {displayLabel(entry.parameter_kind)}"
+												aria-label="Curve for {labelOf(entry.fixture_id, entry.parameter_kind)}"
 												onchange={(e) =>
 													setTiming(entry.id, {
 														easing: (e.currentTarget.value || null) as Easing | null

@@ -12,6 +12,15 @@ bracketed form — so every release needs one and it has to be spelled that way.
 
 ### Added
 
+- **A node's inputs and outputs have names.** "Ausgang PIR", "Relay Horn", "LED
+  Streifen Tor": named in the Devices panel or on the node's own page, kept on the node
+  and in the show, and shown wherever a parameter is — the programmer, cues, the wing,
+  timelines, layouts, surfaces and flows. A label is never the parameter's key, so
+  renaming a port orphans nothing. A name changed in the show is passed on to the node,
+  now or when it is next up; one changed on the node is asked about ("Names differ").
+  Adopt opens a dialog that names everything first and can put the new node in the place
+  of one that is gone, keeping its fixtures and so every cue that uses them. Needs node
+  firmware 0.5.0 for ports and heads; the node's own name works with any.
 - **A song the console can hear.** A timeline can now run against an audio file: one
   station plays it — the one its `node_id` names, or the leader — and the *audio
   callback's own sample clock* is the reference, so when the sound and the show's

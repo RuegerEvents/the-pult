@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -1049,6 +1049,58 @@ pub struct Fixture {
     #[serde(default)]
     #[pult(lifecycle = PERSISTED)]
     pub home_values: HashMap<String, ParameterValue>,
+    /// What somebody called this fixture's parameters, keyed by parameter key: "Ausgang
+    /// PIR" for `Contact:4`. Absent is a parameter called what its type calls it.
+    ///
+    /// A label and never a kind. `Named:<name>` is a parameter's *identity*, and every
+    /// cue, flow and binding holds it; this is only what an operator reads. On an
+    /// OpenHaunt node's fixtures the node keeps them too, as port labels, and the station
+    /// keeps the two the same — see [`Fixture::agreed_names`].
+    ///
+    /// `Option` only for the showfile: a non-`Option` field is a column every existing
+    /// row holds NULL in, and that is a generation bump and an upgrade for every show. A
+    /// show that never named anything reads `None`, which means the same as empty.
+    #[serde(default)]
+    #[pult(lifecycle = PERSISTED)]
+    pub parameter_labels: Option<BTreeMap<String, String>>,
+    /// The names this fixture and its OpenHaunt node last agreed on: the name or head
+    /// label, and the parameter labels. None on anything that is not a node's, and on a
+    /// node's until the two have first agreed.
+    ///
+    /// What tells a change apart from a disagreement. A name that differs from the
+    /// node's, where the node still says what was agreed, was changed *here* — while it
+    /// was off, or by an undo — and is passed on. One where the node moved is asked about.
+    #[serde(default)]
+    #[pult(lifecycle = PERSISTED)]
+    pub agreed_names: Option<AgreedNames>,
+}
+
+/// What a fixture and its node last agreed it and its parameters are called. See
+/// [`Fixture::agreed_names`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AgreedNames {
+    /// The node's name on its own fixture (head 0), the head's label on any other.
+    /// Empty is agreed to be unnamed; None is never agreed.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Parameter key to label. Empty is agreed to be unnamed; absent is never agreed,
+    /// which is not the same thing: a label set here while the node was off has
+    /// nothing to be compared with.
+    #[serde(default)]
+    pub parameters: BTreeMap<String, String>,
+}
+
+impl Fixture {
+    /// What an operator calls one of its parameters, where somebody named it.
+    pub fn parameter_label(&self, kind: &ParameterKind) -> Option<&str> {
+        self.parameter_labels.as_ref()?.get(&parameter_key(kind)).map(String::as_str).filter(|l| !l.is_empty())
+    }
+
+    /// Every label, `None` read as none.
+    pub fn labels(&self) -> BTreeMap<String, String> {
+        self.parameter_labels.clone().unwrap_or_default()
+    }
 }
 
 /// The number a fixture patched now gets when nobody gave it one: one past the highest

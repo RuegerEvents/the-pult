@@ -20,7 +20,7 @@ import type {
 } from './generated/index.js';
 import { fadeGroup } from './fade.js';
 import type { FadeGroup, PhysicalRange } from './generated/index.js';
-import { displayLabel, inCell, kindBase, modeHas, modeOf, parameterKey } from './patch.js';
+import { parameterName, inCell, kindBase, modeHas, modeOf, parameterKey } from './patch.js';
 import { consoleNow } from './ws/clock.js';
 import type { Showing } from './stores/output.js';
 
@@ -149,7 +149,9 @@ export function editableParameters(
 			rows.set(key, {
 				kind: parameter.kind,
 				key,
-				label: displayLabel(parameter.kind),
+				// The first fixture's word for it: a selection of one says what that one is
+				// called, and a selection of many shares a kind and differs only in labels.
+				label: parameterName(fixture, parameter.kind),
 				defaultValue: parameter.default_value,
 				choices:
 					parameter.default_value.type === 'Text' ? parameter.slots.map((slot) => slot.name) : [],

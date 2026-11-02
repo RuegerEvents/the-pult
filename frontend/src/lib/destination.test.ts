@@ -36,7 +36,9 @@ function devices(): DevicesState {
 		online: true,
 		health: null,
 		last_seen: '2026-10-20T00:00:00Z',
-		net: []
+		net: [],
+		labels: null,
+		name_conflicts: []
 	};
 	const audio = {
 		rate: 48000,

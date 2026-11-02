@@ -8,7 +8,7 @@
 
 	import type { Fixture, Layout } from '$lib/generated/index.js';
 	import { inputsOf, sensingFixtures, type LayoutShow } from '$lib/layoutView.js';
-	import { displayLabel, parameterKey } from '$lib/patch.js';
+	import { parameterKey, parameterName } from '$lib/patch.js';
 	import Dialog from '$lib/components/Dialog.svelte';
 
 	let {
@@ -31,7 +31,7 @@
 	const fixture = $derived(sensing.find((f) => f.id === fixtureId) ?? null);
 	const readings = $derived.by(() => {
 		const type = fixture && show.types.find((t) => t.id === fixture.fixture_type_id);
-		return type ? inputsOf(type).map(({ kind }) => ({ key: parameterKey(kind), label: displayLabel(kind) })) : [];
+		return type ? inputsOf(type).map(({ kind }) => ({ key: parameterKey(kind), label: parameterName(fixture, kind) })) : [];
 	});
 
 	/** What this layout already draws of a fixture, by key. */

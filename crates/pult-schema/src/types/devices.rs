@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::types::openhaunt::{EffectCapability, NodeDescription};
+use crate::types::openhaunt::{EffectCapability, NodeDescription, NodeLabels};
 use crate::types::pixels::NodePixels;
 use crate::PultSchema;
 
@@ -104,6 +104,52 @@ pub struct DiscoveredDevice {
     /// firmware from before the topic: `ip` is where it is then.
     #[serde(default)]
     pub net: Vec<NodeAddress>,
+    /// What somebody named the node's ports and heads, as its last `/info` said. None
+    /// until it has answered.
+    #[serde(default)]
+    pub labels: Option<NodeLabels>,
+    /// Where the node and the show call something differently and the station cannot
+    /// tell which is right: the node was renamed on its own page, reset, or swapped for
+    /// another module. Nothing is written either way until somebody picks.
+    #[serde(default)]
+    pub name_conflicts: Vec<NameConflict>,
+}
+
+/// One name the node and the show disagree on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct NameConflict {
+    /// The head it is on: 0 is the node itself.
+    pub head: u8,
+    /// The port, for a port's label. None is the node's name (head 0) or the head's.
+    #[serde(default)]
+    pub port: Option<u8>,
+    /// What the console calls the thing being named when nobody has: "Sensor 1",
+    /// "Strip 2", "Name".
+    pub what: String,
+    /// The node's, empty for none.
+    pub node: String,
+    /// The show's, empty for none.
+    pub show: String,
+}
+
+/// Which side a [`NameConflict`] is settled for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "lowercase")]
+pub enum NameSide {
+    Node,
+    Show,
+}
+
+/// One answer to a [`NameConflict`], as `device.names` takes them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct NameChoice {
+    pub head: u8,
+    #[serde(default)]
+    pub port: Option<u8>,
+    pub take: NameSide,
 }
 
 /// One path a node is on, as `openhaunt/<sn>/net` lists it.

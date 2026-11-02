@@ -48,8 +48,18 @@ pub struct LocalRpcMeta {
 pub const LOCAL_RPCS: &[LocalRpcMeta] = &[
     LocalRpcMeta {
         method: "device.adopt",
-        args_schema: r#"[{"name":"serial","type":"string","optional":false}]"#,
-        doc: "Adopt a discovered OpenHaunt device; answers with the new fixture's id.",
+        args_schema: r#"[{"name":"serial","type":"string","optional":false},{"name":"replaces","type":"string","optional":true},{"name":"names","type":"{ name?: string, heads?: Record<number, string>, ports?: Record<number, string> }","optional":true}]"#,
+        doc: "Adopt a discovered OpenHaunt device; answers with the new fixture's id. `replaces` names an offline node whose fixtures it takes over, ids and all, so every cue and flow that named them now drives it. `names` are written to the show and to the node: the node's, and labels by head and port number.",
+    },
+    LocalRpcMeta {
+        method: "device.names",
+        args_schema: r#"[{"name":"serial","type":"string","optional":false},{"name":"choices","type":"{ head: number, port: number | null, take: 'node' | 'show' }[]","optional":false}]"#,
+        doc: "Settle where a node and the show call something differently: for each, take the node's name into the show or tell the node the show's.",
+    },
+    LocalRpcMeta {
+        method: "device.compare",
+        args_schema: r#"[{"name":"serial","type":"string","optional":false},{"name":"replaces","type":"string","optional":false}]"#,
+        doc: "What adopting a node in place of an offline one would leave without a port: its module against the old one's, and every parameter the new node does not have.",
     },
     LocalRpcMeta {
         method: "device.identify",
@@ -553,8 +563,27 @@ pub async fn dispatch(method: &str, args: Value, deps: &LocalRpcDeps) -> Result<
 
     match method {
         "device.adopt" => {
-            let id = deps.devices.adopt(serial()?).await?;
+            let replaces = args["replaces"].as_str().filter(|s| !s.is_empty()).map(str::to_string);
+            let names = match args.get("names") {
+                Some(names) if !names.is_null() => Some(
+                    serde_json::from_value::<crate::infra::devices::AdoptNames>(names.clone())
+                        .map_err(|e| format!("invalid names: {e}"))?,
+                ),
+                _ => None,
+            };
+            let id = deps.devices.adopt_named(serial()?, replaces, names).await?;
             serde_json::to_value(id).map_err(|e| e.to_string())
+        }
+        "device.names" => {
+            let choices: Vec<pult_schema::types::devices::NameChoice> =
+                serde_json::from_value(args["choices"].clone()).map_err(|e| format!("invalid choices: {e}"))?;
+            deps.devices.settle_names(serial()?, choices).await?;
+            Ok(Value::Null)
+        }
+        "device.compare" => {
+            let replaces = args["replaces"].as_str().ok_or_else(|| "missing replaces".to_string())?;
+            let comparison = deps.devices.compare(serial()?, replaces.to_string()).await?;
+            serde_json::to_value(comparison).map_err(|e| e.to_string())
         }
         "device.identify" => {
             deps.devices.identify(serial()?).await?;

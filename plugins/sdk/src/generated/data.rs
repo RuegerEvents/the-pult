@@ -1023,6 +1023,36 @@ impl FixtureEntity {
     pub fn home_values(&self) -> Field<HashMap<String, ParameterValue>> {
         self.at.field("home_values")
     }
+
+    /// What somebody called this fixture's parameters, keyed by parameter key: "Ausgang
+    /// PIR" for `Contact:4`. Absent is a parameter called what its type calls it.
+    ///
+    /// A label and never a kind. `Named:<name>` is a parameter's *identity*, and every
+    /// cue, flow and binding holds it; this is only what an operator reads. On an
+    /// OpenHaunt node's fixtures the node keeps them too, as port labels, and the station
+    /// keeps the two the same — see [`Fixture::agreed_names`].
+    ///
+    /// `Option` only for the showfile: a non-`Option` field is a column every existing
+    /// row holds NULL in, and that is a generation bump and an upgrade for every show. A
+    /// show that never named anything reads `None`, which means the same as empty.
+    ///
+    /// PERSISTED.
+    pub fn parameter_labels(&self) -> Field<Option<BTreeMap<String, String>>> {
+        self.at.field("parameter_labels")
+    }
+
+    /// The names this fixture and its OpenHaunt node last agreed on: the name or head
+    /// label, and the parameter labels. None on anything that is not a node's, and on a
+    /// node's until the two have first agreed.
+    ///
+    /// What tells a change apart from a disagreement. A name that differs from the
+    /// node's, where the node still says what was agreed, was changed *here* — while it
+    /// was off, or by an undo — and is passed on. One where the node moved is asked about.
+    ///
+    /// PERSISTED.
+    pub fn agreed_names(&self) -> Field<Option<AgreedNames>> {
+        self.at.field("agreed_names")
+    }
 }
 
 // ── fixture_types ───────────────────────────────────────────────────────

@@ -45,6 +45,8 @@ fn a_fixture(n: u128, name: &str, type_id: u128, parent: Option<u128>) -> Fixtur
         live_fades: HashMap::new(),
         live_htp: Default::default(),
         home_values: HashMap::new(),
+        parameter_labels: Default::default(),
+        agreed_names: None,
     }
 }
 

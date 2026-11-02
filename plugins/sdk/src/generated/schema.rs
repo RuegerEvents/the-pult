@@ -29,6 +29,21 @@ pub use pult_render::effect::{
 
 pub use pult_render::value::ParameterValue;
 
+/// What a fixture and its node last agreed it and its parameters are called. See
+/// [`Fixture::agreed_names`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AgreedNames {
+    /// The node's name on its own fixture (head 0), the head's label on any other.
+    /// Empty is agreed to be unnamed; None is never agreed.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Parameter key to label. Empty is agreed to be unnamed; absent is never agreed,
+    /// which is not the same thing: a label set here while the node was off has
+    /// nothing to be compared with.
+    #[serde(default)]
+    pub parameters: BTreeMap<String, String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AtEnd {
     /// Stop with the playhead on the end.
@@ -815,6 +830,28 @@ pub struct Fixture {
     /// before this existed opens with every fixture saying nothing.
     #[serde(default)]
     pub home_values: HashMap<String, ParameterValue>,
+    /// What somebody called this fixture's parameters, keyed by parameter key: "Ausgang
+    /// PIR" for `Contact:4`. Absent is a parameter called what its type calls it.
+    ///
+    /// A label and never a kind. `Named:<name>` is a parameter's *identity*, and every
+    /// cue, flow and binding holds it; this is only what an operator reads. On an
+    /// OpenHaunt node's fixtures the node keeps them too, as port labels, and the station
+    /// keeps the two the same — see [`Fixture::agreed_names`].
+    ///
+    /// `Option` only for the showfile: a non-`Option` field is a column every existing
+    /// row holds NULL in, and that is a generation bump and an upgrade for every show. A
+    /// show that never named anything reads `None`, which means the same as empty.
+    #[serde(default)]
+    pub parameter_labels: Option<BTreeMap<String, String>>,
+    /// The names this fixture and its OpenHaunt node last agreed on: the name or head
+    /// label, and the parameter labels. None on anything that is not a node's, and on a
+    /// node's until the two have first agreed.
+    ///
+    /// What tells a change apart from a disagreement. A name that differs from the
+    /// node's, where the node still says what was agreed, was changed *here* — while it
+    /// was off, or by an undo — and is passed on. One where the node moved is asked about.
+    #[serde(default)]
+    pub agreed_names: Option<AgreedNames>,
 }
 
 /// How output reaches a fixture.

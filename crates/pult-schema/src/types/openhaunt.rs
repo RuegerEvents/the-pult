@@ -264,6 +264,54 @@ pub fn effect_capability_from(info: &serde_json::Value) -> Option<EffectCapabili
     if ports.is_empty() { None } else { Some(EffectCapability { ports }) }
 }
 
+// ── What somebody called them ─────────────────────────────────────────────────
+
+/// What a node keeps of a name: `OH_NAME_MAX`, 32 bytes with the terminator.
+pub const NAME_MAX: usize = 31;
+
+/// The names somebody gave a node's ports and heads — "Ausgang PIR", "LED Streifen
+/// Tor" — from `ports[].label` and `heads[].label` of its `/info`. Absent from the
+/// maps is a port nobody named, which is shown by what the node calls it.
+///
+/// Beside [`NodeDescription`] and never in it, for the reason `effects` is: the type id
+/// hashes the description, and a name in a parameter's key is its identity. A label is
+/// what an operator reads and nothing else; renaming a relay must not orphan a cue.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct NodeLabels {
+    pub ports: BTreeMap<u8, String>,
+    pub heads: BTreeMap<u8, String>,
+}
+
+impl NodeLabels {
+    /// Read them out of a raw `/info` body. Firmware from before labels says none, and
+    /// so does a node nobody has named anything on.
+    pub fn from_info(info: &serde_json::Value) -> NodeLabels {
+        let read = |list: &serde_json::Value, key: &str| -> BTreeMap<u8, String> {
+            list.as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|entry| {
+                    let number = u8::try_from(entry.get(key)?.as_u64()?).ok()?;
+                    let label = entry.get("label")?.as_str()?.trim();
+                    (!label.is_empty()).then(|| (number, label.to_string()))
+                })
+                .collect()
+        };
+        NodeLabels { ports: read(&info["ports"], "port"), heads: read(&info["heads"], "head") }
+    }
+}
+
+/// A name as a node keeps it: trimmed, and cut to [`NAME_MAX`] bytes at a character
+/// boundary, so an umlaut is never split in half.
+pub fn node_name(name: &str) -> String {
+    let mut name = name.trim().to_string();
+    while name.len() > NAME_MAX {
+        name.pop();
+    }
+    name
+}
+
 // ── The fixture type that follows ─────────────────────────────────────────────
 
 /// The stable id of the fixture type a description becomes.

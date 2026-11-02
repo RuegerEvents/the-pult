@@ -92,6 +92,8 @@ export function aFixture(over: Partial<Fixture> = {}): Fixture {
 		live_fades: {},
 		live_htp: {},
 		home_values: {},
+		parameter_labels: null,
+		agreed_names: null,
 		...over
 	};
 }

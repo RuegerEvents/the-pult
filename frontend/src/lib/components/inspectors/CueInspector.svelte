@@ -8,8 +8,8 @@
 	 * out of the cue on stage lets the light go where the stack says (task 93).
 	 */
 
-	import type { Cue, ParameterCapture } from '$lib/generated/index.js';
-	import { displayLabel, formatValue, parameterKey } from '$lib/patch.js';
+	import type { Cue, ParameterCapture, ParameterKind } from '$lib/generated/index.js';
+	import { formatValue, parameterKey, parameterName } from '$lib/patch.js';
 	import { collection, showData } from '$lib/stores/show.js';
 	import { canEdit } from '$lib/stores/showLock.js';
 
@@ -17,6 +17,7 @@
 
 	const fixtures = collection('fixtures');
 	const nameOf = (id: string) => $fixtures.find((f) => f.id === id)?.name ?? id.slice(0, 6);
+	const labelOf = (id: string, kind: ParameterKind) => parameterName($fixtures.find((f) => f.id === id), kind);
 	const keyOf = (c: ParameterCapture) => `${c.fixture_id}/${parameterKey(c.parameter_kind)}`;
 
 	/** The captures in reading order: by fixture name, then as the cue lists them. */
@@ -74,13 +75,13 @@
 									<input
 										type="checkbox"
 										checked={picked.has(key)}
-										aria-label="Pick {nameOf(capture.fixture_id)} {displayLabel(capture.parameter_kind)}"
+										aria-label="Pick {nameOf(capture.fixture_id)} {labelOf(capture.fixture_id, capture.parameter_kind)}"
 										onchange={(e) => tick(cue, key, e.currentTarget.checked)}
 									/>
 								</td>
 							{/if}
 							<td class="fixture">{nameOf(capture.fixture_id)}</td>
-							<td>{displayLabel(capture.parameter_kind)}</td>
+							<td>{labelOf(capture.fixture_id, capture.parameter_kind)}</td>
 							<td class="mono">
 								{#if capture.effect}
 									<span class="chip-effect">effect</span>
@@ -92,7 +93,7 @@
 							<td class="timing">{timing(capture)}</td>
 							{#if $canEdit}
 								<td class="acts">
-									<button class="x" title="Remove from this cue" aria-label="Remove {nameOf(capture.fixture_id)} {displayLabel(capture.parameter_kind)} from this cue" onclick={() => void remove(cue, new Set([key]))}>✕</button>
+									<button class="x" title="Remove from this cue" aria-label="Remove {nameOf(capture.fixture_id)} {labelOf(capture.fixture_id, capture.parameter_kind)} from this cue" onclick={() => void remove(cue, new Set([key]))}>✕</button>
 								</td>
 							{/if}
 						</tr>

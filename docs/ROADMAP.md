@@ -1102,7 +1102,8 @@ which `Stopper` fixed.
 built rather than being merely unwritten:
 
 - **Device rename and configuration.** A node's name comes from its TXT record and
-  `POST /api/v1/config` takes one. Nothing asks.
+  `POST /api/v1/config` takes one. Nothing asks. *(Names done: the node's own in
+  `cf5badd`, its ports' and heads' in task 101.)*
 - **Blind.** Programming a look nobody sees needs a second programmer buffer, and
   the priority rule in `playback/programmer.rs` currently has exactly one overlay.
 - **Highlight and fan.** Highlight wants a temporary override above the programmer;
@@ -8094,6 +8095,58 @@ the lap, as before, and no bar. The countdown rounds up, so it reads 0:00 only a
 cargo test -p pult-backend --lib a_fixture_patched_without_a_number
 cd plugins && cargo test -p command-line-core numbers
 cd frontend && npx vitest run src/lib/fixtureNumbers.test.ts src/lib/surface.test.ts
+```
+
+### 101. A node's ports have names, kept on the node and in the show
+
+Asked for on 2026-11-01: inputs and outputs named "Ausgang PIR", "LED Streifen Tor",
+"Relay Horn", on the node's own page and in its API, and shown and edited here, stored
+on the node.
+
+**A label is not a name.** A port's `name` in `/info` is the module's word ("Sensor 1"),
+and the console already uses it as identity: `fixture_type_id` hashes it and an unclassed
+port's key is `Named:<name>`. A user's name in that field would orphan every cue patched
+against the port. So the node serves `ports[].label` and `heads[].label` beside it, read
+from the raw body (`NodeLabels::from_info`) the way `effects` is, and outside `hashed()`.
+In the show a label is `Fixture::parameter_labels`, keyed by parameter key, and
+`parameterName(fixture, kind)` in `patch.ts` is the word every place that shows a
+parameter on a fixture now uses: the programmer, the sheet, held values, Store, cues, the
+wing, timelines, layouts, surfaces and flows. A head's label is its fixture's name.
+
+**Both sides keep the names, and the station keeps them the same**
+(`infra/devices/names.rs`). `Fixture::agreed_names` is what the two last agreed on, and
+`verdict` is the rule: a name that changed only in the show (renamed while the node was
+off, or undone) is told to the node; one the node changed (its own page, a reset, another
+module) is a `NameConflict` on the device, and nothing is written either way until
+somebody picks in the Devices panel (`device.names`). With nothing agreed, a side that has
+no name has no opinion. The node's own name follows the same rule now, so `config_for`
+no longer sends `name` on every push: a node renamed on its page was overwritten before.
+What was told is remembered per node (`names_told`), because firmware from before labels
+takes the body, keeps nothing, and would be told again on every comparison.
+
+**Adopt opens a dialog.** It asks for the node's, each head's and each port's name,
+prefilled from what the node says, and, where a node the show is patched to is offline,
+whether this one replaces it. Replacing moves `address.serial` on every fixture of the
+old node and keeps their ids, so every cue, flow, group and layout drives the new one.
+`device.compare` lists the ports the new node lacks, under the names they were given, and
+the dialog warns but allows it. A strip keeps the id derived from the *old* serial, which
+nothing looks up by derivation after adoption.
+
+**`parameter_labels` is an `Option`, and that is for the showfile.** A non-`Option`
+field is a column every existing row holds NULL in, which needs a generation bump and an
+explicit upgrade for every show, during a haunt that was running on this build.
+
+The simulator keeps names and labels, refuses a body with a label on a port it does not
+have or one longer than 31 bytes, and re-advertises with a moved `desc`. **The firmware
+side was not in `OpenHaunt/node` when this was built**; the contract is the one above:
+`ports[].label`, `heads[].label`, and `POST /api/v1/config` taking
+`{"labels": {"ports": {"4": "…"}, "heads": {"1": "…"}}}` as a partial merge, empty
+clearing.
+
+```
+cargo test -p pult-backend --lib devices::
+cargo test -p openhaunt-node-sim names_are_taken_whole
+cd frontend && npx vitest run src/lib/nodeNames.test.ts
 ```
 
 ## What is next

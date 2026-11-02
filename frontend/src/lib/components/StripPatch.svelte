@@ -10,7 +10,8 @@
 	 */
 	import { getClientContext } from '$lib/ws/context.js';
 	import { addToast } from '$lib/toasts.js';
-	import { collection } from '$lib/stores/show.js';
+	import { collection, showData } from '$lib/stores/show.js';
+	import { tooLong } from '$lib/nodeNames.js';
 	import { select } from '$lib/stores/selection.js';
 	import type { DiscoveredDevice, Fixture, PixelStrip, StripMode } from '$lib/generated/index.js';
 	import { stripRows, stripSummary } from '$lib/strips.js';
@@ -58,6 +59,14 @@
 		}
 	}
 
+	/** Rename a strip: its fixture, which is its head's label on the node. One Ctrl-Z. */
+	function rename(fixture: Fixture, value: string) {
+		const name = value.trim();
+		if (!name || name === fixture.name) return;
+		if (tooLong(name)) addToast('A node keeps 31 bytes of a name; the rest is cut off on the node');
+		void showData().fixtures.byId(fixture.id).name.set(name);
+	}
+
 	const orders = $derived(device.pixels?.orders ?? ['GRB', 'RGB']);
 	const max = $derived(device.pixels?.max_count ?? 1024);
 </script>
@@ -69,7 +78,19 @@
 			{@const changed = !!drafts[row.head]}
 			<div class="strip">
 				<div class="strip-head">
-					<span class="name">{row.fixture.name}</span>
+					{#if unlocked}
+						<!-- A strip's name is its head's label on the node: the station tells it. -->
+						<input
+							class="name rename"
+							value={row.fixture.name}
+							aria-label="Name of {row.fixture.name}"
+							title="Names the strip on the node too"
+							onchange={(e) => rename(row.fixture, e.currentTarget.value)}
+							onkeydown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+						/>
+					{:else}
+						<span class="name">{row.fixture.name}</span>
+					{/if}
 					<span class="summary dim">{stripSummary(row.strip, row.running)}</span>
 					<button
 						class="chip-btn"
@@ -157,6 +178,17 @@
 		font-size: 12px;
 	}
 	.name { color: var(--text); }
+	.rename {
+		background: transparent;
+		border: 1px solid transparent;
+		border-radius: 3px;
+		font: inherit;
+		padding: 1px 4px;
+		min-width: 0;
+		flex: 0 1 14rem;
+	}
+	.rename:hover,
+	.rename:focus { border-color: #444; background: #1a1a1a; outline: none; }
 	.summary { font-size: 11px; }
 	.dim { color: var(--text-dim); }
 	.controls {

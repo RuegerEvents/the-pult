@@ -14,7 +14,7 @@
 	 */
 
 	import type { EffectSpec } from '$lib/generated/index.js';
-	import { displayLabel, formatValue } from '$lib/patch.js';
+	import { formatValue, parameterName } from '$lib/patch.js';
 	import { collection } from '$lib/stores/show.js';
 	import { revealPanel } from '$lib/stores/workspace.js';
 	import { clear, entries, lockAll, remove, removeEffect, toggleLock } from '$lib/stores/programmer.js';
@@ -73,7 +73,7 @@
 						<span class="fixture">{group.fixture.name}</span>
 						{#each group.held as entry (entry.id)}
 							<div class="entry" class:locked={entry.locked}>
-								<span class="param">{displayLabel(entry.parameter_kind)}</span>
+								<span class="param">{parameterName(group.fixture, entry.parameter_kind)}</span>
 								{#if entry.effect}
 									<!-- The value under an effect is only where it falls back to, so
 									     showing it would be showing a number the light is not at.
@@ -124,7 +124,7 @@
 								<button
 									class="icon drop"
 									title="Give this parameter back to playback"
-									aria-label="Remove {displayLabel(entry.parameter_kind)}"
+									aria-label="Remove {parameterName(group.fixture, entry.parameter_kind)}"
 									onclick={() => remove(entry.id)}
 								>
 									<X size={13} />

@@ -8,8 +8,8 @@
 	 * by touching the control, which is something done in the middle of programming.
 	 */
 
-	import type { BindingAction } from '$lib/generated/index.js';
-	import { displayLabel, parameterKey } from '$lib/patch.js';
+	import type { BindingAction, ParameterKind } from '$lib/generated/index.js';
+	import { parameterKey, parameterName } from '$lib/patch.js';
 	import { selection } from '$lib/stores/selection.js';
 	import { collection } from '$lib/stores/show.js';
 	import { canEdit } from '$lib/stores/showLock.js';
@@ -112,6 +112,7 @@
 	const present = $derived(phase.kind !== 'Off' && phase.kind !== 'Absent' && phase.kind !== 'Fault');
 
 	const fixtureName = (id: string) => $fixtures.find((f) => f.id === id)?.name ?? id.slice(0, 6);
+	const labelOf = (id: string, kind: ParameterKind) => parameterName($fixtures.find((f) => f.id === id), kind);
 
 	function describe(action: BindingAction): string {
 		switch (action.kind) {
@@ -120,11 +121,11 @@
 			case 'CommandLine':
 				return `types “${action.line}”`;
 			case 'Flash':
-				return `flashes ${fixtureName(action.fixture_id)} · ${displayLabel(action.parameter)}`;
+				return `flashes ${fixtureName(action.fixture_id)} · ${labelOf(action.fixture_id, action.parameter)}`;
 			case 'SelectGroup':
 				return `selects ${$groups.find((g) => g.id === action.group_id)?.name ?? 'a group no longer in the show'}`;
 			case 'Parameter':
-				return `${fixtureName(action.fixture_id)} · ${displayLabel(action.parameter)}`;
+				return `${fixtureName(action.fixture_id)} · ${labelOf(action.fixture_id, action.parameter)}`;
 			case 'Master':
 				return `level of ${$sequences.find((s) => s.id === action.sequence_id)?.name ?? 'a sequence no longer in the show'}`;
 			case 'FlashSequence':

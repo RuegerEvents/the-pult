@@ -1043,6 +1043,8 @@ impl OutputManager {
                 live_fades: Default::default(),
                 live_htp: Default::default(),
                 home_values: Default::default(),
+                parameter_labels: Default::default(),
+                agreed_names: None,
             })
             .collect()
     }
