@@ -9,8 +9,7 @@ license.workspace = true
 # no OS in it; this is the part that owns a USB handle, keeps the wing alive and serves
 # a panel — the split `pult-mvr-xchange` and `infra/interop/xchange` already have.
 [dependencies]
-pult-wing = { path = "../../crates/pult-wing" }
-rusb = "0.9"
+pult-wing = { path = "../../crates/pult-wing", features = ["usb"] }
 tokio.workspace = true
 axum.workspace = true
 serde.workspace = true

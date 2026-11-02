@@ -10,7 +10,8 @@
 	 * it can show the same list and disagree honestly about one column.
 	 */
 	import { onMount } from 'svelte';
-	import { editing } from '$lib/stores/editing.js';
+	import { canEdit } from '$lib/stores/showLock.js';
+	import Dialog from './Dialog.svelte';
 	import { pluginsState } from '$lib/stores/plugins.js';
 	import { getDataContext } from '$lib/ws/context.js';
 	import type {
@@ -21,13 +22,18 @@
 	} from '$lib/generated/index.js';
 
 	const data = getDataContext();
-	const unlocked = editing('plugins');
 
 	let packages = $state<PluginPackage[]>([]);
 	let stored = $state<PluginDatum[]>([]);
 	let installing = $state(false);
 	let installError = $state<string | null>(null);
 	let fileInput = $state<HTMLInputElement | null>(null);
+	/**
+	 * What the station carries inside itself, installable with one press rather than a
+	 * file picker on whichever tablet pressed Install — where the bundle never is.
+	 */
+	let builtin = $state<{ id: string; name: string; version: string }[]>([]);
+	const offered = $derived(builtin.filter((b) => !packages.some((pkg) => pkg.plugin_id === b.id)));
 
 	const runtime = $derived($pluginsState.plugins);
 
@@ -67,6 +73,21 @@
 			}))
 			.toSorted((a, b) => a.pluginId.localeCompare(b.pluginId));
 	});
+
+	/**
+	 * Removing a plugin and forgetting what one left behind both ask first. The row
+	 * comes back with Ctrl-Z, but what the plugin was holding in memory on every
+	 * station does not, and forgetting is every key it ever stored, at once.
+	 */
+	let asking = $state<{ what: 'remove' | 'forget'; id: string; name: string } | null>(null);
+
+	async function answer() {
+		const ask = asking;
+		asking = null;
+		if (!ask) return;
+		if (ask.what === 'remove') await data.plugin_packages.byId(ask.id).delete();
+		else await forget(ask.id);
+	}
 
 	/** Forget everything one absent plugin left behind. */
 	async function forget(pluginId: string) {
@@ -134,12 +155,33 @@
 		}
 	}
 
+	async function installBuiltin(id: string) {
+		installError = null;
+		installing = true;
+		try {
+			const response = await fetch(`/api/plugins/builtin/${encodeURIComponent(id)}`, { method: 'POST' });
+			if (!response.ok) {
+				installError = (await response.text()) || `the station refused it (${response.status})`;
+			}
+		} catch (e) {
+			installError = e instanceof Error ? e.message : String(e);
+		} finally {
+			installing = false;
+		}
+	}
+
 	function onPick(event: Event) {
 		const file = (event.target as HTMLInputElement).files?.[0];
 		if (file) void install(file);
 	}
 
 	onMount(() => data.plugin_packages.subscribeDeep((v) => { packages = v; }));
+	onMount(() => {
+		fetch('/api/plugins/builtin')
+			.then((r) => (r.ok ? r.json() : []))
+			.then((list) => (builtin = list))
+			.catch(() => {});
+	});
 	onMount(() => data.plugin_data.subscribeDeep((v) => { stored = v; }));
 </script>
 
@@ -147,7 +189,7 @@
 	<section class="block">
 		<header class="block-head">
 			<h2>Plugins</h2>
-			{#if $unlocked}
+			{#if $canEdit}
 				<button class="ghost" onclick={() => fileInput?.click()} disabled={installing}>
 					{installing ? 'Installing…' : '+ Install'}
 				</button>
@@ -163,6 +205,17 @@
 
 		{#if installError}
 			<p class="error">{installError}</p>
+		{/if}
+
+		{#if $canEdit && offered.length > 0}
+			<div class="builtin">
+				<span class="hint">Built into this station:</span>
+				{#each offered as plugin (plugin.id)}
+					<button class="ghost" disabled={installing} onclick={() => installBuiltin(plugin.id)}>
+						+ {plugin.name} <span class="hint">{plugin.version}</span>
+					</button>
+				{/each}
+			</div>
 		{/if}
 
 		{#if packages.length === 0}
@@ -200,7 +253,7 @@
 										{/if}
 									</td>
 									<td>
-										{#if $unlocked}
+										{#if $canEdit}
 											<input
 												type="checkbox"
 												checked={pkg.enabled}
@@ -222,10 +275,10 @@
 										{/if}
 									</td>
 									<td>
-										{#if $unlocked}
+										{#if $canEdit}
 											<button
 												class="ghost danger"
-												onclick={() => data.plugin_packages.byId(pkg.id).delete()}
+												onclick={() => (asking = { what: 'remove', id: pkg.id, name: pkg.plugin_id })}
 											>
 												Remove
 											</button>
@@ -258,8 +311,11 @@
 							{new Set(group.rows.map((r) => r.store)).size}
 							{new Set(group.rows.map((r) => r.store)).size === 1 ? 'store' : 'stores'}
 						</span>
-						{#if $unlocked}
-							<button class="ghost danger" onclick={() => forget(group.pluginId)}>
+						{#if $canEdit}
+							<button
+								class="ghost danger"
+								onclick={() => (asking = { what: 'forget', id: group.pluginId, name: group.pluginId })}
+							>
 								Forget
 							</button>
 						{/if}
@@ -290,7 +346,32 @@
 	{/if}
 </div>
 
+{#if asking}
+	<Dialog
+		title={asking.what === 'remove' ? 'Remove a plugin' : 'Forget what a plugin left'}
+		onclose={() => (asking = null)}
+	>
+		<p class="ask">
+			{#if asking.what === 'remove'}
+				<b>{asking.name}</b> stops on every station of this show. Ctrl-Z puts it back, but not
+				anything it was holding in memory. What it stored stays, under <i>Left behind</i>.
+			{:else}
+				Everything <b>{asking.name}</b> stored in this show is deleted. A plugin put back later
+				starts from nothing.
+			{/if}
+		</p>
+		{#snippet footer()}
+			<button class="btn btn-ghost" onclick={() => (asking = null)}>Cancel</button>
+			<button class="btn btn-danger" onclick={answer}>{asking?.what === 'remove' ? 'Remove' : 'Forget'}</button>
+		{/snippet}
+	</Dialog>
+{/if}
+
 <style>
+	.ask {
+		font-size: var(--font-sm);
+		line-height: 1.5;
+	}
 	.plugins {
 		padding: 0.5rem;
 		display: flex;
@@ -299,6 +380,7 @@
 	}
 	.block-head {
 		display: flex;
+		flex-wrap: wrap;
 		align-items: center;
 		gap: 0.5rem;
 	}
@@ -326,6 +408,7 @@
 		color: var(--danger, #d66);
 		margin: 0.4rem 0;
 	}
+	.builtin { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 12px; }
 	.hidden-file {
 		display: none;
 	}

@@ -1,9 +1,10 @@
 <script lang="ts">
+	import Pick from '$lib/components/objects/Pick.svelte';
 	import type { NodeProps } from '@xyflow/svelte';
-	import type { FlowNode, ParameterDefinition } from '$lib/generated/index.js';
+	import type { FlowNode, ParameterDefinition, ParameterKind } from '$lib/generated/index.js';
 	import { getDataContext } from '$lib/ws/context.js';
-	import { parameterKindLabel } from '$lib/patch.js';
-	import { sourceOf } from '$lib/flow.js';
+	import { formatValue, parameterKey, parameterKindLabel, parameterName } from '$lib/patch.js';
+	import { sourceOf, variableLabel } from '$lib/flow.js';
 	import { getFlowContext } from './context.js';
 	import NodeShell from './NodeShell.svelte';
 
@@ -13,7 +14,30 @@
 	const data = getDataContext();
 	const show = getFlowContext();
 
-	const watched = $derived(sourceOf(node.kind)?.Parameter ?? { fixture_id: '', parameter: null });
+	const source = $derived(sourceOf(node.kind));
+	const watched = $derived(
+		source && 'Parameter' in source ? source.Parameter : { fixture_id: '', parameter: null }
+	);
+	const variableId = $derived(source && 'Variable' in source ? source.Variable.variable_id : null);
+	const variable = $derived(show.variables.find((v) => v.id === variableId) ?? null);
+
+	/**
+	 * What it reads now: the variable's value, or what the device last reported for the
+	 * parameter (`sensed_values`) — on and off for a contact, the number otherwise.
+	 */
+	const live = $derived.by(() => {
+		if (variable) return { text: variableLabel(variable), on: node.active };
+		if (!watched.parameter) return null;
+		const fixture = show.fixtures.find((f) => f.id === watched.fixture_id);
+		const value = fixture?.sensed_values?.[parameterKey(watched.parameter)];
+		if (!value) return { text: 'nothing yet', on: false };
+		if (value.type === 'Bool') return { text: value.value ? 'on' : 'off', on: value.value };
+		return { text: formatValue(value), on: node.active };
+	});
+
+	/// What an operator calls a parameter on one fixture: its label, or its kind.
+	const labelOn = (fixtureId: string, kind: ParameterKind) =>
+		parameterName(show.fixtures.find((f) => f.id === fixtureId), kind);
 
 	/// Inputs first: a flow almost always watches something the rig reports rather
 	/// than something the console drives.
@@ -34,31 +58,53 @@
 			.byId(node.id)
 			.kind.set({ Source: { Parameter: { fixture_id: fixtureId, parameter: chosen.kind } } });
 	}
+
+	const read = (id: string) =>
+		data.flow_nodes.byId(node.id).kind.set({ Source: { Variable: { variable_id: id } } });
+
+	function switchTo(what: string) {
+		if (what === 'variable') {
+			const first = show.variables[0];
+			if (first) read(first.id);
+		} else {
+			const fixture = show.fixtures[0];
+			if (fixture) watch(fixture.id);
+		}
+	}
 </script>
 
-<NodeShell {node} title="Watch">
+<NodeShell {node} {live} title={variableId ? 'Read' : 'Watch'}>
 	<select
 		class="text-input nodrag"
-		value={watched.fixture_id}
-		onchange={(e) => watch(e.currentTarget.value)}
+		value={variableId ? 'variable' : 'fixture'}
+		onchange={(e) => switchTo(e.currentTarget.value)}
 	>
-		{#each show.fixtures as fixture (fixture.id)}
-			<option value={fixture.id}>{fixture.name}</option>
-		{/each}
+		<option value="fixture" disabled={show.fixtures.length === 0}>a fixture</option>
+		<option value="variable" disabled={show.variables.length === 0}>a variable</option>
 	</select>
-	<select
-		class="text-input nodrag"
-		value={watched.parameter ? parameterKindLabel(watched.parameter) : ''}
-		onchange={(e) => watch(watched.fixture_id, e.currentTarget.value)}
-	>
-		{#each parametersOf(watched.fixture_id) as param (parameterKindLabel(param.kind))}
-			<option value={parameterKindLabel(param.kind)}>
-				{parameterKindLabel(param.kind)}{param.direction === 'Input' ? '' : ' (driven)'}
-			</option>
-		{/each}
-	</select>
+
+	{#if variableId !== null}
+		<Pick class="text-input" rows={show.variables} value={variableId} onpick={(id) => id && read(id)} />
+		<span class="hint">
+			{variable ? `now ${variableLabel(variable)}` : 'variable missing'} · true while off zero
+		</span>
+	{:else}
+		<Pick class="text-input" rows={show.fixtures} value={watched.fixture_id} onpick={(id) => id && watch(id)} />
+		<select
+			class="text-input nodrag"
+			value={watched.parameter ? parameterKindLabel(watched.parameter) : ''}
+			onchange={(e) => watch(watched.fixture_id, e.currentTarget.value)}
+		>
+			{#each parametersOf(watched.fixture_id) as param (parameterKindLabel(param.kind))}
+				<option value={parameterKindLabel(param.kind)}>
+					{labelOn(watched.fixture_id, param.kind)}{param.direction === 'Input' ? '' : ' (driven)'}
+				</option>
+			{/each}
+		</select>
+	{/if}
 </NodeShell>
 
 <style>
 	.text-input { background: #171717; border: 1px solid #3a3a3a; border-radius: 3px; color: #e0e0e0; padding: 3px 5px; font: inherit; font-size: 12px; width: 100%; }
+	.hint { color: #666; font-size: 10px; line-height: 1.3; }
 </style>

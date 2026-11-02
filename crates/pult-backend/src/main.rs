@@ -26,7 +26,7 @@ struct Args {
     /// so a copied bundle no longer clones the station that made it.
     #[arg(long, value_name = "FILE")]
     identity: Option<std::path::PathBuf>,
-    /// Put one of the demo shows in, if the show has no rig yet: haunt, theatre,
+    /// Put one of the demo shows in, if the show has no rig yet: haunt, theater,
     /// club or festival.
     #[arg(long, value_name = "ID")]
     demo: Option<pult_backend::demo::Demo>,
@@ -58,6 +58,23 @@ struct Args {
     /// the plugin while the console runs.
     #[arg(long = "plugins", value_name = "DIR")]
     plugin_dirs: Vec<std::path::PathBuf>,
+    /// Leave a grandMA3 command wing alone, for when another program (grandMA3, the
+    /// wing explorer, a second console on this machine) is to have it.
+    #[arg(long)]
+    no_wing: bool,
+    /// MA's `command_wing_app.bin`, for a machine with no grandMA3 install (a
+    /// Raspberry Pi at front of house). Copied there by the operator; never shipped.
+    #[arg(long, value_name = "FILE")]
+    wing_image: Option<std::path::PathBuf>,
+    /// MA's `hardware_configurations.xml`, likewise, so the panel can name controls.
+    #[arg(long, value_name = "FILE")]
+    wing_map: Option<std::path::PathBuf>,
+    /// Join the station at this sync address (`host:port`) as a follower once this one
+    /// is up, retrying until it answers. For a spare started at boot, which would
+    /// otherwise come up on its own show and stay there: a join is not remembered
+    /// across a restart, and the leader may still be booting.
+    #[arg(long, value_name = "HOST:PORT")]
+    join: Option<String>,
 }
 
 /// Accept either `host:port` or a bare address, defaulting to the Art-Net port.
@@ -106,10 +123,45 @@ async fn main() -> Result<()> {
         openhaunt_broker_port: args.openhaunt_broker_port,
         node_id: args.node_id,
         plugin_dirs: args.plugin_dirs,
+        // Back into the session this station last joined, after a restart.
+        rejoin: true,
         log: Some(log),
+        // Once for the process, like the log: a show switch restarts the station and
+        // must not reboot the wing.
+        wing: (!args.no_wing).then(|| {
+            pult_backend::wing::install_from(pult_backend::wing::WingFiles {
+                image: args.wing_image,
+                map: args.wing_map,
+            })
+        }),
         ..Config::default()
     })
     .await?;
+
+    if let Some(address) = args.join {
+        // Joined before serving, because `serve` owns the console from then on; and
+        // retried, because a spare and its leader come up after one power cut together
+        // and the spare is usually first. Every ten seconds, for as long as it takes.
+        loop {
+            let tried = match tokio::net::lookup_host(&address).await {
+                Ok(mut found) => match found.next() {
+                    Some(addr) => console.join_at(addr).await,
+                    None => Err(format!("{address} resolves to nothing")),
+                },
+                Err(e) => Err(format!("{address}: {e}")),
+            };
+            match tried {
+                Ok(()) => {
+                    tracing::info!("[session] joined {address}");
+                    break;
+                }
+                Err(e) => {
+                    tracing::warn!("[session] could not join {address} yet ({e}); trying again in 10 s");
+                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                }
+            }
+        }
+    }
 
     console.serve().await
 }

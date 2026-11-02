@@ -125,6 +125,12 @@ async fn a_universe_this_station_sent_comes_back_in_as_a_programmer_value() {
     // it a gate rather than a guess about rounding.
     let expected = ParameterValue::Float(191.0 / 255.0);
     let fixture_id = a_dimmer(&station, 191.0 / 255.0).await;
+    // A port of the test's own rather than 5568. The protocol's port is shared by
+    // everything on this machine that speaks sACN, with `SO_REUSEPORT`, so a demo
+    // running beside the suite both took the packets this test sent and sent its own
+    // universe 1 into this test's merge — which failed the assertion with nothing
+    // wrong in the console.
+    let port = std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
 
     create(
         &station,
@@ -136,7 +142,7 @@ async fn a_universe_this_station_sent_comes_back_in_as_a_programmer_value() {
             // Unicast at our own listener rather than the multicast group: a test must
             // not depend on this machine's multicast routing, and the packet on the
             // wire is byte for byte the same one.
-            target: Some(format!("127.0.0.1:{}", 5568)),
+            target: Some(format!("127.0.0.1:{port}")),
             universes: vec![1],
             enabled: true,
             node_id: Some(station.node_id),
@@ -158,6 +164,7 @@ async fn a_universe_this_station_sent_comes_back_in_as_a_programmer_value() {
             interfaces: Default::default(),
             universes: [(1u16, 1u16)].into_iter().collect(),
             enabled: true,
+            port: Some(port),
         })
         .unwrap(),
     )
@@ -224,21 +231,23 @@ async fn a_timeline_event_goes_the_cue_it_names() {
         easing: None,
         is_active: false,
     };
-    let sequence = Sequence {
+    let sequence = Sequence { merge: None, wrap: None,
+        folder: None,
         id: uuid::Uuid::new_v4(),
         name: "Act 1".into(),
         cue_ids: vec![cue.id],
         active_cue_index: None,
         went_at: None,
+        master: None,
     };
     create(&station, "cues", serde_json::to_value(&cue).unwrap()).await;
     create(&station, "sequences", serde_json::to_value(&sequence).unwrap()).await;
 
     let timeline = Timeline {
+        folder: None,
         id: uuid::Uuid::new_v4(),
         name: "Song".into(),
-        audio: None,
-        peaks: None,
+        clips: Vec::new(),
         detected: None,
         source: TimelineSource::Internal,
         grid: Vec::new(),
@@ -249,13 +258,17 @@ async fn a_timeline_event_goes_the_cue_it_names() {
             action: TimelineAction::GoToCue { sequence_id: sequence.id, cue_id: cue.id },
         }],
         tracks: Vec::new(),
+        flashes: None,
+        pending: None,
         speed_master: None,
         node_id: None,
+        end: None,
         running: false,
         anchor_ms: 0,
         position_at_anchor_ms: 0,
         rate: 1.0,
         recording: None,
+        armed_by: None,
     };
     create(&station, "timelines", serde_json::to_value(&timeline).unwrap()).await;
 

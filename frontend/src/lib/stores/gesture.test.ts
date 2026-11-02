@@ -113,9 +113,9 @@ describe('the drag action', () => {
 		expect(currentGesture()).toBeNull();
 	});
 
-	/// A drag cancelled by the phone ringing is still over, and a gesture left open
+	/// A drag canceled by the phone ringing is still over, and a gesture left open
 	/// would swallow whatever the operator did next.
-	it('closes on a cancelled pointer too', () => {
+	it('closes on a canceled pointer too', () => {
 		const { node, fire } = fakeNode();
 		asOneGesture(node);
 

@@ -1,8 +1,8 @@
 //! The scalar types MVR spells as strings.
 //!
 //! Almost all of them are GDTF's, because MVR was written beside GDTF and shares its
-//! conventions: a colour is CIE xyY, a matrix is brace-wrapped rows, geometry is
-//! millimetres with Z up. Those come straight from [`pult_gdtf::values`] and are
+//! conventions: a color is CIE xyY, a matrix is brace-wrapped rows, geometry is
+//! millimeters with Z up. Those come straight from [`pult_gdtf::values`] and are
 //! re-exported here so a reader of this crate has one place to look — a second
 //! implementation of the space conversion is the one bug that would show up as the
 //! screen disagreeing with the lamps.
@@ -29,7 +29,7 @@ pub use pult_gdtf::values::{
 pub struct MvrMatrix(pub Matrix);
 
 impl MvrMatrix {
-    /// The translation part, in the file's own millimetres.
+    /// The translation part, in the file's own millimeters.
     pub fn translation_mm(&self) -> [f32; 3] {
         self.0.translation_mm()
     }

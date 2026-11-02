@@ -235,7 +235,7 @@ fn a_chase(easing: Easing) -> RunningEffect {
 }
 
 /// The reason a step carries a value rather than a level: a chase can be three
-/// colours, not three brightnesses of one.
+/// colors, not three brightnesses of one.
 #[test]
 fn a_hard_chase_shows_each_step_from_where_it_starts() {
     let chase = a_chase(Easing::Step);
@@ -250,7 +250,7 @@ fn a_hard_chase_shows_each_step_from_where_it_starts() {
 fn a_linear_chase_crossfades_between_its_steps() {
     let chase = a_chase(Easing::Linear);
     // A sixth of a cycle in is halfway from the first step to the second.
-    let ParameterValue::Color { r, g, b, .. } = effect_value_at(&chase, 1_000 / 6) else { panic!("a colour") };
+    let ParameterValue::Color { r, g, b, .. } = effect_value_at(&chase, 1_000 / 6) else { panic!("a color") };
     assert_near(r, 0.5, "half out of red");
     assert_near(g, 0.5, "half into green");
     assert_close(b, 0.0, "no blue yet");
@@ -261,7 +261,7 @@ fn a_linear_chase_crossfades_between_its_steps() {
 #[test]
 fn the_last_step_wraps_round_to_the_first() {
     let chase = a_chase(Easing::Linear);
-    let ParameterValue::Color { r, g, b, .. } = effect_value_at(&chase, 5_000 / 6) else { panic!("a colour") };
+    let ParameterValue::Color { r, g, b, .. } = effect_value_at(&chase, 5_000 / 6) else { panic!("a color") };
     assert_near(b, 0.5, "half out of blue");
     assert_near(r, 0.5, "half into red");
     assert_close(g, 0.0, "green is behind us");
@@ -357,4 +357,95 @@ fn a_fade_hours_into_a_show_still_lands_on_the_right_millisecond() {
     let mut fade = a_fade(4_000, Easing::Linear);
     fade.t0 = 6 * 60 * 60 * 1000;
     assert_close(float(&fade_value_at(&fade, fade.t0 + 1_000)), 0.25, "a quarter in");
+}
+
+// ── The two that never repeat ─────────────────────────────────────────────────
+
+/// A flicker stays inside its range, and is the same number twice.
+#[test]
+fn a_flicker_is_a_level_and_is_deterministic() {
+    for i in 0..2_000 {
+        let at = i as f64 * 0.013;
+        let level = shape_level(Shape::Flicker, 0.5, at, 7);
+        assert!((0.0..=1.0).contains(&level), "{level} at {at}");
+        assert_eq!(level, shape_level(Shape::Flicker, 0.5, at, 7));
+    }
+}
+
+/// The whole point: the next cycle is not the last one again.
+#[test]
+fn a_flicker_does_not_repeat_from_one_cycle_to_the_next() {
+    let differs = (0..32).filter(|i| {
+        let x = *i as f64 / 32.0 + 0.01;
+        (shape_level(Shape::Flicker, 0.5, x, 0) - shape_level(Shape::Flicker, 0.5, x + 1.0, 0))
+            .abs()
+            > 1e-3
+    });
+    assert!(differs.count() > 16);
+}
+
+/// Two fixtures at different phases flicker apart rather than one following the other.
+#[test]
+fn a_flicker_salted_differently_is_a_different_flicker() {
+    let a: Vec<f32> = (0..64).map(|i| shape_level(Shape::Flicker, 0.5, i as f64 / 16.0, 1)).collect();
+    let b: Vec<f32> = (0..64).map(|i| shape_level(Shape::Flicker, 0.5, i as f64 / 16.0, 2)).collect();
+    assert_ne!(a, b);
+}
+
+/// Lightning is dark outside its window, and inside it falls from each flash.
+#[test]
+fn lightning_strikes_only_inside_its_window() {
+    for cycle in 0..200 {
+        let base = cycle as f64;
+        assert_eq!(shape_level(Shape::Lightning, 0.2, base + 0.25, 3), 0.0);
+        assert_eq!(shape_level(Shape::Lightning, 0.2, base + 0.9, 3), 0.0);
+        let peak = shape_level(Shape::Lightning, 0.2, base, 3);
+        assert!((0.0..=1.0).contains(&peak));
+    }
+}
+
+/// Not every cycle strikes, and most do.
+#[test]
+fn lightning_skips_some_cycles() {
+    let struck = (0..1_000)
+        .filter(|cycle| shape_level(Shape::Lightning, 0.2, *cycle as f64 + 0.0001, 9) > 0.0)
+        .count();
+    assert!((600..800).contains(&struck), "{struck} of 1000");
+}
+
+/// Through the running effect, a random shape is salted by phase: an even spread
+/// strikes the whole rig at once, which is what lightning does.
+#[test]
+fn an_even_spread_of_lightning_strikes_together() {
+    let effect = |phase: f32| RunningEffect {
+        effect_id: Uuid::nil(),
+        curve: Curve::Shape(Shape::Lightning),
+        rate_hz: 0.2,
+        low: ParameterValue::Float(0.0),
+        high: ParameterValue::Float(1.0),
+        width: 0.3,
+        direction: Direction::Forward,
+        phase,
+        t0: 0,
+        source: EffectSource::Programmer,
+    };
+    for ms in (0..60_000).step_by(37) {
+        assert_eq!(effect_value_at(&effect(0.0), ms), effect_value_at(&effect(0.0), ms));
+    }
+    let apart = (0..60_000)
+        .step_by(37)
+        .filter(|ms| effect_value_at(&effect(0.1), *ms) != effect_value_at(&effect(0.6), *ms))
+        .count();
+    assert!(apart > 0, "two phases are two storms");
+}
+
+/// A periodic shape through `shape_level` is exactly `curve_level`, whatever the cycle.
+#[test]
+fn the_periodic_shapes_ignore_which_cycle_it_is() {
+    for shape in [Shape::Sine, Shape::Triangle, Shape::Square, Shape::SawUp, Shape::SawDown] {
+        for i in 0..20 {
+            let x = i as f32 / 20.0;
+            assert_eq!(shape_level(shape, 0.4, x as f64 + 3.0, 99), curve_level(shape, 0.4, x));
+        }
+    }
 }

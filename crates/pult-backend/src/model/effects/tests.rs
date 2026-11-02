@@ -36,6 +36,7 @@ fn a_spec(rate: Rate, t0: Option<u64>) -> EffectSpec {
         phase: 0.0,
         spread: Spread::Even,
         t0,
+        template: None,
     }
 }
 

@@ -4,7 +4,9 @@ import { describe, it, expect } from 'vitest';
 
 import type { Fixture, SceneObject, Vec3 } from './generated/index.js';
 import {
+	cellSpansText,
 	describe as describeQuery,
+	elements,
 	evaluate,
 	EMPTY_QUERY,
 	idsQuery,
@@ -12,9 +14,13 @@ import {
 	inCone,
 	isManualList,
 	NO_ORDER,
-	normalise,
+	normalize,
+	parseCellSpans,
+	rangeOf,
 	sortSelection,
-	type SelectionQuery
+	type SelectionQuery,
+	withId,
+	withoutId
 } from './selection.js';
 import { at as placedAt } from './scene.js';
 import { aFixture, aFixtureType } from './test-fixtures.js';
@@ -79,7 +85,7 @@ describe('geometry', () => {
 		const near = evaluate(
 			query({
 				clauses: [
-					{ combine: 'Add', term: { kind: 'Sphere', centre: { x: 0, y: 5, z: 2 }, radius: 1.5 } }
+					{ combine: 'Add', term: { kind: 'Sphere', center: { x: 0, y: 5, z: 2 }, radius: 1.5 } }
 				]
 			}),
 			rig
@@ -163,7 +169,7 @@ describe('geometry', () => {
 
 	it('a direction of nothing selects nothing rather than everything', () => {
 		expect(inCone({ x: 0, y: 0, z: 1 }, { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 }, 90, 10)).toBe(false);
-		expect(normalise({ x: 0, y: 0, z: 0 })).toBeNull();
+		expect(normalize({ x: 0, y: 0, z: 0 })).toBeNull();
 	});
 
 	it('a box with no volume still matches a point exactly on it', () => {
@@ -180,7 +186,7 @@ describe('geometry', () => {
 		const huge = evaluate(
 			query({
 				clauses: [
-					{ combine: 'Add', term: { kind: 'Sphere', centre: { x: 0, y: 0, z: 0 }, radius: 1e6 } }
+					{ combine: 'Add', term: { kind: 'Sphere', center: { x: 0, y: 0, z: 0 }, radius: 1e6 } }
 				]
 			}),
 			rig
@@ -264,7 +270,7 @@ describe('the order the selection comes out in', () => {
 		expect(right).toEqual(['Front 4', 'Front 3', 'Front 2', 'Front 1']);
 	});
 
-	/** Outwards from a point, which is what makes a centre-out chase possible. */
+	/** Outwards from a point, which is what makes a center-out chase possible. */
 	it('sorts outwards from a point', () => {
 		const out = evaluate(
 			{ ...everything, order: { kind: 'ByDistance', from: { x: 0, y: 5, z: 2 } } },
@@ -379,5 +385,86 @@ describe('the corpus the station agrees with', () => {
 		expect(corpus.rig.length).toBeGreaterThanOrEqual(5);
 		expect(corpus.cases.length).toBeGreaterThanOrEqual(15);
 		expect(corpus.rig.some((f) => f.position === null)).toBe(true);
+	});
+});
+
+/**
+ * The other half of the corpus: how a selection's fixtures become the elements it
+ * acts on. `every_elements_case_in_the_corpus` in `selection_corpus.rs` reads the same.
+ */
+describe('the elements the station agrees with', () => {
+	type Case = {
+		name: string;
+		picked: string[];
+		cells: { from: number; to: number }[];
+		counts: Record<string, number>;
+		expected: { fixture: string; cell: number | null }[];
+	};
+	const corpus: { elements: Case[] } = JSON.parse(
+		readFileSync(new URL('../../../testdata/selection-queries.json', import.meta.url), 'utf8')
+	);
+	for (const c of corpus.elements) {
+		it(c.name, () => {
+			expect(elements(c.picked, c.cells, (id) => c.counts[id] ?? 0)).toEqual(c.expected);
+		});
+	}
+	it('is still worth reading', () => {
+		expect(corpus.elements.length).toBeGreaterThanOrEqual(6);
+	});
+});
+
+describe('typing a cell sub-selection', () => {
+	it('reads ranges, single cells, backwards ranges and lists', () => {
+		expect(parseCellSpans('1-20')).toEqual([{ from: 1, to: 20 }]);
+		expect(parseCellSpans(' 5 ')).toEqual([{ from: 5, to: 5 }]);
+		expect(parseCellSpans('20-1, 30')).toEqual([{ from: 20, to: 1 }, { from: 30, to: 30 }]);
+		expect(parseCellSpans('')).toEqual([]);
+	});
+	it('refuses what is not a cell', () => {
+		expect(parseCellSpans('0')).toBeNull();
+		expect(parseCellSpans('a-b')).toBeNull();
+		expect(parseCellSpans('1-')).toBeNull();
+	});
+	it('writes back what it reads', () => {
+		expect(cellSpansText([{ from: 1, to: 20 }, { from: 5, to: 5 }])).toBe('1-20, 5');
+	});
+});
+
+describe('picking by hand, and taking back', () => {
+	const picks = (q: SelectionQuery) => evaluate(q, rig);
+
+	it('takes a hand-picked light out of its list rather than dropping it', () => {
+		const one = idsQuery(['Front 1']);
+		expect(withoutId(one, 'Front 1', picks).clauses).toEqual([]);
+		const two = idsQuery(['Front 1', 'Front 2']);
+		expect(withoutId(two, 'Front 1', picks).clauses).toEqual([
+			{ combine: 'Add', term: { kind: 'Ids', ids: ['Front 2'] } }
+		]);
+	});
+
+	it('drops a light only when something else still picks it', () => {
+		const named = query({ clauses: [{ combine: 'Add', term: { kind: 'Named', text: 'front' } }] });
+		const less = withoutId(named, 'Front 1', picks);
+		expect(less.clauses[1]).toEqual({ combine: 'Drop', term: { kind: 'Ids', ids: ['Front 1'] } });
+		expect(picks(less)).not.toContain('Front 1');
+	});
+
+	it('puts a dropped light back by taking back the drop', () => {
+		const named = query({ clauses: [{ combine: 'Add', term: { kind: 'Named', text: 'front' } }] });
+		const back = withId(withoutId(named, 'Front 1', picks), 'Front 1', picks);
+		expect(back.clauses).toEqual(named.clauses);
+	});
+
+	it('adds onto the trailing hand-picked list', () => {
+		expect(withId(idsQuery(['Front 1']), 'Front 3', picks).clauses).toEqual([
+			{ combine: 'Add', term: { kind: 'Ids', ids: ['Front 1', 'Front 3'] } }
+		]);
+	});
+
+	it('picks a range in list order, either way', () => {
+		const order = ['a', 'b', 'c', 'd'];
+		expect(rangeOf(order, 'b', 'd')).toEqual(['b', 'c', 'd']);
+		expect(rangeOf(order, 'c', 'a')).toEqual(['c', 'b', 'a']);
+		expect(rangeOf(order, 'x', 'a')).toBeNull();
 	});
 });

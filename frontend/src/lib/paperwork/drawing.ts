@@ -9,7 +9,7 @@
  * drawing that prints differently from the one somebody signed off, and nobody would
  * find that until it was on paper in a room.
  *
- * # Millimetres, from the top-left, y downwards
+ * # Millimeters, from the top-left, y downwards
  *
  * Paper units all the way through. A viewport at 1:50 is a window of a known size onto
  * the rig, and once the scale is resolved every coordinate in here is a physical
@@ -25,7 +25,7 @@
  * languages, agreeing until they did not. It also means the corpus can assert it.
  */
 
-/** A length on the page, in millimetres. */
+/** A length on the page, in millimeters. */
 export type Mm = number;
 
 /** A point on the page. */
@@ -44,10 +44,10 @@ export interface RectMm {
 
 /** How a line is drawn. */
 export interface Stroke {
-	/** Millimetres. A drawing's line weights are 0.13, 0.25, 0.35, 0.5, 0.7. */
+	/** Millimeters. A drawing's line weights are 0.13, 0.25, 0.35, 0.5, 0.7. */
 	width: Mm;
 	color: string;
-	/** Dash pattern in millimetres, e.g. `[2, 1]`. Omitted for a solid line. */
+	/** Dash pattern in millimeters, e.g. `[2, 1]`. Omitted for a solid line. */
 	dash?: number[];
 }
 
@@ -68,7 +68,7 @@ export interface TextItem {
 	at: Pt;
 	text: string;
 	/**
-	 * The font's em size, in millimetres — the same number a CSS `font-size` or a PDF
+	 * The font's em size, in millimeters — the same number a CSS `font-size` or a PDF
 	 * `Tf` takes, so neither renderer has to convert. A drawing's nominal text height
 	 * is its *cap* height, which for this face is about 0.71 of this; `font.ts` is
 	 * where that conversion lives, for the one caller that wants it.
@@ -92,7 +92,7 @@ export interface PathItem {
 	 */
 	points: Pt[][];
 	stroke?: Stroke;
-	/** A fill colour closes each polyline. `#fff` is what paints out what is behind. */
+	/** A fill color closes each polyline. `#fff` is what paints out what is behind. */
 	fill?: string;
 }
 
@@ -112,7 +112,7 @@ export interface Drawing {
 	items: DrawItem[];
 }
 
-/** Line weights, in millimetres, and what each of them is for. */
+/** Line weights, in millimeters, and what each of them is for. */
 export const WEIGHT = {
 	/** Hairlines: a hidden edge, a grid, a leader. */
 	fine: 0.13,

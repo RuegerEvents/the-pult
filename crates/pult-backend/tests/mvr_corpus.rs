@@ -286,7 +286,7 @@ fn every_real_file_survives_being_written_back_out() {
 /// A rig this console built for itself, written out and read back.
 ///
 /// **Not `#[ignore]`d**, and that is the point: it needs no corpus, because the whole
-/// case is a rig made of catalogue pieces — which is what a console that has never
+/// case is a rig made of catalog pieces — which is what a console that has never
 /// imported anything has, and which until this task exported as a room full of empty
 /// groups. MVR has no primitive; its `GeometryNode` is a file or a symbol instance. So
 /// each piece goes out as a symdef carrying a generated `.glb`, named so that *this*
@@ -309,8 +309,8 @@ fn a_from_scratch_rig_survives_being_written_back_out() {
         sort_order: 0,
     };
 
-    let piece = |name: &str, catalogue: &str, transform: Transform, properties: serde_json::Value| {
-        let entry = pult_schema::types::catalogue::piece(catalogue).expect("a listed piece");
+    let piece = |name: &str, catalog: &str, transform: Transform, properties: serde_json::Value| {
+        let entry = pult_schema::types::catalog::piece(catalog).expect("a listed piece");
         SceneObject {
             id: Uuid::new_v4(),
             name: name.into(),
@@ -321,7 +321,7 @@ fn a_from_scratch_rig_survives_being_written_back_out() {
             class: None,
             geometry: Vec::new(),
             symbol: None,
-            catalogue: Some(catalogue.into()),
+            catalog: Some(catalog.into()),
             properties,
             locked: false,
             weight_kg: None,
@@ -330,7 +330,7 @@ fn a_from_scratch_rig_survives_being_written_back_out() {
     let at = |x: f32, y: f32, z: f32| Transform::at(Vec3 { x, y, z });
 
     // A run with a corner in it, a tower on a base plate, decks at two heights and a
-    // pipe: every shape in the catalogue that a person would actually put in a room.
+    // pipe: every shape in the catalog that a person would actually put in a room.
     let scene_objects = vec![
         piece("Bar 1", "f34-3m", at(-1.5, 6.0, 0.0), serde_json::Value::Null),
         piece("Bar 2", "f34-3m", at(1.5, 6.0, 0.0), serde_json::Value::Null),
@@ -354,7 +354,7 @@ fn a_from_scratch_rig_survives_being_written_back_out() {
         .enumerate()
         .map(|(n, on)| {
             let parent = scene_objects.iter().find(|o| o.name == *on).expect("a piece");
-            let chords = pult_schema::types::catalogue::piece(parent.catalogue.as_deref().unwrap())
+            let chords = pult_schema::types::catalog::piece(parent.catalog.as_deref().unwrap())
                 .expect("a listed piece")
                 .chords;
             let mount = Mount { chord: 0, along: 0.5, roll: 0.0 };
@@ -385,7 +385,7 @@ fn a_from_scratch_rig_survives_being_written_back_out() {
 
     let export = plan_export(&rig, &BTreeSet::new());
 
-    // One file per *distinct* piece-and-properties: two three-metre bars are one mesh,
+    // One file per *distinct* piece-and-properties: two three-meter bars are one mesh,
     // and two decks at two leg heights are two.
     let stock_files: Vec<&str> =
         export.wanted.iter().filter(|w| w.stock.is_some()).map(|w| w.name.as_str()).collect();
@@ -425,11 +425,11 @@ fn a_from_scratch_rig_survives_being_written_back_out() {
     assert_eq!(objects.len(), scene_objects.len(), "an object went missing");
     for was in &scene_objects {
         let now = objects.iter().find(|o| o.id == was.id).expect("every object comes back by id");
-        assert_eq!(now.catalogue, was.catalogue, "{}: it stopped being a catalogue piece", was.name);
+        assert_eq!(now.catalog, was.catalog, "{}: it stopped being a catalog piece", was.name);
         assert_eq!(
             now.properties,
-            pult_schema::types::catalogue::canonical_properties_of(
-                was.catalogue.as_deref().unwrap(),
+            pult_schema::types::catalog::canonical_properties_of(
+                was.catalog.as_deref().unwrap(),
                 &was.properties,
             ),
             "{}: what it was asked for changed",

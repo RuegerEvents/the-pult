@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Archive the release binaries for one target, each with the licence, the readme
+# Archive the release binaries for one target, each with the license, the readme
 # and a checksum.
 #
 #     VERSION=0.0.1 TARGET=aarch64-apple-darwin scripts/package-binaries.sh

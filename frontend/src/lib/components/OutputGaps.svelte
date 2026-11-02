@@ -11,6 +11,7 @@
 	import { getClientContext, getDataContext } from '$lib/ws/context.js';
 	import { addToast } from '$lib/toasts.js';
 	import type { OutputCoverage, OutputGap, OutputKind } from '$lib/generated/index.js';
+	import { uuid } from '$lib/uuid.js';
 
 	let { only = null }: { only?: OutputKind | null } = $props();
 
@@ -39,7 +40,7 @@
 		busy = true;
 		try {
 			await data.outputs.create({
-				id: crypto.randomUUID(),
+				id: uuid(),
 				name: gap.universe !== null ? `Universe ${gap.universe}` : 'OpenHaunt nodes',
 				kind: gap.kind,
 				target: null,

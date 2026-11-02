@@ -20,11 +20,23 @@
 
 import type { Component } from 'svelte';
 
-import type { SectionBody } from '$lib/generated/index.js';
+import type { ChannelTest, SectionBody } from '$lib/generated/index.js';
 
 import MessageLog from './MessageLog.svelte';
 import UniverseSheet from './UniverseSheet.svelte';
 import UnknownShape from './UnknownShape.svelte';
+
+/**
+ * The hand on the wire: what this browser is forcing on the output being looked at,
+ * and how to change it. Handed to a view only where forcing means something — an
+ * output rather than an input, and a shape made of channels — so a view that has no
+ * use for it never learns it exists.
+ */
+export type Tester = {
+	test: ChannelTest;
+	/** Replace the whole test. The station keeps one value per browser, not a history. */
+	set: (next: ChannelTest) => void;
+};
 
 /** What every view is handed, whatever it draws. */
 export type SectionProps = {
@@ -37,6 +49,8 @@ export type SectionProps = {
 	focus: string | null;
 	/** Ask for a different part of this connector's traffic. */
 	ask: (focus: string | null) => void;
+	/** Present only on an output's own wire, and only to a view that can use it. */
+	tester?: Tester;
 };
 
 const SECTION_VIEWS: Record<SectionBody['shape'], Component<SectionProps>> = {

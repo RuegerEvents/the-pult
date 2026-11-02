@@ -53,6 +53,18 @@ pub struct Config {
     /// second rig on top of somebody's work.
     #[serde(default)]
     pub demo: Option<crate::demo::Demo>,
+    /// Walk `show` up to this build's generation if it is older: somebody said to.
+    ///
+    /// Only for one start, like `demo`. Without it an older show is refused, and a
+    /// console that was opening it by itself comes up with no show open — an upgrade
+    /// is a one-way door, and see `infra::showfile::upgrade` for who opens it.
+    #[serde(skip)]
+    pub upgrade: bool,
+    /// A show this console was told to open and could not without an upgrade, which it
+    /// is now waiting for another station to have made. Said on the welcome screen;
+    /// set by `Console`, never by a caller.
+    #[serde(skip)]
+    pub waiting_to_upgrade: Option<std::path::PathBuf>,
     /// Seeds for the `outputs` collection, applied only to a show that has none.
     #[serde(default)]
     pub artnet: Vec<SocketAddr>,
@@ -79,6 +91,12 @@ pub struct Config {
     /// — cannot each have their own that way.
     #[serde(default)]
     pub plugin_data: Option<std::path::PathBuf>,
+    /// Write down the session this station joins, and go back to it after a restart
+    /// (`infra/session/remembered.rs`). Both binaries turn it on; it is off by default
+    /// because a test starts stations by the dozen and none of them should go looking
+    /// for a leader from a run before.
+    #[serde(default)]
+    pub rejoin: bool,
     /// The console's own log, if this process installed one.
     ///
     /// Filled in by whoever called [`crate::logging::install`], which is `main` in
@@ -92,6 +110,13 @@ pub struct Config {
     /// must not come back from one.
     #[serde(skip)]
     pub log: Option<crate::logging::LogHandle>,
+    /// The process's command wing, from [`crate::wing::install`] — installed by `main`
+    /// for the reason the log is, and because a station is restarted on every show
+    /// switch and the wing takes seconds to boot. `None` is a station with no wing,
+    /// which is what every test wants: a test that claimed a real one would take it
+    /// off the operator's desk.
+    #[serde(skip)]
+    pub wing: Option<crate::wing::WingHandle>,
     /// Skew what this station *reports* its show clock to be, in milliseconds, and
     /// nothing that it applies.
     ///
@@ -118,13 +143,17 @@ impl Default for Config {
             identity: None,
             shows_dir: None,
             demo: None,
+            upgrade: false,
+            waiting_to_upgrade: None,
             artnet: Vec::new(),
             sacn: None,
             openhaunt_broker_port: default_broker_port(),
             node_id: None,
             plugin_dirs: Vec::new(),
             plugin_data: None,
+            rejoin: false,
             log: None,
+            wing: None,
             clock_skew_ms: 0,
         }
     }

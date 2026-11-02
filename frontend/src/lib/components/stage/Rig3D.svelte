@@ -56,6 +56,7 @@
 		aimAt,
 		beamDirection,
 		drawnLength,
+		stripPixels,
 		fixtureOutput,
 		fixturePoint,
 		planExtent,
@@ -88,7 +89,7 @@
 		rayOnPlane,
 		type Ray
 	} from '$lib/puppeteer.js';
-	import { clearSelection, selected, select, toggle } from '$lib/stores/selection.js';
+	import { clearSelection, elements, selectCells, selected, select, toggle } from '$lib/stores/selection.js';
 	import {
 		fixtureIsVisible,
 		hiddenLayers,
@@ -98,7 +99,7 @@
 		visibleObjects
 	} from '$lib/stores/scene.js';
 	import { instance, load, meshSizes } from '$lib/geometry.js';
-	import { CATALOGUE, piece, stockMesh } from '$lib/stock.js';
+	import { CATALOG, piece, stockMesh } from '$lib/stock.js';
 	import { IDENTITY, localOf, parentWorld, worldTransform } from '$lib/scene.js';
 	import { chordsFor, mountPoint, nearestMount, type Chord } from '$lib/mount.js';
 	import {
@@ -128,8 +129,9 @@
 		toggleObject
 	} from '$lib/stores/scene.js';
 	import { setValue } from '$lib/stores/programmer.js';
+	import { pixelEffect } from '$lib/evaluator.js';
 	import { output as showing, watching, type Showing } from '$lib/stores/output.js';
-	import { parameterKey } from '$lib/patch.js';
+	import { controls, parameterKey } from '$lib/patch.js';
 	import Quicksheet from '$lib/components/programmer/Quicksheet.svelte';
 	import { beginGesture, endGesture } from '$lib/stores/gesture.js';
 	import {
@@ -180,7 +182,7 @@
 		 * Keep the drawing buffer after a frame, so it can be read back.
 		 *
 		 * Off everywhere but the paperwork export, and off there for a reason worth
-		 * knowing: `preserveDrawingBuffer` stops the browser discarding the colour
+		 * knowing: `preserveDrawingBuffer` stops the browser discarding the color
 		 * buffer at the end of a frame, which costs a copy per frame on some drivers.
 		 * A rig panel redrawing sixty times a second must not pay that to enable a
 		 * screenshot nobody is taking. An export renders a handful of frames and then
@@ -211,11 +213,14 @@
 	/** The element three.js draws into. */
 	let host = $state<HTMLDivElement | null>(null);
 	/** Where the quicksheet has been projected to this frame, in panel pixels. */
-	let sheetAt = $state<{ x: number; y: number; visible: boolean }>({
+	let sheetAt = $state<{ x: number; y: number; visible: boolean; h: number }>({
 		x: 0,
 		y: 0,
-		visible: false
+		visible: false,
+		h: 0
 	});
+	/** How tall the sheet is drawn, for keeping it inside the panel. */
+	let sheetHeight = $state(0);
 
 	// ── What a frame of this view costs ─────────────────────────────────────────
 	//
@@ -244,7 +249,7 @@
 
 	/**
 	 * At most this often. A ProMotion display offers a hundred and twenty frames a
-	 * second and a lighting visualiser drawn at that rate is a GPU pinned for a
+	 * second and a lighting visualizer drawn at that rate is a GPU pinned for a
 	 * smoothness nobody can see in a two-second fade. Fifteen rather than sixteen
 	 * and two thirds so a sixty-hertz display, whose frames arrive a hair early or
 	 * late, never skips one.
@@ -286,9 +291,11 @@
 	/// strictly visible, deliberately: a beam that stopped being evaluated because the
 	/// camera turned would freeze where it was.
 	$effect(() => {
-		const keys = placed.flatMap((fixture) =>
-			(typeOf(fixture)?.parameters ?? []).map((p) => `${fixture.id}/${parameterKey(p.kind)}`)
-		);
+		// Every control, so a strip's pixels are watched cell by cell.
+		const keys = placed.flatMap((fixture) => {
+			const type = typeOf(fixture);
+			return type ? controls(type).map((c) => `${fixture.id}/${parameterKey(c.kind)}`) : [];
+		});
 		const registered = watching(keys);
 		return () => registered.stop();
 	});
@@ -302,6 +309,9 @@
 			const length = throwDistance(at, direction);
 			const output = fixtureOutput(fixture, values);
 			const bearing = bearingOnFloor(fixture, type, values);
+			// A strip has no beam of its own: it is drawn as its pixels, each the light
+			// it is putting out — the console's cells, or the node's own effect.
+			const cells = stripPixels(fixture, type, values, $objectsById, pixelEffect);
 			// The beam angle the file measured, where there is one. `stage.ts` reads
 			// the type's own range; the constant is the fallback and says so.
 			const half = (type?.physical?.beam_angle_deg ?? 14) / 2;
@@ -317,6 +327,7 @@
 				length,
 				output,
 				bearing,
+				cells,
 				// tan of the half-angle: the whole of what a zoom costs the shader.
 				spread: Math.tan((Math.max(0.5, half) * Math.PI) / 180),
 				// A shutter that is closed shuts the beam off entirely; absent means
@@ -421,7 +432,7 @@
 		// ── The grid ────────────────────────────────────────────────────────────
 		//
 		// An infinite grid in a shader rather than a `GridHelper`. The helper is a
-		// fixed extent of line segments: it aliases badly past about forty metres and
+		// fixed extent of line segments: it aliases badly past about forty meters and
 		// simply stops at its own edge, so a rig larger than the plan stands on
 		// nothing. This one is a single ground-plane quad, antialiased per pixel with
 		// `fwidth`, at two scales with a distance fade.
@@ -432,7 +443,7 @@
 				depthWrite: false,
 				side: THREE.DoubleSide,
 				// `uLinear` is one on the photoreal path, where the frame is linear light
-				// and the output pass encodes it: a grey written as a screen value there
+				// and the output pass encodes it: a gray written as a screen value there
 				// comes out lighter than it was drawn.
 				uniforms: { uNear: { value: 0 }, uFar: { value: 160 }, uLinear: { value: 0 } },
 				vertexShader: /* glsl */ `
@@ -450,7 +461,7 @@
 					varying vec3 vWorld;
 
 					// How close this pixel is to a line of the given spacing, measured
-					// in pixels rather than metres — which is what keeps the line one
+					// in pixels rather than meters — which is what keeps the line one
 					// pixel wide however far away it is.
 					float line(vec2 p, float spacing) {
 						vec2 grid = abs(fract(p / spacing - 0.5) - 0.5) / fwidth(p / spacing);
@@ -459,15 +470,15 @@
 
 					void main() {
 						vec2 p = vWorld.xz;
-						float metre = line(p, 1.0) * 0.28;
+						float meter = line(p, 1.0) * 0.28;
 						float tenth = line(p, 10.0) * 0.5;
-						float strength = max(metre, tenth);
+						float strength = max(meter, tenth);
 						// Fade with distance so the horizon does not turn into moiré.
 						float fade = 1.0 - smoothstep(uFar * 0.35, uFar, length(p));
 						strength *= fade;
 						if (strength <= 0.002) discard;
-						float grey = mix(0.42, pow(0.42, 2.2), uLinear);
-						gl_FragColor = vec4(vec3(grey), strength);
+						float gray = mix(0.42, pow(0.42, 2.2), uLinear);
+						gl_FragColor = vec4(vec3(gray), strength);
 					}
 				`
 			})
@@ -488,10 +499,23 @@
 		beamMesh.count = 0;
 		root.add(beamMesh);
 
+		// ── The cells ───────────────────────────────────────────────────────────
+		//
+		// Every cell of every multi-cell fixture, one instance each: ten 1024-pixel
+		// strips are one draw call. Grown like the beams and never shrunk.
+		const cellMesh = new THREE.InstancedMesh(
+			new THREE.SphereGeometry(0.025, 8, 6),
+			new THREE.MeshBasicMaterial({ color: 0xffffff }),
+			1
+		);
+		cellMesh.frustumCulled = false;
+		cellMesh.count = 0;
+		root.add(cellMesh);
+
 		// ── The aim lines, for the wireframe mode ────────────────────────────────
 		//
 		// One segment per fixture from the lens to where the beam lands, in the
-		// fixture's colour and dimmed by its level — never to nothing, so an unlit
+		// fixture's color and dimmed by its level — never to nothing, so an unlit
 		// head still says where it points. One geometry, grown with the rig.
 		const lines = new THREE.LineSegments(
 			new THREE.BufferGeometry(),
@@ -507,7 +531,7 @@
 		const wire = new THREE.MeshBasicMaterial({ color: 0x7a8290, wireframe: true });
 		// What a model wears on paper. Flat rather than lit, because a shaded axonometric
 		// on a drawing is read for its *shape* and a lighting rig's own lamps are not
-		// the light it should be read by; and light grey rather than white so its edges
+		// the light it should be read by; and light gray rather than white so its edges
 		// have something to stand against. Its companion is the black outline the depth
 		// buffer already gives between overlapping pieces.
 		const paper = new THREE.MeshBasicMaterial({ color: 0xb8bec6 });
@@ -567,6 +591,11 @@
 			timer: gpuTimer(renderer),
 			/** What each fixture was drawn as last frame, so a frame that changes nothing is not drawn. */
 			previous: new Float32Array(0),
+			cellMesh,
+			/** And each cell, the same way. */
+			cellPrevious: new Float32Array(0),
+			/** Which fixture and cell each instance of `cellMesh` is, for picking one. */
+			cellIndex: [] as { fixture: string; cell: number | null }[],
 			/** Fixture bodies, kept between frames and keyed by fixture id. */
 			bodies: new Map<string, THREE.Mesh>(),
 			/** Drawn scene objects, keyed by object id. */
@@ -642,12 +671,12 @@
 		let seconds = 0;
 
 		// Drawn only when there is something new to see. Three things count: the
-		// camera moved, the rig changed (a level, a colour, a direction — worked out
+		// camera moved, the rig changed (a level, a color, a direction — worked out
 		// by comparing against the last frame's attributes rather than trusting the
 		// stores, which tick every frame whether or not anything moved), or the
 		// picture animates on its own clock — a lit beam with haze in it, a strobe.
 		// A settled rig with nothing lit costs nothing at all, which is the answer to
-		// a theatre with no cue up holding a GPU at forty percent.
+		// a theater with no cue up holding a GPU at forty percent.
 		const tick = () => {
 			if (!running) return;
 			requestAnimationFrame(tick);
@@ -715,12 +744,18 @@
 	const scratchMatrix = new THREE.Matrix4();
 	const scratchScale = new THREE.Vector3(1, 1, 1);
 	const scratchDirection = new THREE.Vector3();
-	const scratchColour = new THREE.Color();
+	const scratchColor = new THREE.Color();
 	const scratchDimmed = new THREE.Color();
 	const scratchPosition = new THREE.Vector3();
 	const DOWN = new THREE.Vector3(0, -1, 0);
 
 	const BODY_GEOMETRY = new THREE.CylinderGeometry(0.14, 0.11, 0.34, 16);
+	/**
+	 * A pixel on a strip: a point of light with no beam, drawn as a dot in its own
+	 * color. A little larger than an LED, so a strip still reads from across a rig;
+	 * at 60 to the meter neighbors touch, which is what a lit strip looks like.
+	 */
+	const PIXEL_GEOMETRY = new THREE.SphereGeometry(0.01, 8, 6);
 
 	/** How many numbers describe one fixture's drawing, for the last-frame record. */
 	const PER_FIXTURE = 10;
@@ -778,7 +813,7 @@
 
 		// ── Beams ───────────────────────────────────────────────────────────────
 		grow(built, list.length);
-		const colours = built.beamMesh.geometry.getAttribute('beamColor') as THREE.InstancedBufferAttribute;
+		const colors = built.beamMesh.geometry.getAttribute('beamColor') as THREE.InstancedBufferAttribute;
 		const levels = built.beamMesh.geometry.getAttribute('beamLevel') as THREE.InstancedBufferAttribute;
 		const lengths = built.beamMesh.geometry.getAttribute('beamLength') as THREE.InstancedBufferAttribute;
 		const spreads = built.beamMesh.geometry.getAttribute('beamSpread') as THREE.InstancedBufferAttribute;
@@ -794,8 +829,8 @@
 		let brightest = -1;
 		let brightestLevel = 0;
 		// Only lit beams get an instance, packed from the front. An unlit beam used
-		// to be an instance whose fragments all discarded — which still rasterises
-		// the whole cone — and on a theatre rig with no cue up that was every beam.
+		// to be an instance whose fragments all discarded — which still rasterizes
+		// the whole cone — and on a theater rig with no cue up that was every beam.
 		let lit = 0;
 
 		for (let i = 0; i < list.length; i++) {
@@ -810,7 +845,7 @@
 
 			scratchDirection.set(beam.direction.x, beam.direction.y, beam.direction.z).normalize();
 			scratchPosition.set(beam.at.x, beam.at.y, beam.at.z);
-			scratchColour.setRGB(beam.output.r, beam.output.g, beam.output.b);
+			scratchColor.setRGB(beam.output.r, beam.output.g, beam.output.b);
 			const length = drawnLength(beam.length, beam.direction, beam.spread, LENS_RADIUS);
 
 			// Against last frame. Ten numbers say everything below draws from.
@@ -818,7 +853,7 @@
 			const now = [
 				scratchPosition.x, scratchPosition.y, scratchPosition.z,
 				scratchDirection.x, scratchDirection.y, scratchDirection.z,
-				level, scratchColour.r, scratchColour.g, scratchColour.b
+				level, scratchColor.r, scratchColor.g, scratchColor.b
 			];
 			for (let n = 0; n < PER_FIXTURE; n++) {
 				// Through `fround`, because the record is single precision and the
@@ -831,11 +866,14 @@
 				}
 			}
 
-			if (level > 0.0005) {
+			// A strip has no beam to draw and lights no floor: it is its cells, below.
+			const pixel = !!beam.cells;
+
+			if (level > 0.0005 && !pixel) {
 				scratchQuat.setFromUnitVectors(DOWN, scratchDirection);
 				scratchMatrix.compose(scratchPosition, scratchQuat, scratchScale);
 				built.beamMesh.setMatrixAt(lit, scratchMatrix);
-				colours.setXYZ(lit, scratchColour.r, scratchColour.g, scratchColour.b);
+				colors.setXYZ(lit, scratchColor.r, scratchColor.g, scratchColor.b);
 				levels.setX(lit, level);
 				// Run on past the axis's floor hit, so the floor cuts the beam rather
 				// than the cone's own square end standing half in the air on a slanted
@@ -845,7 +883,7 @@
 				lit += 1;
 			}
 
-			if (level > brightestLevel) {
+			if (level > brightestLevel && !pixel) {
 				brightestLevel = level;
 				brightest = i;
 			}
@@ -854,7 +892,7 @@
 			let body = built.bodies.get(beam.fixture.id);
 			if (!body) {
 				body = new THREE.Mesh(
-					BODY_GEOMETRY,
+					pixel ? PIXEL_GEOMETRY : BODY_GEOMETRY,
 					new THREE.MeshStandardMaterial({ roughness: 0.6, metalness: 0.3 })
 				);
 				body.userData.fixtureId = beam.fixture.id;
@@ -863,6 +901,10 @@
 				built.root.add(body);
 			}
 			body.visible = true;
+			// Set every frame rather than when the body is made: a body made before the
+			// rig's types arrived is a lantern, and a pixel has to become a dot once they do.
+			const shape = pixel ? PIXEL_GEOMETRY : BODY_GEOMETRY;
+			if (body.geometry !== shape) body.geometry = shape;
 			body.position.copy(scratchPosition);
 			// The body's wider end is the lens, and that end does face down the beam —
 			// the opposite end from the one the beam is turned by.
@@ -872,9 +914,11 @@
 			// Tinted by its own output, so the render says what is hanging up there.
 			// The prior art this drawing came from paints its bodies pure black, and
 			// then the picture cannot tell you which lamp is on.
-			dimKeepingHue(scratchColour, level * 0.9, scratchDimmed);
+			dimKeepingHue(scratchColor, level * 0.9, scratchDimmed);
 			material.emissive.copy(scratchDimmed);
-			material.emissiveIntensity = 1;
+			// A pixel *is* its light, so it glows at full rather than tinting a body.
+			material.emissiveIntensity = pixel ? 2.5 : 1;
+			if (pixel && !$selected.has(beam.fixture.id)) material.color.set(0x111111);
 		}
 
 		// A lit beam with haze in it drifts on the clock, so the picture is never
@@ -883,9 +927,61 @@
 		if (hazy && lit > 0 && density > 0.001) animated = true;
 
 		built.beamMesh.count = lit;
+
+		// ── Cells ───────────────────────────────────────────────────────────────
+		const cellCount = list.reduce((n, b) => n + (b.cells?.at.length ?? 0), 0);
+		if (built.cellMesh.instanceMatrix.count < cellCount) {
+			const capacity = Math.max(64, 1 << Math.ceil(Math.log2(cellCount)));
+			built.cellMesh.instanceMatrix = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 16), 16);
+			built.cellMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+			built.cellMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 3), 3);
+			built.cellPrevious = new Float32Array(capacity * 7).fill(NaN);
+		}
+		if (built.cellPrevious.length < cellCount * 7) built.cellPrevious = new Float32Array(cellCount * 7).fill(NaN);
+		let cellAt = 0;
+		let cellsChanged = false;
+		built.cellIndex.length = 0;
+		// The cells the selection holds are drawn larger, so a run picked along a strip
+		// can be seen against the rest of it.
+		const picked = new Set(
+			$elements.filter((e) => e.cell !== null).map((e) => `${e.fixture}@${e.cell}`)
+		);
+		for (const beam of list) {
+			if (!beam.cells) continue;
+			beam.cells.at.forEach((point, n) => {
+				// A node-drawn pixel is not a cell: picking it picks the strip.
+				built.cellIndex.push({ fixture: beam.fixture.id, cell: beam.cells!.cells ? n + 1 : null });
+				const out = beam.cells!.out[n];
+				const glow = out.level * 2.5;
+				const chosen = picked.has(`${beam.fixture.id}@${n + 1}`) ? 1 : 0;
+				const now = [point.x, point.y, point.z, out.r * glow, out.g * glow, out.b * glow, chosen];
+				for (let k = 0; k < 7; k++) {
+					const value = Math.fround(now[k]);
+					if (built.cellPrevious[cellAt * 7 + k] !== value) {
+						cellsChanged = true;
+						built.cellPrevious[cellAt * 7 + k] = value;
+					}
+				}
+				scratchMatrix.makeScale(chosen ? 2.2 : 1, chosen ? 2.2 : 1, chosen ? 2.2 : 1);
+				scratchMatrix.setPosition(point.x, point.y, point.z);
+				built.cellMesh.setMatrixAt(cellAt, scratchMatrix);
+				if (chosen && Math.max(now[3], now[4], now[5]) < 0.2) scratchDimmed.setHex(0x4a9eff);
+				else scratchDimmed.setRGB(Math.max(0.04, now[3]), Math.max(0.04, now[4]), Math.max(0.04, now[5]));
+				built.cellMesh.setColorAt(cellAt, scratchDimmed);
+				cellAt += 1;
+			});
+		}
+		if (built.cellMesh.count !== cellAt) cellsChanged = true;
+		built.cellMesh.count = cellAt;
+		if (cellsChanged) {
+			changed = true;
+			built.cellMesh.instanceMatrix.needsUpdate = true;
+			if (built.cellMesh.instanceColor) built.cellMesh.instanceColor.needsUpdate = true;
+		}
+
 		if (changed) {
 			built.beamMesh.instanceMatrix.needsUpdate = true;
-			colours.needsUpdate = true;
+			colors.needsUpdate = true;
 			levels.needsUpdate = true;
 			lengths.needsUpdate = true;
 			spreads.needsUpdate = true;
@@ -968,7 +1064,7 @@
 		// What a captured line frame draws its solids in. The dark studio materials read
 		// as a black silhouette on the white ground a sheet clears to — which is what
 		// the first exported axonometric was — so on paper they are swapped for a flat
-		// grey. Set here rather than below because the swap loop is here.
+		// gray. Set here rather than below because the swap loop is here.
 		const onPaper = forCapture && (mode === 'wireframe' || mode === 'cones');
 		for (const group of built.objects.values()) {
 			group.traverse((node) => {
@@ -988,7 +1084,7 @@
 		// oversight: the per-frame update writes `color` and `emissive` on it to say
 		// which lamp is on, and a `MeshBasicMaterial` has no `emissive` — swapping them
 		// threw "Cannot read properties of undefined" once per frame. They are already
-		// a dark grey, which is what a lantern should be on a white sheet anyway.
+		// a dark gray, which is what a lantern should be on a white sheet anyway.
 		// The deck is the room's own floor and is drawn dark for a studio. On white it
 		// is the black quadrilateral the first export put in the middle of the sheet.
 		built.deck.visible = built.deck.visible && !onPaper;
@@ -999,14 +1095,14 @@
 		built.renderer.toneMapping = photoreal ? THREE.ACESFilmicToneMapping : THREE.NoToneMapping;
 		built.renderer.toneMappingExposure = 1;
 		// The photoreal frame is linear light. Three things written as screen values
-		// on the plain path are said in linear terms here: the clear colour, the grid's
-		// grey, and the beams, which are too hot as light at a value that was right
+		// on the plain path are said in linear terms here: the clear color, the grid's
+		// gray, and the beams, which are too hot as light at a value that was right
 		// for the screen.
 		// **On paper, a line drawing goes on white.** A rig view is a dark studio with
 		// light in it, which is right on a screen and wrong on A3: a shaded axonometric
 		// on a sheet came out as a near-black rectangle, which is both unreadable and a
 		// cartridge of toner. So a *captured* wireframe or cones frame clears to white
-		// and the models read as grey solids on it. Real and photoreal keep the dark
+		// and the models read as gray solids on it. Real and photoreal keep the dark
 		// ground, and that is not an inconsistency: a beam is additive light, and a
 		// picture of one on white is a picture of nothing.
 		const clear = onPaper ? 0xffffff : 0x101010;
@@ -1027,10 +1123,10 @@
 	 *
 	 * This is the post-processing chain task 51 stayed away from, and it is here for
 	 * the one thing it alone can do. Beams add, and added into an 8-bit frame that
-	 * clips at one per channel, two saturated colours are white the moment they
+	 * clips at one per channel, two saturated colors are white the moment they
 	 * cross. In a floating-point target the sum is kept, and ACES rolls it off
 	 * towards white the way a sensor does, so a blue and an amber crossing stay a
-	 * colour. The bloom's threshold is one: only what is *above* white glows, which
+	 * color. The bloom's threshold is one: only what is *above* white glows, which
 	 * is the halo a lens gives a lamp it is looking into. Four samples of
 	 * multisampling on the target, since the plain path had them on the canvas.
 	 */
@@ -1049,7 +1145,7 @@
 		composer.addPass(render);
 		// Tight and above white only. The first setting tried — 0.45 strength at a
 		// radius of 0.3 — spread the stage's light across the whole frame at its
-		// widest mip and lifted the sky to grey, which is fog on the lens and not a
+		// widest mip and lifted the sky to gray, which is fog on the lens and not a
 		// halo round a lamp.
 		const bloom = new UnrealBloomPass(new THREE.Vector2(size.x, size.y), 0.22, 0.1, 1.3);
 		composer.addPass(bloom);
@@ -1216,8 +1312,8 @@
 			// whole of what makes an exported MVR carry a truss: `/stock/{id}.glb` is
 			// generated from the same table by the station, so the bytes drawn are the
 			// bytes exported. Cached per URL, so a hundred sections cost one request.
-			if (references.length === 0 && object.catalogue) {
-				void stockMesh(object.catalogue, object.properties).then((stock) => {
+			if (references.length === 0 && object.catalog) {
+				void stockMesh(object.catalog, object.properties).then((stock) => {
 					// Against the *group*, not against a per-run flag. This effect
 					// re-runs whenever the drawing changes, and a flag cleared by the
 					// teardown would throw away a mesh that had not arrived yet — after
@@ -1276,14 +1372,14 @@
 	 * **A truss is mostly holes.** Four chords and a zig-zag of bracing, and a click on
 	 * the middle of one in plan goes straight between the chords and hits nothing — so
 	 * an operator aiming at a bar has to hit a tube, which at 50 mm across on a
-	 * twelve-metre frame is a few pixels. The same is true of an imported mesh, and
+	 * twelve-meter frame is a few pixels. The same is true of an imported mesh, and
 	 * more so of a ladder.
 	 *
 	 * So the raycast is given something solid to find. It is `visible = false`, which
 	 * costs nothing to draw and is not skipped by the raycast — three's `Raycaster`
 	 * tests an object's *layers* and never its visibility, which is the one fact this
 	 * rests on. Its size comes off what was actually drawn rather than from the
-	 * catalogue, so the deck's origin-at-the-top and the panel's origin-at-the-bottom
+	 * catalog, so the deck's origin-at-the-top and the panel's origin-at-the-bottom
 	 * need no second telling.
 	 *
 	 * Measured **before** the drawn mesh is put in the group, and that ordering is the
@@ -1296,13 +1392,13 @@
 		const bounds = new THREE.Box3().setFromObject(drawn);
 		if (bounds.isEmpty()) return;
 		const size = bounds.getSize(new THREE.Vector3());
-		const centre = bounds.getCenter(new THREE.Vector3());
+		const center = bounds.getCenter(new THREE.Vector3());
 		if (!Number.isFinite(size.x) || !Number.isFinite(size.y) || !Number.isFinite(size.z)) return;
 		const box = new THREE.Mesh(
 			new THREE.BoxGeometry(Math.max(size.x, 0.02), Math.max(size.y, 0.02), Math.max(size.z, 0.02)),
 			PICKABLE
 		);
-		box.position.copy(centre);
+		box.position.copy(center);
 		box.visible = false;
 		box.userData.objectId = id;
 		group.add(box);
@@ -1447,7 +1543,20 @@
 		const from = new THREE.Vector3();
 		built.camera.getWorldPosition(from);
 		// The selection and nothing else: no pieces of the drawing, and no floor.
-		const box = rigBounds(chosen, $objectsById, { pieces: [], margin: 0.6, toFloor: false });
+		const box = { ...rigBounds(chosen, $objectsById, { pieces: [], margin: 0.6, toFloor: false }) };
+		// A strip or a bar is as long as its cells, not a point at its origin: framed as
+		// one, a selection along a strip ran out of the side of the picture. The cells
+		// the selection holds, or every cell of a fixture selected whole, as drawn.
+		const picked = new Set($elements.filter((e) => e.cell !== null).map((e) => `${e.fixture}@${e.cell}`));
+		const at = new THREE.Vector3();
+		built.cellIndex.forEach((cell, i) => {
+			if (!$selected.has(cell.fixture)) return;
+			if (picked.size && !picked.has(`${cell.fixture}@${cell.cell}`)) return;
+			built.cellMesh.getMatrixAt(i, scratchMatrix);
+			at.setFromMatrixPosition(scratchMatrix);
+			box.min = { x: Math.min(box.min.x, at.x - 0.6), y: Math.min(box.min.y, at.y - 0.6), z: Math.min(box.min.z, at.z - 0.6) };
+			box.max = { x: Math.max(box.max.x, at.x + 0.6), y: Math.max(box.max.y, at.y + 0.6), z: Math.max(box.max.z, at.z + 0.6) };
+		});
 		take(focusShot(box, from, aspect()));
 	}
 
@@ -1476,7 +1585,7 @@
 			}
 			const expects =
 				object.geometry.length > 0 ||
-				Boolean(object.catalogue) ||
+				Boolean(object.catalog) ||
 				Boolean(object.symbol);
 			// An empty group is one whose mesh has not arrived. The pick box is added
 			// *from* the drawn mesh, so any child at all means something landed.
@@ -1637,7 +1746,7 @@
 
 	// Where the gizmo sits, and whether it is offered at all. Not while a drag is in
 	// flight: the objects are moving under it, and repositioning the pivot from their
-	// new centre mid-drag would have the handle running away from the pointer.
+	// new center mid-drag would have the handle running away from the pointer.
 	$effect(() => {
 		const built = scene;
 		const at = pivotAt;
@@ -1724,7 +1833,7 @@
 		pendingMove = 0;
 		endGesture();
 		// The pivot stays where the operator left it rather than snapping back to the
-		// selection's new centre: they put it there, and a turn is very often two turns.
+		// selection's new center: they put it there, and a turn is very often two turns.
 		const at = scene?.pivotNode.position;
 		if (at && gizmoMode === 'rotate') pivot.set({ x: at.x, y: at.y, z: at.z });
 	}
@@ -1769,7 +1878,7 @@
 	const ROLL_GEOMETRY = new THREE.TorusGeometry(0.24, 0.025, 8, 28);
 	/** And the `+` on a free joint. A ball, so it reads from any angle. */
 	const JOINT_GEOMETRY = new THREE.SphereGeometry(0.075, 12, 8);
-	/** How far past the joint it sits, in metres. */
+	/** How far past the joint it sits, in meters. */
 	const JOINT_STANDOFF = 0.18;
 
 	// ── What a light is clamped to ──────────────────────────────────────────────
@@ -1777,7 +1886,7 @@
 	/**
 	 * The piece a fixture hangs off, and where its chords are.
 	 *
-	 * A catalogue piece declares them. Anything else — a truss out of somebody's
+	 * A catalog piece declares them. Anything else — a truss out of somebody's
 	 * drawing — gets **one**, off the mesh's bounds, and that is the smallest guess
 	 * available on purpose: the console does not know whether that mesh is a box truss
 	 * or a ladder, and four invented chords would put lights on corners that are not
@@ -1788,7 +1897,7 @@
 		if (!id) return null;
 		const object = $objectsById.get(id);
 		if (!object) return null;
-		const entry = piece(object.catalogue);
+		const entry = piece(object.catalog);
 		const measured = object.geometry[0] ? $meshSizes.get(object.geometry[0].asset) : undefined;
 		const chords = chordsFor(
 			entry,
@@ -1854,11 +1963,11 @@
 		built.gizmoGroup.clear();
 		built.gizmos.clear();
 		for (const beam of chosen) {
-			const add = (kind: Handle['kind'], geometry: THREE.BufferGeometry, colour: number) => {
+			const add = (kind: Handle['kind'], geometry: THREE.BufferGeometry, color: number) => {
 				const mesh = new THREE.Mesh(
 					geometry,
 					new THREE.MeshBasicMaterial({
-						color: live(kind, beam.fixture.id) ? 0xf59e0b : colour,
+						color: live(kind, beam.fixture.id) ? 0xf59e0b : color,
 						depthTest: false,
 						transparent: kind === 'spot',
 						opacity: kind === 'spot' ? 0.85 : 1,
@@ -2064,6 +2173,35 @@
 				beginGrab(built, found.kind, found.id, event);
 				return;
 			}
+			// A cell of a strip: that cell, and a drag along the strip takes the run of
+			// cells between where it started and where it is — MA's `.` by hand.
+			const hit = cellAt(built, event);
+			// A pixel the node draws is the strip, not a cell of it.
+			if (hit && hit.cell === null) {
+				event.stopPropagation();
+				if (event.shiftKey) toggle(hit.fixture);
+				else select(hit.fixture);
+				clearObjects();
+				return;
+			}
+			const onCell = hit as { fixture: string; cell: number } | null;
+			if (onCell) {
+				event.stopPropagation();
+				const from =
+					event.shiftKey && cellAnchor?.fixture === onCell.fixture ? cellAnchor.cell : onCell.cell;
+				cellAnchor = { fixture: onCell.fixture, cell: from };
+				selectCells(onCell.fixture, [{ from, to: onCell.cell }]);
+				clearObjects();
+				cellDrag = true;
+				built.controls.enabled = false;
+				const up = () => {
+					cellDrag = false;
+					built.controls.enabled = true;
+					window.removeEventListener('pointerup', up);
+				};
+				window.addEventListener('pointerup', up);
+				return;
+			}
 			// Not a gizmo: maybe a fixture body, which is what picking one is.
 			const body = bodyAt(built, event);
 			if (body) {
@@ -2111,6 +2249,13 @@
 		// fixture and nothing at all when the selection is empty.
 		const move = (event: PointerEvent) => {
 			if (grab) return;
+			if (cellDrag && cellAnchor) {
+				const over = cellAt(built, event);
+				if (over && over.cell !== null && over.fixture === cellAnchor.fixture) {
+					selectCells(over.fixture, [{ from: cellAnchor.cell, to: over.cell }]);
+				}
+				return;
+			}
 			hovered = gizmoAt(built, event);
 		};
 
@@ -2149,6 +2294,21 @@
 		caster.setFromCamera(ndc, built.camera);
 		const hit = caster.intersectObjects([...built.gizmos.keys()], false)[0];
 		return hit ? (built.gizmos.get(hit.object) ?? null) : null;
+	}
+
+	/** Where a cell drag started, so a shift-click or a drag runs from it. */
+	let cellAnchor: { fixture: string; cell: number } | null = null;
+	let cellDrag = false;
+
+	/** Which cell of which strip is under the pointer. */
+	function cellAt(built: Scene, event: PointerEvent): { fixture: string; cell: number | null } | null {
+		if (built.cellMesh.count === 0) return null;
+		const ndc = pointerNdc(event);
+		if (!ndc) return null;
+		caster.setFromCamera(ndc, built.camera);
+		const hit = caster.intersectObject(built.cellMesh, false)[0];
+		if (hit?.instanceId === undefined) return null;
+		return built.cellIndex[hit.instanceId] ?? null;
 	}
 
 	function bodyAt(built: Scene, event: PointerEvent): string | null {
@@ -2191,14 +2351,14 @@
 	/** Whatever the joint's own piece is — the menu's first answer. */
 	function sameKindAs(joint: PlacedConnector): string {
 		const object = $objectsById.get(joint.object);
-		return object?.catalogue ?? 'f34-2m';
+		return object?.catalog ?? 'f34-2m';
 	}
 
 	/**
-	 * What the menu offers: every catalogue piece with a joint of this kind, the one
+	 * What the menu offers: every catalog piece with a joint of this kind, the one
 	 * that is already there first.
 	 *
-	 * Same-kind is the catalogue's own rule and it is what keeps the list short and
+	 * Same-kind is the catalog's own rule and it is what keeps the list short and
 	 * true — a truss end takes a truss, a corner or a plate, and a pipe end takes a
 	 * pipe. Putting the piece that is already there at the top is what makes laying a
 	 * run one press and a row of Enters, and it is also the answer that is right nine
@@ -2206,7 +2366,7 @@
 	 */
 	function piecesFor(joint: PlacedConnector) {
 		const same = sameKindAs(joint);
-		const all = CATALOGUE.filter((entry) =>
+		const all = CATALOG.filter((entry) =>
 			entry.connectors.some((connector) => connector.kind === joint.kind)
 		);
 		return [
@@ -2242,16 +2402,16 @@
 	 */
 	const MENU_SIZE = { width: 170, height: 200 };
 
-	async function addOnJoint(joint: PlacedConnector, catalogueId: string) {
+	async function addOnJoint(joint: PlacedConnector, catalogId: string) {
 		jointMenu = null;
-		const world = placedOnConnector(catalogueId, joint);
+		const world = placedOnConnector(catalogId, joint);
 		if (!world) return;
 		const onto = $objectsById.get(joint.object);
 		// Parented to whatever the piece it bolts to hangs off, so a run built one
 		// section at a time stays one run: dragging the group moves the whole thing.
 		const parent = onto?.parent ?? null;
 		const local = localOf(world, parentWorld(parent, $objectsById));
-		const id = await placePiece(catalogueId, local, { parent });
+		const id = await placePiece(catalogId, local, { parent });
 		if (id) selectObject(id);
 	}
 
@@ -2277,7 +2437,7 @@
 			start.from = beam.fixture.mount?.roll ?? 0;
 		} else if (kind === 'spot') {
 			// Keep the beam where it is relative to the pointer, so grabbing the disc
-			// off-centre does not tug the light sideways before the drag has begun.
+			// off-center does not tug the light sideways before the drag has begun.
 			const point = rayOnPlane(ray, { x: 0, y: 0, z: 0 }, { x: 0, y: 1, z: 0 });
 			if (!point) return;
 			start.offset = { x: beam.end[0] - point.x, z: beam.end[2] - point.z };
@@ -2479,16 +2639,16 @@
 	 * A piece dropped on the canvas.
 	 *
 	 * Grid first, then the connectors: a section dropped near the end of a run bolts to
-	 * it, and one dropped in the middle of the room lands on the half-metre. Holding
+	 * it, and one dropped in the middle of the room lands on the half-meter. Holding
 	 * Alt turns the grid off for the one time in twenty when somebody means 1.37 m.
 	 */
-	async function dropPiece(built: Scene, catalogueId: string, event: DragEvent) {
+	async function dropPiece(built: Scene, catalogId: string, event: DragEvent) {
 		const landed = event.altKey
 			? rawWorkPlane(built, event)
 			: onWorkPlane(built, event);
 		if (!landed) return;
 		let world: Transform = { ...IDENTITY, position: landed };
-		const entry = piece(catalogueId);
+		const entry = piece(catalogId);
 		if (entry) {
 			const mine = entry.connectors.map((connector, index) => ({
 				object: '',
@@ -2508,7 +2668,7 @@
 			);
 			world = snapConnectors(world, mine, theirs)?.transform ?? world;
 		}
-		const id = await placePiece(catalogueId, world);
+		const id = await placePiece(catalogId, world);
 		if (id) selectObject(id);
 	}
 
@@ -2552,15 +2712,16 @@
 		if (
 			sheetAt.visible === behind ||
 			Math.abs(sheetAt.x - x) > 0.5 ||
-			Math.abs(sheetAt.y - y) > 0.5
+			Math.abs(sheetAt.y - y) > 0.5 ||
+			sheetAt.h !== rect.height
 		) {
-			sheetAt = { x, y, visible: !behind };
+			sheetAt = { x, y, visible: !behind, h: rect.height };
 		}
 	}
 </script>
 
 <!-- The canvas is also where a piece from the Pieces sheet lands. `dragover` has to
-     be cancelled or the browser refuses the drop, and the piece's id travels as plain
+     be canceled or the browser refuses the drop, and the piece's id travels as plain
      text because that is what a native drag carries. -->
 <div
 	class="viewport"
@@ -2583,7 +2744,7 @@
 ></div>
 
 {#if jointMenu}
-	<!-- What goes on this joint. Same-kind only, which is the catalogue's own rule: a
+	<!-- What goes on this joint. Same-kind only, which is the catalog's own rule: a
 	     truss end takes a truss, a corner or a plate, and a pipe end takes a pipe. The
 	     piece already there is first and holds the focus, so laying a run is one press
 	     and a row of Enters; Escape and the pointer leaving both put it away. -->
@@ -2620,11 +2781,15 @@
 	     Pointer and wheel events stop here. The camera controls listen on the element
 	     this sits inside, so without it every drag of a fader would also swing the
 	     camera and every scroll would dolly it. -->
+	<!-- Centered on the fixture where it fits, and slid to stay inside the panel
+	     where it does not; never taller than the panel, scrolling instead. -->
 	<div
 		class="beside"
 		role="presentation"
+		bind:clientHeight={sheetHeight}
 		style:left="{sheetAt.x}px"
-		style:top="{sheetAt.y}px"
+		style:top="{Math.max(8, Math.min(sheetAt.y - sheetHeight / 2, sheetAt.h - sheetHeight - 8))}px"
+		style:max-height="{Math.max(120, sheetAt.h - 16)}px"
 		onpointerdown={(e) => e.stopPropagation()}
 		onpointermove={(e) => e.stopPropagation()}
 		onwheel={(e) => e.stopPropagation()}
@@ -2685,9 +2850,11 @@
 
 	.beside {
 		position: absolute;
-		/* Beside and vertically centred on the fixture, which is what the transform
-		   did when this was an `HTML` overlay. */
-		transform: translate(28px, -50%);
+		/* Beside the fixture; how high is worked out in the markup, so it can be kept
+		   inside the panel. */
+		transform: translateX(28px);
+		display: flex;
+		overflow: hidden;
 		pointer-events: auto;
 		/* Below the console's own chrome: this panel lives *inside* the scene and must
 		   not cover the store menu or any other modal. */

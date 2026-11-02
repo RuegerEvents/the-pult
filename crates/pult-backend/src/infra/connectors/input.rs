@@ -46,9 +46,10 @@ use pult_schema::{
     types::{
         fixture::{Fixture, FixtureType, ParameterValue},
         input::{InputConfig, InputKind, InputStatus, InputStatuses},
+        programmer::ProgrammerValue,
         network::NetService,
         output::{OutputSection, OutputView, SectionBody, UniverseFrame, UniverseSummary, UniverseTraffic},
-        timeline::{Timeline, TimelineTrack},
+        timeline::Timeline,
     },
 };
 use tokio::sync::{mpsc, oneshot, watch};
@@ -72,7 +73,15 @@ pub enum InputCommand {
     /// The `inputs` collection changed. Reconcile against it.
     Configure(Vec<InputConfig>),
     /// The `timelines` collection changed: what is armed and where its playhead is.
-    Timelines(Vec<Timeline>),
+    ///
+    /// With whether this station is leading, which is who records the programmer: it
+    /// is SYNCED, every station sees every write, and a take stored by all of them
+    /// would be the same take three times.
+    Timelines { timelines: Vec<Timeline>, leading: bool },
+    /// What the programmer holds, at the console millisecond the engine applied it.
+    /// Sent by the leader's engine only while a timeline armed at the programmer is
+    /// running, so an idle console sends nothing.
+    Programmer { values: Vec<ProgrammerValue>, levels: Vec<(Uuid, f32)>, at_ms: u64 },
     /// Decode what is on the wire now for these fixtures.
     Grab {
         input_id: Option<Uuid>,
@@ -94,8 +103,17 @@ impl InputHandle {
     }
 
     /// Hand over the timelines: which is armed, and where each playhead is.
-    pub fn timelines(&self, timelines: Vec<Timeline>) {
-        let _ = self.0.try_send(InputCommand::Timelines(timelines));
+    pub fn timelines(&self, timelines: Vec<Timeline>, leading: bool) {
+        let _ = self.0.try_send(InputCommand::Timelines { timelines, leading });
+    }
+
+    /// Hand over the programmer, for a take recorded from it.
+    ///
+    /// Dropped on a full queue like the two above, which costs a change point and
+    /// nothing worse: the next snapshot is the whole programmer again, so the take
+    /// still ends up holding where the fader went.
+    pub fn programmer(&self, values: Vec<ProgrammerValue>, levels: Vec<(Uuid, f32)>, at_ms: u64) {
+        let _ = self.0.try_send(InputCommand::Programmer { values, levels, at_ms });
     }
 
     /// What these fixtures are being told to do, right now, by whoever is on the wire.
@@ -123,7 +141,7 @@ impl InputHandle {
 /// CID that is stable for the life of a sender, and Art-Net carries nothing at all, so
 /// the datagram's source address is the only identity there is. Which means a guest
 /// console that changes its IP looks like a new Art-Net source and an old one that
-/// times out — the right behaviour, and one nothing here can improve on.
+/// times out — the right behavior, and one nothing here can improve on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum SourceId {
     Cid([u8; 16]),
@@ -228,6 +246,8 @@ struct Recording {
     /// The last value written per parameter, so a value that did not move writes
     /// nothing. This is the whole of why a track is small.
     last: HashMap<(Uuid, String), ParameterValue>,
+    /// Where on the timeline the take began: what it replaces begins there.
+    from_ms: u32,
 }
 
 /// What the manager needs in order to be looked at, the same pair the output side has.
@@ -258,6 +278,13 @@ pub struct InputManager {
     configured: Vec<InputConfig>,
     timelines: Vec<Timeline>,
     recording: Option<Recording>,
+    /// A take from the programmer, in progress. Beside `recording` rather than in it:
+    /// a guest console on a wire and an operator at this desk can both be recorded at
+    /// once, onto different timelines.
+    take: Option<programmer::ProgrammerTake>,
+    /// Whether this station leads the session, as the engine last said. The leader
+    /// records the programmer.
+    leading: bool,
     watching: Option<Watching>,
 }
 
@@ -268,7 +295,9 @@ impl InputManager {
         net: crate::infra::net::NetHandle,
         assets: Option<AssetStore>,
     ) -> (Self, InputHandle) {
-        let (tx, rx) = mpsc::channel(8);
+        // Deep enough for a fader's programmer snapshots between two looks; see
+        // `InputHandle::programmer` for what a dropped one costs.
+        let (tx, rx) = mpsc::channel(64);
         // Deep enough that a burst across several universes does not drop a frame of
         // a take, shallow enough that a manager that has stalled does not accumulate
         // seconds of stale wire. A dropped frame here is a change point that was
@@ -287,6 +316,8 @@ impl InputManager {
                 configured: Vec::new(),
                 timelines: Vec::new(),
                 recording: None,
+                take: None,
+                leading: false,
                 watching: None,
             },
             InputHandle(tx),
@@ -327,9 +358,18 @@ impl InputManager {
                     match cmd {
                         InputCommand::Stop => break,
                         InputCommand::Configure(inputs) => self.reconcile(inputs).await,
-                        InputCommand::Timelines(timelines) => {
+                        InputCommand::Timelines { timelines, leading } => {
+                            self.leading = leading;
+                            // Before the new transports replace the old: whether the
+                            // playhead jumped is a question about both.
+                            self.take_jumped(&timelines).await;
                             self.timelines = timelines;
                             self.reconcile_recording().await;
+                            self.reconcile_take().await;
+                            self.split_whole_takes().await;
+                        }
+                        InputCommand::Programmer { values, levels, at_ms } => {
+                            self.observe_programmer(&values, &levels, at_ms);
                         }
                         InputCommand::Grab { input_id, fixture_ids, reply } => {
                             let _ = reply.send(self.grab(input_id, &fixture_ids).await);
@@ -343,6 +383,11 @@ impl InputManager {
                 _ = report.tick() => {
                     self.measure_rates();
                     self.publish_status().await;
+                    self.publish_takes().await;
+                    // Also here and not only when the timelines change: a station is
+                    // told it leads after the first look at them, and a take's file
+                    // can arrive from a peer later still.
+                    self.split_whole_takes().await;
                     // Where a cable coming or going is acted on, exactly as on the
                     // output side: neither changes the show, so nothing else in this
                     // loop would ever notice.
@@ -462,7 +507,7 @@ impl InputManager {
         // Resolved to a pair of ids before anything is decided, so the match below
         // does not hold a borrow of `self.timelines` across the writes it makes.
         let wanted: Option<(Uuid, Uuid)> = self.timelines.iter().find_map(|timeline| {
-            let input = timeline.recording?;
+            let input = timeline.recording?.input()?;
             (timeline.running && self.listening.contains_key(&input))
                 .then_some((timeline.id, input))
         });
@@ -509,12 +554,19 @@ impl InputManager {
             "[input] recording {} fixture(s) into timeline {timeline_id}",
             reachable.len()
         );
+        let from_ms = self
+            .timelines
+            .iter()
+            .find(|t| t.id == timeline_id)
+            .map_or(0, |t| t.position_at(pult_schema::types::sequence::now_ms()))
+            .min(u32::MAX as u64) as u32;
         self.recording = Some(Recording {
             timeline_id,
             input_id,
             patch: Patch::new(reachable, types, Vec::new()),
             points: BTreeMap::new(),
             last: HashMap::new(),
+            from_ms,
         });
         // Whatever is already on the wire is the value at the position the take
         // starts from, so a parameter that never moves again is still in the file.
@@ -549,18 +601,23 @@ impl InputManager {
                 continue;
             }
             recording.last.insert(at.clone(), value.clone());
-            recording.points.entry(at).or_default().push(pult_render::TrackPoint {
-                ms: at_ms,
-                value,
-            });
+            // Moves during a count-in all land on the position the take starts from,
+            // where only the last one means anything.
+            let points = recording.points.entry(at).or_default();
+            match points.last_mut() {
+                Some(last) if last.ms == at_ms => *last = pult_render::TrackPoint { release: false, ms: at_ms, value },
+                _ => points.push(pult_render::TrackPoint { release: false, ms: at_ms, value }),
+            }
         }
     }
 
-    /// Write the take out and disarm.
+    /// Write the take out, put it up for review the way a programmer pass is, and
+    /// disarm.
     async fn finish_recording(&mut self) {
         let Some(recording) = self.recording.take() else { return };
-        let Some(assets) = &self.assets else { return };
-
+        if self.assets.is_none() {
+            return;
+        }
         let track = pult_render::Track {
             keys: recording
                 .points
@@ -577,48 +634,29 @@ impl InputManager {
             self.disarm(recording.timeline_id).await;
             return;
         }
-        let bytes = pult_render::encode(&track);
-        let sha = match assets.put(crate::infra::assets::TRACK_MIME, &bytes).await {
-            Ok(sha) => sha,
-            Err(e) => {
-                warn!("[input] the take could not be stored: {e}");
-                self.disarm(recording.timeline_id).await;
-                return;
-            }
-        };
-        info!(
-            "[input] take stored: {} parameter(s), {} bytes",
-            track.keys.len(),
-            bytes.len()
-        );
-
-        // Read the row back rather than remembering it: a take runs for the length of
-        // a song, and a `tracks` list held from before it started would drop whatever
-        // somebody else added in the meantime.
-        let path = vec![
-            PathSegment::Key("timelines".into()),
-            PathSegment::Id(recording.timeline_id),
-            PathSegment::Key("tracks".into()),
-        ];
-        let mut tracks: Vec<TimelineTrack> = self
-            .engine
-            .get(path.clone())
-            .await
-            .ok()
-            .and_then(|value| serde_json::from_value(value).ok())
-            .unwrap_or_default();
-        tracks.push(TimelineTrack {
-            id: Uuid::new_v4(),
-            name: format!("Take {}", tracks.len() + 1),
-            asset: sha,
-            input_id: Some(recording.input_id),
-            offset_ms: 0,
-            enabled: true,
-        });
-        if let Ok(value) = serde_json::to_value(&tracks) {
-            if let Err(e) = self.engine.set(path, Lifecycle::Persisted, value).await {
-                warn!("[input] the take was stored but could not be added to the timeline: {e}");
-            }
+        // Where the playhead is now — the stop position, for a timeline that stopped.
+        let out = self
+            .timelines
+            .iter()
+            .find(|t| t.id == recording.timeline_id)
+            .map_or(0, |t| t.position_at(pult_schema::types::sequence::now_ms()))
+            .min(u32::MAX as u64) as u32;
+        // Every key was listening from the start, so every key's stretch starts there:
+        // a take off a wire is a whole capture rather than a touch.
+        let keys = track
+            .keys
+            .iter()
+            .map(|k| pult_schema::types::timeline::PendingKey {
+                fixture_id: k.fixture_id,
+                key: k.key.clone(),
+                from_ms: recording.from_ms,
+            })
+            .collect();
+        let stored = self
+            .stage_recording(recording.timeline_id, &track, Some(recording.input_id), keys, Vec::new(), out)
+            .await;
+        if stored.is_some() {
+            info!("[input] take staged for review: {} parameter(s)", track.keys.len());
         }
         self.disarm(recording.timeline_id).await;
     }
@@ -833,7 +871,7 @@ fn traffic(input: &Listening, focus: Option<&str>, now: std::time::Instant) -> U
 
 /// Would these two configurations want the same socket and the same groups?
 fn same_socket(a: &InputConfig, b: &InputConfig) -> bool {
-    a.kind == b.kind && a.universes == b.universes
+    a.kind == b.kind && a.universes == b.universes && a.port == b.port
 }
 
 async fn wait_for_viewers(watching: Option<&mut Watching>) -> bool {
@@ -860,10 +898,10 @@ async fn open(
     interface: Option<Ipv4Addr>,
     frames: mpsc::Sender<Received>,
 ) -> anyhow::Result<tokio::task::JoinHandle<()>> {
-    let port = match config.kind {
+    let port = config.port.unwrap_or(match config.kind {
         InputKind::Sacn => super::sacn::SACN_PORT,
         InputKind::Artnet => super::artnet::ARTNET_PORT,
-    };
+    });
     let socket = socket2::Socket::new(
         socket2::Domain::IPV4,
         socket2::Type::DGRAM,
@@ -940,6 +978,8 @@ fn parse(
         }
     }
 }
+
+mod programmer;
 
 #[cfg(test)]
 mod tests;

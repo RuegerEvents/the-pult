@@ -11,13 +11,17 @@
 	 * reconnects onto the new console, and reloads.
 	 */
 
+	import { dropdown } from '$lib/actions.js';
 	import { getClientContext, getDataContext } from '$lib/ws/context.js';
 	import { show as openShow } from '$lib/stores/show.js';
 	import { openSetup } from '$lib/stores/setup.js';
 	import { addToast } from '$lib/toasts.js';
 	import { backendOrigin, type OpenShow } from '$lib/ws/endpoint.js';
-	import { focusOnMount, selectOnMount } from '$lib/actions.js';
+	import NameDialog from './NameDialog.svelte';
+	import { describeDefaultState } from '$lib/defaultState.js';
 	import { beginSwitch, endSwitch } from '$lib/stores/switching.js';
+	import { collection } from '$lib/stores/show.js';
+	import Drama from '@lucide/svelte/icons/drama';
 
 	let { show }: { show: OpenShow } = $props();
 
@@ -29,6 +33,32 @@
 	let draft = $state('');
 	let busy = $state(false);
 
+	/**
+	 * When the last version was taken, said beside the name rather than as a Save
+	 * button: every edit is already on the disk, so the thing worth knowing is how far
+	 * back the last point to return to is, not whether anything is unsaved.
+	 */
+	const versions = collection('versions');
+	const sequences = collection('sequences');
+	const cues = collection('cues');
+	const timelines = collection('timelines');
+	let now = $state(Date.now());
+	$effect(() => {
+		const tick = setInterval(() => (now = Date.now()), 30_000);
+		return () => clearInterval(tick);
+	});
+	const lastVersion = $derived.by(() => {
+		let latest = 0;
+		for (const v of $versions) latest = Math.max(latest, Date.parse(v.created_at));
+		if (!latest) return 'no versions yet';
+		const minutes = Math.round((now - latest) / 60_000);
+		if (minutes < 1) return 'version just now';
+		if (minutes < 60) return `version ${minutes} min ago`;
+		const hours = Math.round(minutes / 60);
+		if (hours < 24) return `version ${hours} h ago`;
+		return `version ${Math.round(hours / 24)} d ago`;
+	});
+
 	// The show's own name where it has one — the row is what an operator renamed —
 	// falling back to what the folder is called, which is all `/api/config` knows.
 	const name = $derived($openShow?.name ?? show.name);
@@ -39,12 +69,42 @@
 		open = false;
 	}
 
-	async function commit() {
-		const typed = draft.trim();
+	async function commit(typed: string) {
 		const what = naming;
 		naming = null;
 		if (what === 'version') return save(typed || undefined);
 		if (what === 'copy' && typed) return ask('show.saveAs', { name: typed }, `saving a copy as ${typed}`);
+	}
+
+	/**
+	 * The show as it comes up: the sequences on and their cues, the masters and the
+	 * running timelines, never the programmer. Each is one Ctrl-Z.
+	 */
+	const hasDefault = $derived(!!$openShow?.default_state);
+	const defaultText = $derived.by(() => {
+		const d = $openShow?.default_state;
+		if (!d) return 'none';
+		const on = d.sequences.filter((s) => s.cue_id).length;
+		return `${on} sequence${on === 1 ? '' : 's'}, ${d.timelines.length} timeline${d.timelines.length === 1 ? '' : 's'}`;
+	});
+	/** Which ones, in words, so nobody has to guess what starts when the show comes up. */
+	const defaultLines = $derived.by(() => {
+		const d = $openShow?.default_state;
+		return d ? describeDefaultState(d, $sequences, $cues, $timelines) : [];
+	});
+	async function defaultState(what: 'save' | 'apply' | 'clear') {
+		open = false;
+		try {
+			const answer = (await client.call(`defaultState.${what}`, {})) as { sequences?: number; timelines?: number } | null;
+			if (what === 'save') {
+				const n = answer?.sequences ?? 0;
+				const t = answer?.timelines ?? 0;
+				addToast(`Default state saved: ${n} sequence${n === 1 ? '' : 's'} on, ${t} timeline${t === 1 ? '' : 's'} running`, 'success');
+			} else if (what === 'apply') addToast('The show is in its default state', 'success');
+			else addToast('Default state cleared: the show comes up with nothing running', 'success');
+		} catch (e) {
+			addToast(`${e instanceof Error ? e.message : e}`);
+		}
 	}
 
 	/** A version, named or not. Not a switch: the console goes on running. */
@@ -94,49 +154,46 @@
 </script>
 
 <div class="bar">
-	{#if naming}
-		<form
-			class="naming"
-			onsubmit={(e) => {
-				e.preventDefault();
-				commit();
-			}}
-		>
-			<input
-				bind:value={draft}
-				placeholder={naming === 'copy' ? 'Copy name…' : 'Version name…'}
-				use:focusOnMount
-				use:selectOnMount
-				onkeydown={(e) => e.key === 'Escape' && (naming = null)}
-			/>
-			<button class="chip" type="submit">{naming === 'copy' ? 'Save as' : 'Save'}</button>
-			<button class="chip" type="button" onclick={() => (naming = null)}>Cancel</button>
-		</form>
-	{:else}
-		<button class="name" onclick={() => (open = !open)} title={show.path}>
-			{name}<span class="caret">▾</span>
+
+		<button class="tb-menu" aria-expanded={open} onclick={() => (open = !open)} title={show.path}>
+			<Drama size={16} /><span class="name">{name}</span><span class="tb-sub">· {lastVersion}</span><span class="tb-caret">▾</span>
 		</button>
-		<button class="chip" disabled={busy} onclick={() => save()} title="⌘S">Save</button>
-	{/if}
 
 	{#if open}
-		<!-- svelte-ignore a11y_no_static_element_interactions -->
-		<div class="menu" onpointerleave={() => (open = false)}>
+		<div class="menu" use:dropdown={{ close: () => (open = false) }}>
 			<span class="heading">This show</span>
-			<button onclick={() => start('version')}>Save version…</button>
+			<button
+				disabled={busy}
+				onclick={() => {
+					open = false;
+					save();
+				}}
+			><span>Save version</span><kbd>⌘S</kbd></button>
+			<button onclick={() => start('version')}>Save a named version…</button>
 			<button
 				onclick={() => {
 					open = false;
 					openSetup('show');
 				}}>Versions…</button
 			>
-			<button onclick={() => start('copy')}>Save as…</button>
+			<button onclick={() => start('copy')}>Save a copy…</button>
 			<a class="row" href={exportUrl(false)} download onclick={() => (open = false)}>
 				Export .pultz
 			</a>
 			<a class="row dim" href={exportUrl(true)} download onclick={() => (open = false)}>
 				Export with versions
 			</a>
+			<!-- How the show comes up: what runs when it opens with nothing running, and
+			     what Go to default state puts back. See `infra/default_state.rs`. -->
+			<span class="heading">Default state <span class="dim-note">{defaultText}</span></span>
+			{#if defaultLines.length}
+				<ul class="default-lines">
+					{#each defaultLines as line, i (i)}<li>{line}</li>{/each}
+				</ul>
+			{/if}
+			<button onclick={() => defaultState('save')}>Save as default state</button>
+			<button disabled={!hasDefault} onclick={() => defaultState('apply')}>Go to default state</button>
+			<button disabled={!hasDefault} onclick={() => defaultState('clear')}>Clear default state</button>
 			<span class="heading">Another show</span>
 			<button onclick={() => ask('show.close', {}, 'closing the show')}>Close — back to the start</button>
 			<span class="path">{show.path}</span>
@@ -144,7 +201,37 @@
 	{/if}
 </div>
 
+{#if naming}
+	<NameDialog
+		title={naming === 'copy' ? 'Save a copy of the show' : 'Save a named version'}
+		placeholder={naming === 'copy' ? 'Copy name…' : 'Version name…'}
+		initial={draft}
+		confirm={naming === 'copy' ? 'Save copy' : 'Save version'}
+		hint={naming === 'copy'
+			? 'A new show folder beside this one; the console opens it.'
+			: 'A point in this show to come back to, listed under Versions.'}
+		onsubmit={commit}
+		onclose={() => (naming = null)}
+	/>
+{/if}
+
 <style>
+	.default-lines {
+		margin: 0 0 4px;
+		padding: 0 12px 0 24px;
+		font-size: var(--font-xs, 11px);
+		color: var(--text-dim);
+		max-width: 320px;
+	}
+	.default-lines li {
+		margin: 2px 0;
+	}
+	.dim-note {
+		font-weight: 400;
+		text-transform: none;
+		letter-spacing: 0;
+		opacity: 0.7;
+	}
 	.bar {
 		position: relative;
 		display: flex;
@@ -153,40 +240,22 @@
 	}
 
 	.name {
-		background: none;
-		border: none;
-		color: var(--text, #e0e0e0);
-		font-size: var(--font-sm, 12px);
-		font-weight: 600;
-		cursor: pointer;
-		padding: 4px 2px;
 		max-width: 220px;
 		overflow: hidden;
 		text-overflow: ellipsis;
-		white-space: nowrap;
 	}
-	.caret {
-		margin-left: 5px;
+	.menu button {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		gap: 12px;
+	}
+	.menu kbd {
+		font: inherit;
+		font-size: 10px;
 		color: var(--text-faint, #555);
 	}
 
-	.chip {
-		background: var(--bg-raised, #252525);
-		border: 1px solid var(--line-strong, #3a3a3a);
-		border-radius: var(--radius, 4px);
-		color: var(--text-dim, #888);
-		font-size: var(--font-xs, 11px);
-		padding: 3px 8px;
-		cursor: pointer;
-	}
-	.chip:hover:not(:disabled) {
-		border-color: var(--accent, #4a9eff);
-		color: var(--text, #e0e0e0);
-	}
-	.chip:disabled {
-		opacity: 0.5;
-		cursor: default;
-	}
 
 	.menu {
 		position: absolute;
@@ -242,18 +311,4 @@
 		direction: rtl;
 	}
 
-	.naming {
-		display: flex;
-		gap: 5px;
-		align-items: center;
-	}
-	.naming input {
-		background: var(--bg-sunken, #141414);
-		border: 1px solid var(--line-input, #555);
-		border-radius: var(--radius, 4px);
-		color: var(--text, #e0e0e0);
-		font-size: var(--font-sm, 12px);
-		padding: 3px 7px;
-		width: 170px;
-	}
 </style>

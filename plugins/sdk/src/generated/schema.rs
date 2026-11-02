@@ -29,6 +29,168 @@ pub use pult_render::effect::{
 
 pub use pult_render::value::ParameterValue;
 
+/// What a fixture and its node last agreed it and its parameters are called. See
+/// [`Fixture::agreed_names`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AgreedNames {
+    /// The node's name on its own fixture (head 0), the head's label on any other.
+    /// Empty is agreed to be unnamed; None is never agreed.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Parameter key to label. Empty is agreed to be unnamed; absent is never agreed,
+    /// which is not the same thing: a label set here while the node was off has
+    /// nothing to be compared with.
+    #[serde(default)]
+    pub parameters: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum AtEnd {
+    /// Stop with the playhead on the end.
+    Stop,
+    /// Start again from zero: an ambient bed.
+    Loop,
+}
+
+/// The decoded-audio cache: files as samples in memory, by asset.
+///
+/// A file is decoded once and kept, because decoding a long mp3 is seconds of a core —
+/// and a station that has to decode again every time it looks at its timelines is a
+/// station whose Play and Stop wait behind it. What a timeline holds is kept whatever
+/// it costs; `budget` bounds only the rest. So `timeline_bytes` over `budget` is a show
+/// whose sound does not fit what this machine set aside for it, and the station is
+/// holding it anyway.
+///
+/// `timeline_*` counts only files this station has decoded: one that plays no timeline
+/// here never decodes the others' sound, and cannot say how big it would be.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AudioCacheStats {
+    /// What may be held, in bytes. Zero from a station that cannot say.
+    pub budget: u64,
+    /// What is held, timelines' and otherwise.
+    pub held: u64,
+    pub files: u32,
+    /// Of `held`, what the show's timelines have on them.
+    pub timeline_bytes: u64,
+    /// Files on the show's timelines, and how many of those are decoded here.
+    pub timeline_files: u32,
+    pub timeline_decoded: u32,
+}
+
+/// One file on a timeline: where it starts, what of it plays, how loud, and where to.
+///
+/// Positions are milliseconds like everything else on a timeline. The trim is
+/// `offset_ms` into the file and `length_ms` of it from there, `None` being the rest of
+/// the file, so a clip dragged shorter keeps its file rather than becoming another one.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AudioClip {
+    pub id: Uuid,
+    /// What it is called on the timeline: the file's name when it was added.
+    #[serde(default)]
+    pub name: String,
+    /// The audio asset, by sha256.
+    pub asset: String,
+    /// The reduced waveform of [`AudioClip::asset`], as its own asset sha.
+    ///
+    /// Computed once by whichever station first held the file and written here, so
+    /// every browser in the building fetches one small asset rather than decoding
+    /// fifty megabytes. A field rather than a lookup because the alternative — deriving
+    /// the peaks asset's name from the audio's — would be a second content-addressing
+    /// scheme, and a tablet would have to ask for a sha that might not exist yet.
+    #[serde(default)]
+    pub peaks: Option<String>,
+    /// Where the clip starts on the timeline.
+    #[serde(default)]
+    pub start_ms: u64,
+    /// How far into the file it starts.
+    #[serde(default)]
+    pub offset_ms: u64,
+    /// How much of the file it plays, from `offset_ms`. `None` is to the end.
+    #[serde(default)]
+    pub length_ms: Option<u64>,
+    /// In decibels, so zero is the file as it was mixed and a fader reads the way every
+    /// other fader in the building does.
+    #[serde(default)]
+    pub gain_db: f32,
+    /// Into the first time round.
+    #[serde(default)]
+    pub fade_in_ms: u32,
+    /// Out of the last time round.
+    #[serde(default)]
+    pub fade_out_ms: u32,
+    /// How many times the trimmed region plays, back to back: one is once.
+    ///
+    /// Always a number, never "for ever": a clip that went round for as long as the
+    /// timeline ran had no end anybody could program cues against. A bed that has to
+    /// go on is a timeline that goes round ([`AtEnd::Loop`]), which loops its cues
+    /// with it. Zero reads as one, and so does a show from before there was a count.
+    #[serde(default)]
+    pub repeats: u32,
+    pub destination: AudioDestination,
+    /// Stored on the node loudspeakers its zone reaches, rather than streamed to them:
+    /// uploaded to each one's flash ahead of time and started there, immune to the
+    /// network once it is there. Per clip, because it is a fact about the sound — a
+    /// short scare is worth storing and a three-minute bed is not — and off by default,
+    /// since an upload is megabytes of flash written before anybody asked for it. A
+    /// clip sent straight to a node says how in its destination instead.
+    #[serde(default)]
+    pub stored: bool,
+}
+
+/// Where a clip's sound comes out.
+///
+/// Per clip, because one scare plays out of the zone speaker and a prop at once. A zone
+/// rather than channel numbers, because a channel number names one machine's sound card
+/// and the station playing a timeline can change in the middle of it — see
+/// `types::zone`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum AudioDestination {
+    /// A speaker zone, by id: whichever channels the playing station maps it to, and
+    /// whichever node loudspeakers are in it. A mono file goes to each channel; a file
+    /// with as many channels, or a multiple, goes across them in order; anything else
+    /// is its downmix on each.
+    Zone { zone: Uuid },
+    /// An OpenHaunt node's loudspeaker, by the node's serial: the key the device list,
+    /// the fixture's address and every MQTT topic already use. A clip played by the
+    /// node rather than mixed here — from its own flash, or a stream.
+    ///
+    /// Which of a node's outputs is not here, because it cannot be: a node has one I2S
+    /// bus and every output plays the same mix. Enabling one is a fact about the node.
+    Node { serial: String, #[serde(default)] mode: NodeAudioMode },
+}
+
+/// What a bound control does.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind")]
+pub enum BindingAction {
+    /// A key presses something the show already has, exactly as a phone surface's
+    /// tile presses it — so a binding adds no acts of its own.
+    Press { target: TileTarget },
+    /// A key types this line into the command line and runs it.
+    CommandLine { line: String },
+    /// A key puts one parameter at full while it is held, and lets go on release.
+    Flash { fixture_id: Uuid, parameter: ParameterKind },
+    /// A key recalls a saved group into the wing's selection.
+    SelectGroup { group_id: Uuid },
+    /// A fader or an encoder moves one parameter of one fixture, in the programmer.
+    Parameter { fixture_id: Uuid, parameter: ParameterKind },
+    /// A fader is a sequence's level; its executor keys are that sequence's Go and Off.
+    Master { sequence_id: Uuid },
+    /// A key flashes a sequence: held, it goes at full; let go, it goes off again if it
+    /// was off before the press, and its fader is back where it was either way.
+    FlashSequence { sequence_id: Uuid },
+    /// A key takes one cue of a sequence.
+    GoToCue { sequence_id: Uuid, cue_id: Uuid },
+}
+
+/// A run of cells, both ends included, counted from 1. `from` past `to` runs backwards,
+/// which is how a chase along a strip is made to start at its far end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CellSpan {
+    pub from: u16,
+    pub to: u16,
+}
+
 /// A named slice of a channel's range: "Open", "Breakup", "Strobe".
 ///
 /// Both ends filled in, unlike GDTF's own form, which gives only the start of each
@@ -95,6 +257,23 @@ pub struct ClockSync {
     pub measured_at: Option<Timestamp>,
 }
 
+/// One channel of a color, which is what a knob can turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ColorComponent {
+    R,
+    G,
+    B,
+}
+
+/// One color of a readout, from `at` upwards.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ColorStop {
+    pub at: f64,
+    /// A CSS color, `#rrggbb`.
+    pub color: String,
+}
+
 /// A socket on the fixture.
 #[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Connector {
@@ -106,6 +285,36 @@ pub struct Connector {
     pub dmx_break: Option<u16>,
 }
 
+/// One control, bound.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ControlBinding {
+    pub id: Uuid,
+    /// Which kind of surface: [`COMMAND_WING`].
+    pub surface: String,
+    pub control: SurfaceControl,
+    pub action: BindingAction,
+    /// What the panel calls it. Empty means the name of what it is bound to.
+    #[serde(default)]
+    pub label: String,
+    /// The page it acts on, from 1. `None` is page 1, which is where every binding made
+    /// before there were pages is: optional because a required column added to a show
+    /// that has rows is a column nothing filled, and such a show refuses to open.
+    #[serde(default)]
+    pub page: Option<u32>,
+}
+
+/// A page of bindings, named. A page with bindings and no row is just its number, so
+/// only a page somebody has named has one.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ControlPage {
+    pub id: Uuid,
+    /// Which kind of surface: [`COMMAND_WING`].
+    pub surface: String,
+    /// The page, from 1.
+    pub number: u32,
+    pub name: String,
+}
+
 /// A single lighting state snapshot with timing information.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Cue {
@@ -115,10 +324,12 @@ pub struct Cue {
     pub number: f64,
     pub captures: Vec<ParameterCapture>,
     pub follow_mode: FollowMode,
-    /// What every capture of this cue takes on the way up, unless it says its own.
+    /// How long this cue takes to come in: every capture it takes, up or down, unless
+    /// the capture says its own.
     pub fade_in_ms: u32,
-    /// And on the way down. Zero is not "snap": it means this cue does not split its
-    /// fade, and everything takes the in time in both directions.
+    /// How long what it set takes to go when it ends: going back past it lets go of
+    /// what only it and later cues set, and Off lets go of everything. Zero is the
+    /// show's *letting go* time (`Show::home_fade_ms`).
     pub fade_out_ms: u32,
     /// What shape this cue's captures fade on, unless one of them says its own.
     /// `None` is the show's default for each parameter's group, which is what every
@@ -160,7 +371,7 @@ pub struct CueShot {
 /// Which end of a bar a rigger measures from.
 ///
 /// Every crew has a convention and none of them is the right one: some hang from stage
-/// left because that is where the truss numbering starts, some from the centre line
+/// left because that is where the truss numbering starts, some from the center line
 /// because that is what the drawing is symmetrical about, and some from whichever end
 /// the tape happens to be tied to. A drawing that dimensioned from the wrong end is a
 /// drawing somebody measures wrong from, so this is asked rather than assumed.
@@ -179,8 +390,49 @@ pub enum Datum {
     #[default]
     Left,
     Right,
-    /// The middle of the bar, which on a symmetrical rig is the centre line.
-    Centre,
+    /// The middle of the bar, which on a symmetrical rig is the center line.
+    Center,
+}
+
+/// How a reading that goes on and off is drawn: lit while on, then fading.
+///
+/// Every field is optional on an element, which falls back to its layout's.
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+pub struct Decay {
+    /// `#rrggbb` while on, and the color the fade starts from.
+    #[serde(default)]
+    pub active_color: Option<String>,
+    /// `#rrggbb` once the fade has finished, and for a reading that has never been on.
+    #[serde(default)]
+    pub idle_color: Option<String>,
+    /// How long the fade from active to idle takes, from the moment the reading went
+    /// off. Zero is a light that goes straight out.
+    #[serde(default)]
+    pub decay_ms: Option<u32>,
+}
+
+/// One sequence in a [`DefaultState`].
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DefaultSequence {
+    pub sequence_id: Uuid,
+    /// The cue it is on, or `None` for off.
+    pub cue_id: Option<Uuid>,
+    /// Its master, or `None` for full.
+    pub master: Option<f32>,
+}
+
+/// The show as it is meant to come up. See [`Show::default_state`].
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DefaultState {
+    /// Every sequence that is on, or has a level other than full, as it was saved.
+    #[serde(default)]
+    pub sequences: Vec<DefaultSequence>,
+    /// The timelines that run, each from its beginning.
+    #[serde(default)]
+    pub timelines: Vec<Uuid>,
+    /// When it was saved, console unix ms.
+    #[serde(default)]
+    pub saved_at: u64,
 }
 
 /// What the beat detector found, before anybody agreed to it.
@@ -261,9 +513,9 @@ pub struct DmxChannelLayout {
     /// The named ranges of this channel, in order. Empty for a plain continuous one.
     #[serde(default)]
     pub functions: Vec<ChannelFunctionRange>,
-    /// For a colour parameter, which emitter of the type this byte carries.
+    /// For a color parameter, which emitter of the type this byte carries.
     ///
-    /// A colour is one parameter and several channels — an RGBW head has four — so
+    /// A color is one parameter and several channels — an RGBW head has four — so
     /// the layout entry that says "this byte is the white one" is what lets one
     /// `Color` value become four bytes without the connector guessing an order.
     #[serde(default)]
@@ -280,6 +532,40 @@ pub struct DmxMode {
     /// the index into this list is always the break number minus one.
     pub breaks: Vec<u16>,
     pub channels: Vec<DmxChannelLayout>,
+}
+
+/// One node with a loudspeaker, as the station driving it sees it.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DrivenNode {
+    pub name: String,
+    /// Seen on the network by the driving station.
+    pub online: bool,
+    /// On the driving station's broker, which is the only way it hears a `play`.
+    pub on_broker: bool,
+    pub audio: Option<NodeAudio>,
+    pub store: Option<NodeAudioState>,
+    pub summary: Option<NodeAudioSummary>,
+    /// How its stream is going, while one is.
+    #[serde(default)]
+    pub stream: Option<NodeStreamHealth>,
+}
+
+/// One parameter's part of a template.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct EffectLayer {
+    /// What it drives. Applied to the fixtures in the selection that have this.
+    pub kind: ParameterKind,
+    pub curve: Curve,
+    pub rate: Rate,
+    pub low: ParameterValue,
+    pub high: ParameterValue,
+    pub width: f32,
+    pub direction: Direction,
+    pub spread: Spread,
+    /// How many cycles the spread covers across the selection. A chase over a strip
+    /// with `2` runs twice along it, which is what a pixel desk calls segments.
+    #[serde(default)]
+    pub spread_cycles: f32,
 }
 
 /// A periodic instruction for one fixture parameter.
@@ -307,24 +593,105 @@ pub struct EffectSpec {
     /// every Go. A [`Rate::Master`] ignores this either way: the master's own anchor
     /// is what keeps every effect on one master in step.
     pub t0: Option<u64>,
+    /// The pool entry this was applied from, if any: a record of where the copy came
+    /// from, so a panel can name it. Never followed; see `effect_template`.
+    #[serde(default)]
+    pub template: Option<Uuid>,
+}
+
+/// A named effect in the pool.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct EffectTemplate {
+    pub id: Uuid,
+    pub name: String,
+    pub layers: Vec<EffectLayer>,
+    /// The card's color, as `#rrggbb`, or `None` for its panel category's color.
+    /// What an operator paints a pool object to find it again; it means nothing to
+    /// the rig.
+    #[serde(default)]
+    pub color: Option<String>,
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    #[serde(default)]
+    pub folder: Option<Uuid>,
+}
+
+/// What pressing an element does, on the desk. Never on the shared page.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind")]
+pub enum ElementPress {
+    /// Change the element's variable, through the `variable.*` RPCs, unattributed —
+    /// exactly as a surface tile does.
+    Variable { op: VariableOp },
+    /// Play the element's timeline if it is stopped, stop it if it is running.
+    Timeline {
+        /// Play from the top rather than from where it stopped.
+        from_start: bool,
+    },
+    /// Make the element's fixture the selection.
+    Select,
+}
+
+/// The outline an element is drawn with.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    serde::Serialize,
+    serde::Deserialize
+)]
+pub enum ElementShape {
+    #[default]
+    Rect,
+    Ellipse,
+}
+
+/// What an element is a drawing of.
+///
+/// Tagged by `kind`, as `TileTarget` is.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind")]
+pub enum ElementTarget {
+    /// One parameter of one fixture: what a device reported (a contact, a PIR, a
+    /// temperature) or what the console is putting out (a traffic light's color).
+    /// An on/off reading decays; a number is colored by `stops` and printed.
+    Parameter { fixture_id: Uuid, parameter: ParameterKind },
+    /// What a variable holds: a flag decays like a contact, a number is colored by
+    /// `stops` and printed.
+    Variable { variable_id: Uuid },
+    /// A timeline: running or not, how far through, and how long is left.
+    Timeline { timeline_id: Uuid },
+    /// A flow's `Button` node, drawn as a button: pressing it presses the node, exactly
+    /// as the surface's `FlowButton` tile and the node's own Press do. Its press is
+    /// what it *is*, so it takes no `press` of its own.
+    FlowButton { node_id: Uuid },
+    /// A filled shape and nothing else — a room, a wall, a stage.
+    Shape,
+    /// A line through points, in canvas units, absolute rather than inside the
+    /// element's box: a wall that turns a corner. The box is the points' bounds.
+    Line { points: Vec<[f32; 2]> },
+    /// Words on the drawing, and nothing behind them.
+    Text,
 }
 
 /// One light source in the fixture.
 ///
-/// The list that makes a colour mixable. Given a colour and these, the console works
+/// The list that makes a color mixable. Given a color and these, the console works
 /// out a level per emitter; without them an RGBW head's fourth channel is a number
 /// with no meaning and stays dark.
 #[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Emitter {
     /// The GDTF emitter name — `Red`, `White`, `Lime` — which is also how a
-    /// per-emitter override in a colour value names it.
+    /// per-emitter override in a color value names it.
     pub name: String,
-    /// Where this emitter sits in linear RGB, from its CIE colour. `None` for one the
+    /// Where this emitter sits in linear RGB, from its CIE color. `None` for one the
     /// file did not measure, which then mixes by its name and nothing else.
     #[serde(default)]
     pub rgb: Option<Vec3>,
     /// A subtractive element — a CMY flag — rather than a source. Full means *less*
-    /// light, so it is the complement of the colour it is named for.
+    /// light, so it is the complement of the color it is named for.
     #[serde(default)]
     pub subtractive: bool,
 }
@@ -366,7 +733,7 @@ pub struct Fixture {
     /// resolved against the parent piece's chords, and for an imported truss those
     /// come off the mesh's own bounds — which the station never loads, because only
     /// `frontend/src/lib/geometry.ts` measures a mesh. So the *browser* is the writer
-    /// for every parent, whether the piece came out of the catalogue or out of a
+    /// for every parent, whether the piece came out of the catalog or out of a
     /// drawing, and what keeps its arithmetic equal to
     /// [`crate::types::mount::Mount::transform`]'s is `testdata/mounts.json`.
     ///
@@ -407,6 +774,16 @@ pub struct Fixture {
     /// as something a device reported.
     #[serde(default)]
     pub sensed_values: HashMap<String, ParameterValue>,
+    /// When each of `sensed_values` last *changed*, in console milliseconds, keyed the
+    /// same way.
+    ///
+    /// Stamped by the station that heard the device, and only on a change: a node
+    /// repeating the value it already reported moves nothing. What makes "somebody
+    /// was here thirty seconds ago" a reading every page agrees on — a page that only
+    /// noted when *it* saw a change would show nothing until the next one, and two
+    /// phones would disagree. A layout's decay reads it; see [`crate::types::layout`].
+    #[serde(default)]
+    pub sensed_at: HashMap<String, u64>,
     /// What shape is driving each of this fixture's parameters, keyed by parameter
     /// key.
     ///
@@ -436,6 +813,12 @@ pub struct Fixture {
     /// driven, replaced when a cue, a release or an action takes the key.
     #[serde(default)]
     pub live_fades: HashMap<String, RunningFade>,
+    /// What other sequences are playing on an intensity beside the one in
+    /// `live_effects` or `live_fades`, under an HTP merge, keyed by parameter key. The
+    /// parameter shows the highest of them all; see `sequence::Merge`. Empty on almost
+    /// every fixture, and LOCAL and defaulted for the reasons the two above are.
+    #[serde(default)]
+    pub live_htp: HashMap<String, Vec<serde_json::Value>>,
     /// What this fixture's parameters rest at when nothing is driving them, keyed by
     /// parameter key. Empty on nearly every fixture, and then the answer is
     /// whatever its type declares.
@@ -447,6 +830,28 @@ pub struct Fixture {
     /// before this existed opens with every fixture saying nothing.
     #[serde(default)]
     pub home_values: HashMap<String, ParameterValue>,
+    /// What somebody called this fixture's parameters, keyed by parameter key: "Ausgang
+    /// PIR" for `Contact:4`. Absent is a parameter called what its type calls it.
+    ///
+    /// A label and never a kind. `Named:<name>` is a parameter's *identity*, and every
+    /// cue, flow and binding holds it; this is only what an operator reads. On an
+    /// OpenHaunt node's fixtures the node keeps them too, as port labels, and the station
+    /// keeps the two the same — see [`Fixture::agreed_names`].
+    ///
+    /// `Option` only for the showfile: a non-`Option` field is a column every existing
+    /// row holds NULL in, and that is a generation bump and an upgrade for every show. A
+    /// show that never named anything reads `None`, which means the same as empty.
+    #[serde(default)]
+    pub parameter_labels: Option<BTreeMap<String, String>>,
+    /// The names this fixture and its OpenHaunt node last agreed on: the name or head
+    /// label, and the parameter labels. None on anything that is not a node's, and on a
+    /// node's until the two have first agreed.
+    ///
+    /// What tells a change apart from a disagreement. A name that differs from the
+    /// node's, where the node still says what was agreed, was changed *here* — while it
+    /// was off, or by an undo — and is passed on. One where the node moved is asked about.
+    #[serde(default)]
+    pub agreed_names: Option<AgreedNames>,
 }
 
 /// How output reaches a fixture.
@@ -471,7 +876,26 @@ pub enum FixtureAddress {
         /// Where each DMX break lands, break 1 first. Never empty.
         breaks: Vec<DmxBreak>,
     },
-    OpenHaunt { serial: String, universe: Option<u16> },
+    OpenHaunt {
+        serial: String,
+        universe: Option<u16>,
+        /// Which head of the node this fixture is. Absent is head 0, the node itself,
+        /// and every fixture adopted before heads existed. See
+        /// `crate::types::openhaunt::NodeDescription::for_head`.
+        #[serde(default)]
+        head: Option<u8>,
+        /// For a head that is a pixel strip: the mode it is patched in, and where its
+        /// pixels go. On the address for the reason a DMX mode is: it is not what the
+        /// light can do, it is where the bytes go. See [`crate::types::pixels`].
+        #[serde(default)]
+        strip: Option<PixelStrip>,
+        /// For a node's own fixture: send its audio stream down every path the node
+        /// says it is on, not only the one it prefers. Absent is off. On the address for
+        /// the reason `strip` is: it is where the bytes go. See the OpenHaunt protocol's
+        /// docs/13, "Redundant streams".
+        #[serde(default)]
+        redundant_stream: Option<bool>,
+    },
 }
 
 /// One node of a fixture's own geometry, flattened.
@@ -492,9 +916,9 @@ pub struct FixtureGeometry {
     #[serde(default)]
     pub parent: Option<String>,
     pub kind: GeometryKind,
-    /// Where this part sits relative to its parent, in metres, in console axes.
+    /// Where this part sits relative to its parent, in meters, in console axes.
     pub offset: Vec3,
-    /// Length, width, height in metres, for the box to draw when there is no mesh.
+    /// Length, width, height in meters, for the box to draw when there is no mesh.
     #[serde(default)]
     pub size: Option<Vec3>,
     /// The mesh in the asset store, where one was extracted.
@@ -516,7 +940,7 @@ pub struct FixturePhysical {
     pub weight_kg: Option<f32>,
     #[serde(default)]
     pub power_w: Option<f32>,
-    /// Length, width, height in metres.
+    /// Length, width, height in meters.
     #[serde(default)]
     pub dimensions_m: Option<Vec3>,
     #[serde(default)]
@@ -598,6 +1022,12 @@ pub struct FixtureType {
     /// thumbnail.
     #[serde(default)]
     pub thumbnail: Option<String>,
+    /// How many cells one of these has: the pixels of a strip, the segments of a bar.
+    /// 0 is a fixture with none, which is almost every fixture. A parameter marked
+    /// [`ParameterDefinition::per_cell`] exists once per cell, as
+    /// [`ParameterKind::Cell`]; the rest exist once.
+    #[serde(default)]
+    pub cells: u16,
 }
 
 /// Where a fixture type came from, which decides whether the console may rewrite it.
@@ -632,6 +1062,9 @@ pub struct Flow {
     pub id: Uuid,
     pub name: String,
     pub enabled: bool,
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    #[serde(default)]
+    pub folder: Option<Uuid>,
 }
 
 /// One connection, from an output port to an input port.
@@ -657,16 +1090,41 @@ pub struct FlowNode {
     pub id: Uuid,
     pub flow_id: Uuid,
     pub kind: FlowNodeKind,
+    /// What an operator calls it — "Exit PIR (stand-in)" — or `None` for what its kind
+    /// is called. Shown as its title, and where a button is pressed from elsewhere (a
+    /// surface tile, the palette), as the button's name.
+    #[serde(default)]
+    pub name: Option<String>,
     /// Where the node sits on the canvas. Not a rig position — this is the drawing.
     pub x: f32,
     pub y: f32,
-    /// Lit right now: a level that is true, or a pulse that just passed through.
+    /// Lit right now: a level that is true, or a delay counting down — a state that
+    /// lasts. A pulse is not one: it is [`FlowNode::pulsed_at`].
     ///
     /// SYNCED rather than LOCAL so every console watching the same flow sees the
     /// same thing light up. Without it a graph is a diagram; with it, it is an
     /// instrument you can watch working.
     pub active: bool,
+    /// A button's press, and an action's last firing. The engine reads a button's to
+    /// see it pressed, so nothing but a press writes it there.
     pub last_fired_at: Option<Timestamp>,
+    /// When a pulse last went through it, console ms: what makes a node flash once
+    /// in the editor. A pulse used to light `active` until the next pass, which
+    /// came with the next input and could be minutes later.
+    #[serde(default)]
+    pub pulsed_at: Option<u64>,
+    /// For a delay that is counting, the console ms it comes due; `None` while it is
+    /// not. What lets a page draw the time left and a bar running down: the deadline
+    /// itself lives in the leader's flow engine, which no page can see. Written by the
+    /// leader on every start, restart and reset, never per frame.
+    #[serde(default)]
+    pub due_at: Option<u64>,
+    /// Switched off: a pulse reaching it stops there, and nothing fires. For an action
+    /// that would be a nuisance while the rest of a maze is being tried — the fog, the
+    /// air cannon — without unwiring it and losing where it went. `None` is on, so a
+    /// show from before this field opens with every node doing what it did.
+    #[serde(default)]
+    pub disabled: Option<bool>,
 }
 
 /// What one node is.
@@ -685,10 +1143,36 @@ pub enum FlowNodeKind {
     And,
     Or,
     Not,
-    /// Holds a pulse back.
+    /// Holds a pulse back: a pulse on port 0 starts it counting — again from the top
+    /// if it already was — and a pulse on port 1 stops it, so nothing comes out.
+    ///
+    /// The reset is what makes it a timer rather than a wait: "off after a minute,
+    /// unless somebody walked in first" is a start, a reset from the PIR, and an off on
+    /// either. Without it the minute still came due after the scare had already ended,
+    /// in the middle of the next group's.
     Delay { ms: u32 },
+    /// Lets a pulse through only while a level is true: a pulse in on port 0, the
+    /// level on port 1.
+    ///
+    /// The one way a level can decide whether a pulse goes on. Without it, "the PIR
+    /// fired *and* the area is free" is two levels into an `And` and an edge after
+    /// that — which also fires when the area *becomes* free while the PIR is still
+    /// warm, and that is a scare nobody walked into.
+    Gate,
     /// Does something to the show. Consumes a pulse.
     Action(TriggerAction),
+}
+
+/// One folder in one pool.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Folder {
+    pub id: Uuid,
+    pub name: String,
+    /// The folder this one is in, or `None` at the top of its pool.
+    #[serde(default)]
+    pub parent: Option<Uuid>,
+    /// Which kind of object it holds, by the pools' name for the kind.
+    pub kind: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -740,7 +1224,7 @@ pub struct FrameCost {
     /// half of emitting to work on — assembly and the socket writes are both per
     /// universe, and they do not respond to the same fixes.
     ///
-    /// Defaulted, so a peer on an older build still deserialises.
+    /// Defaulted, so a peer on an older build still deserializes.
     #[serde(default)]
     pub assembling_mean_ms: f32,
     /// How many frames the window contained. Never zero: a connector that emitted
@@ -761,7 +1245,7 @@ pub struct FrameCost {
     /// UDP, IP and Ethernet headers under it. A wire carries perhaps 5% more than
     /// this says.
     ///
-    /// Defaulted, so a peer on an older build still deserialises.
+    /// Defaulted, so a peer on an older build still deserializes.
     #[serde(default)]
     pub bytes: u64,
     #[serde(default)]
@@ -820,9 +1304,17 @@ pub struct Group {
     /// What the group asks of the rig. Not the fixtures it currently picks out —
     /// those are worked out on demand, which is the whole point.
     pub query: SelectionQuery,
+    /// The card's color, as `#rrggbb`, or `None` for its panel category's color.
+    /// What an operator paints a pool object to find it again; it means nothing to
+    /// the rig.
+    #[serde(default)]
+    pub color: Option<String>,
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    #[serde(default)]
+    pub folder: Option<Uuid>,
 }
 
-/// What a table's rows are grouped and subtotalled by.
+/// What a table's rows are grouped and subtotaled by.
 #[derive(
     Debug,
     Clone,
@@ -849,7 +1341,28 @@ pub enum Grouping {
     Flat,
 }
 
-/// What colours a drafting viewport.
+/// What a play does to a timeline that is already running.
+///
+/// `Ignore` is the default because a scare is a timeline, and a PIR that is still
+/// warm from the last group must not start the scream again halfway through. A
+/// longer lockout is a variable's job, not this one's.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    serde::Serialize,
+    serde::Deserialize
+)]
+pub enum IfRunning {
+    #[default]
+    Ignore,
+    Restart,
+}
+
+/// What colors a drafting viewport.
 #[derive(
     Debug,
     Clone,
@@ -861,7 +1374,7 @@ pub enum Grouping {
     serde::Deserialize
 )]
 pub enum Ink {
-    /// Black on white, with line weight carrying what colour would have.
+    /// Black on white, with line weight carrying what color would have.
     #[default]
     Mono,
     ByLayer,
@@ -889,6 +1402,13 @@ pub struct InputConfig {
     #[serde(default)]
     pub universes: BTreeMap<u16, u16>,
     pub enabled: bool,
+    /// The port to listen on, where it is not the one the protocol names (5568 for
+    /// sACN, 6454 for Art-Net). `None` is the protocol's own, which is what a real rig
+    /// wants. A port of its own is for two stations sharing one machine, where the
+    /// protocol's port is shared too and a unicast packet reaches only one of them,
+    /// and for a test that must not hear whatever else on the machine is speaking.
+    #[serde(default)]
+    pub port: Option<u16>,
 }
 
 /// Which protocol an input listens for.
@@ -954,38 +1474,69 @@ pub struct Layer {
     pub sort_order: u32,
 }
 
-/// One saved arrangement of the workspace.
+/// One drawing.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Layout {
     pub id: Uuid,
     pub name: String,
-    /// The whole arrangement, as one JSON column.
-    pub tree: LayoutNode,
+    /// The canvas, in its own units. The drawing keeps this aspect on any screen.
+    pub width: f32,
+    pub height: f32,
+    /// What a dragged element snaps to, in canvas units. Zero is no snapping.
+    pub grid: f32,
+    /// A drawing somebody was handed, stretched over the canvas: the asset's sha256.
+    #[serde(default)]
+    pub backdrop: Option<String>,
+    /// The layout's answer to how a reading decays; an element may say otherwise.
+    pub decay: Decay,
+    /// The elements, back to front, as one JSON column.
+    pub elements: Vec<LayoutElement>,
+    /// The card's color, as `#rrggbb`, or `None` for its panel category's color.
+    #[serde(default)]
+    pub color: Option<String>,
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    #[serde(default)]
+    pub folder: Option<Uuid>,
+    /// The key an operating link carries (`/layout/<id>?key=<k>`), or `None` while
+    /// there is none and every shared page only looks — which is what every layout
+    /// made before this was. Made fresh each time operating is allowed, so allowing it
+    /// again revokes the links handed out before. Not a password: anybody on the
+    /// network can open the desk itself. It keeps the read-only link read-only.
+    #[serde(default)]
+    pub operate_key: Option<String>,
 }
 
-/// One node of a workspace tree: either a division of the space, or panels in it.
-///
-/// Tagged by `type` so the TypeScript side discriminates on a field rather than on
-/// the shape of an object — the layout operations in the frontend are written against
-/// that tag, and a bare externally-tagged enum would make every one of them a
-/// two-key lookup.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "type")]
-pub enum LayoutNode {
-    /// Space divided among children, each taking its share of `sizes`.
-    Split {
-        direction: SplitDirection,
-        /// One fraction per child, summing to 1.
-        sizes: Vec<f32>,
-        children: Vec<LayoutNode>,
-    },
-    /// Panels sharing one rectangle, one of them on top.
-    Tabs {
-        /// Panel ids, in tab order.
-        panels: Vec<String>,
-        /// Which of them is showing.
-        active: usize,
-    },
+pub struct LayoutElement {
+    /// Stable across edits, so an element being dragged keeps its identity.
+    pub id: Uuid,
+    /// Where it is, in canvas units from the top left.
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    #[serde(default)]
+    pub shape: ElementShape,
+    /// What it says. Empty means the name of what it points at.
+    #[serde(default)]
+    pub label: String,
+    /// Whether the label is drawn at all.
+    #[serde(default)]
+    pub show_label: bool,
+    /// The fill of a `Shape`, the stroke of a `Line`, the ink of `Text`; ignored by
+    /// an element whose color comes from what it is showing.
+    #[serde(default)]
+    pub color: Option<String>,
+    pub target: ElementTarget,
+    /// This element's own answer to how it decays, over the layout's.
+    #[serde(default)]
+    pub decay: Decay,
+    /// The color for each value of a number, the highest stop not above it winning.
+    /// Empty means the layout's idle color with the figure printed on it.
+    #[serde(default)]
+    pub stops: Vec<ColorStop>,
+    #[serde(default)]
+    pub press: Option<ElementPress>,
 }
 
 /// How a drafting viewport draws a solid.
@@ -1080,9 +1631,35 @@ pub struct Marker {
     pub name: String,
 }
 
+/// How a sequence's intensities meet another sequence that is on and playing the same
+/// light.
+///
+/// **LTP**, latest takes precedence, is what every sequence did before there was a
+/// choice and still does by default: the sequence that went last owns the parameter
+/// outright. **HTP**, highest takes precedence, keeps what the others are playing beside
+/// it, and the light shows the highest of them, each at its own fader. A sequence of
+/// buttons over a base look wants HTP, so pulling its fader down leaves the base where
+/// it was rather than taking it to black. Intensities only: a color or a position has no
+/// highest, and goes on following the latest Go whatever this says.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize
+)]
+pub enum Merge {
+    #[default]
+    Ltp,
+    Htp,
+}
+
 /// Where a fixture is clamped on the piece it hangs off.
 ///
-/// `along` is metres from the piece's own origin, which for every catalogue piece is
+/// `along` is meters from the piece's own origin, which for every catalog piece is
 /// its middle — so a light in the middle of a bar reads as zero whatever length of
 /// bar it turns out to be. `roll` is degrees about the chord, and it snaps to the
 /// quarter turns because that is what a hook clamp does: 0 hangs, 180 stands the
@@ -1093,7 +1670,7 @@ pub struct Mount {
     /// refuses: a piece that lost a chord between two versions of this console should
     /// leave the light on the truss.
     pub chord: u8,
-    /// Metres along the chord from the piece's origin.
+    /// Meters along the chord from the piece's origin.
     pub along: f32,
     /// Degrees about the chord. Zero hangs.
     pub roll: f32,
@@ -1183,6 +1760,148 @@ pub enum NetService {
     Input(Uuid),
 }
 
+/// One path a node is on, as `openhaunt/<sn>/net` lists it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct NodeAddress {
+    /// `ethernet` or `wifi`, as the node names it.
+    pub transport: String,
+    pub ip: String,
+}
+
+/// A node's loudspeaker, as `GET /api/v1/info` describes it. See the OpenHaunt
+/// protocol's audio extension (`node/docs/13-audio.md`).
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct NodeAudio {
+    /// The rate the node mixes at. Anything else it is sent is resampled there.
+    pub rate: u32,
+    /// How many clips play at once. The stream is one more, beside these.
+    pub voices: u32,
+    pub outputs: Vec<NodeAudioOutput>,
+    pub clips: NodeClipBudget,
+    #[serde(default)]
+    pub stream: Option<NodeStreamCaps>,
+}
+
+/// How a clip reaches a node.
+///
+/// Per clip and chosen by the operator, never worked out: a clip that grew past the
+/// node's store and quietly became a stream would change its latency and start
+/// depending on the wifi, with nothing at the desk saying so.
+///
+/// **Streamed by default** (changed at the gig, 2026-10-25): picking a node for a clip
+/// used to mean an upload first — megabytes into the node's flash before anybody could
+/// switch it to a stream. Storing is now the deliberate choice it should have been.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize
+)]
+pub enum NodeAudioMode {
+    /// Uploaded to the node's flash ahead of time and started there at a show time.
+    /// Immune to the network once it is there, and the right thing for a scare.
+    Clip,
+    /// Sent as it plays, over RTP from the station driving the nodes, a playout delay
+    /// ahead. No size limit, and it needs the network for as long as it sounds.
+    #[default]
+    Stream,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct NodeAudioOutput {
+    /// `line` or `speaker` on the V0 boards.
+    pub id: String,
+    pub name: String,
+    /// `line` or `amp`. An amp output is not a line out, and the panel says so.
+    pub kind: String,
+    pub channels: u16,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct NodeAudioState {
+    /// The clips the node holds, by the sha of the bytes it holds.
+    pub stored: Vec<String>,
+    pub bytes_total: u64,
+    pub bytes_free: u64,
+    /// The clip being uploaded now, if one is.
+    pub uploading: Option<String>,
+    /// How far that upload has got: bytes sent of how many. Both zero with none
+    /// running. Sent, not acknowledged — the last few kilobytes are in a socket when
+    /// this says all of them, and `stored` is what says the node has the clip.
+    #[serde(default)]
+    pub upload_sent: u64,
+    #[serde(default)]
+    pub upload_total: u64,
+    /// The region each of the show's clips is on this node, by clip id: the sha to look
+    /// for in `stored` and `uploading`. A clip is cut and encoded per node, so its own
+    /// asset sha is not what a node holds, and a page could not otherwise tell which
+    /// of a node's clips is the one it is looking at.
+    #[serde(default)]
+    pub clips: BTreeMap<String, String>,
+    /// How many clips the show wants on this node and does not have yet.
+    pub pending: u32,
+    /// An RTP stream is going to this node.
+    pub streaming: bool,
+    /// Why something is not on the node, in words.
+    pub fault: Option<String>,
+}
+
+/// A node's audio status, coarse enough to replicate: what changes when something
+/// starts, stops or goes wrong, and nothing that moves every second — no stream depth,
+/// no voice positions. The full status stays in the driving station's LOCAL `devices`.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct NodeAudioSummary {
+    /// The node has the console's clock.
+    pub locked: bool,
+    pub underruns: u64,
+    /// How many clips it is sounding.
+    pub voices: u32,
+    /// Its stream is active.
+    pub streaming: bool,
+    /// The stream's packets that arrived after they should have been heard, that never
+    /// arrived, and the times the node gave up on its mapping and started over — the
+    /// node's own counts. They move only when something goes wrong, which is what lets
+    /// them be here and the buffer depth not.
+    #[serde(default)]
+    pub late: u64,
+    #[serde(default)]
+    pub missing: u64,
+    #[serde(default)]
+    pub resyncs: u64,
+    /// Packets that never reached the node's receiving task, and the longest it went
+    /// without one — both only ever go up within a session, so they move only when
+    /// something went wrong.
+    #[serde(default)]
+    pub seq_lost: u64,
+    #[serde(default)]
+    pub rx_gap_max_ms: u32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct NodeClipBudget {
+    #[serde(default)]
+    pub formats: Vec<String>,
+    pub bytes_total: u64,
+    pub bytes_free: u64,
+}
+
+/// What the station driving the nodes knows about every adopted node's health: the
+/// SYNCED `node_health` collection, one row per station, the shape `node_reports` has
+/// and for its reason — only that station is asking the nodes.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct NodeHealthReport {
+    /// The station's `NodeId`.
+    pub id: Uuid,
+    /// This station is the one driving the nodes. A row with this false says nothing.
+    pub driving: bool,
+    /// Every adopted node, by serial.
+    pub nodes: BTreeMap<String, NodeVitals>,
+}
+
 #[derive(
     Debug,
     Clone,
@@ -1196,6 +1915,139 @@ pub enum NetService {
     serde::Deserialize
 )]
 pub struct NodeId(pub Uuid);
+
+/// What a station knows about the nodes' sound: the SYNCED `node_reports` collection,
+/// keyed by the station's `NodeId`, one row per station.
+///
+/// **Only the station driving the nodes can say**: it holds the broker, it hears each
+/// node's `audio/status`, it uploads the clips and streams. A station that is not
+/// driving them has its own mDNS browse and nothing else, so its own view said a node
+/// was offline, or not there at all, while the leader was playing through it (found at
+/// the gig, 2026-10-25). So the driving station publishes what it knows here, and every
+/// other station and page reads the driving row instead of guessing. Rewritten only
+/// when something in it moved, like `station_audio`: the per-second parts of a node's
+/// status are left out on purpose ([`NodeAudioSummary`]).
+///
+/// A row is read only while its station still has a `stations` row, so a driver that
+/// died mid-show stops being believed when its station row is pruned.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct NodeReport {
+    /// The station's `NodeId`.
+    pub id: Uuid,
+    /// This station is the one driving the nodes. A row with this false says nothing.
+    pub driving: bool,
+    /// Every node with a loudspeaker, by serial.
+    pub nodes: BTreeMap<String, DrivenNode>,
+    /// Why a node clip is not playing: by timeline id, then clip id, then node serial.
+    pub clip_faults: BTreeMap<String, BTreeMap<String, BTreeMap<String, String>>>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct NodeStreamCaps {
+    pub payload: String,
+    pub max_buffer_ms: u32,
+    /// The UDP port the node listens on for the stream. Absent is 5004; a node that
+    /// shares an address with others (a simulator) names its own.
+    #[serde(default)]
+    pub port: Option<u16>,
+}
+
+/// How a node's stream has gone since the station driving it started this session:
+/// the sender's half, which only that station can see, beside what the node counted.
+///
+/// For finding a dropout after the fact. A gap in a streamed scare is one of three
+/// things, and they read differently here: the **network** lost packets (`missing`
+/// climbs, typically on wifi), the **sender** fell behind (`stalls`, a small
+/// `lowest_lead_ms`), or the **node** ran dry with everything arriving (`underruns`
+/// alone). Every counter is since `since_ms`, so a restarted stream starts clean, and
+/// each one moves only when something goes wrong — the row is not rewritten while a
+/// stream is healthy.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct NodeStreamHealth {
+    /// The show time this session started.
+    pub since_ms: u64,
+    /// How many sessions this station has started to the node since it began driving
+    /// it. More than one is a stream that was stopped and started again, which is a
+    /// gap the length of the node's buffer each time.
+    pub sessions: u32,
+    /// Where the packets go, with how the node is reached there: `wifi` or `ethernet`.
+    pub paths: Vec<NodeAddress>,
+    /// How far ahead of being heard the stream is sent: the playout delay.
+    pub delay_ms: u32,
+    /// The least time any packet had between leaving and being heard. Near `delay_ms`
+    /// is a sender keeping up; near zero or below is one that fell behind.
+    pub lowest_lead_ms: Option<i64>,
+    /// Times the sender fell behind by more than half the delay.
+    pub stalls: u64,
+    /// Times it fell so far behind (half a second) that it skipped ahead.
+    pub skips: u64,
+    /// Packets the operating system would not send.
+    pub send_errors: u64,
+    /// The node's counts, since the session started. `missing` is in the node's
+    /// output frames — samples it had to play with nothing there — not packets.
+    pub underruns: u64,
+    pub late: u64,
+    pub missing: u64,
+    pub resyncs: u64,
+    /// The rate the node mixes at, which is what `missing` is counted in.
+    #[serde(default)]
+    pub node_rate: u32,
+    /// Packets that never reached the node's receiving task, since the session
+    /// started, and the longest it has gone without one (newer firmware only).
+    #[serde(default)]
+    pub seq_lost: u64,
+    #[serde(default)]
+    pub rx_gap_max_ms: u32,
+    /// The latest thing that went wrong, in words, and when (show time).
+    pub last_incident: Option<String>,
+    pub last_incident_ms: Option<u64>,
+}
+
+/// What a node says about itself, as the station driving the nodes last heard it: its
+/// `GET /api/v1/status`, asked every few seconds, and its MQTT `health`.
+///
+/// Coarse on purpose, for the reason [`NodeAudioSummary`] is: the row replicates, and a
+/// figure that moves every second would rewrite it every second. So the boot is a
+/// moment rather than an uptime, the signal is in 5 dB steps, memory in 16 kB, the
+/// temperatures in whole degrees and the clock offset in 5 ms.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct NodeVitals {
+    pub name: String,
+    pub online: bool,
+    /// On the driving station's broker, which is how it hears every command.
+    pub on_broker: bool,
+    pub board: String,
+    pub fw: String,
+    /// The commit it was built from, `-dirty` when it was built from uncommitted work.
+    pub build: String,
+    /// When it last started, in show time.
+    pub booted_at_ms: Option<u64>,
+    /// Why it last started: `power-on`, `software` (an update or a restart asked for),
+    /// `panic`, `watchdog`, `brownout` …
+    pub reset_reason: String,
+    /// A crash left a core dump behind.
+    pub coredump: bool,
+    /// How many times the driving station has seen it start over without going away.
+    pub restarts: u64,
+    /// `ethernet` or `wifi`: the path it prefers.
+    pub transport: String,
+    pub ssid: String,
+    /// The wifi signal, in dBm, whichever path it prefers: a radio that is on is a
+    /// radio that is working.
+    pub rssi: Option<i32>,
+    pub free_heap: Option<u64>,
+    /// The chip's own temperature, and the module's sensor where it has one.
+    pub chip_temp_c: Option<i32>,
+    pub temp_c: Option<i32>,
+    pub poe_class: Option<u8>,
+    /// It has the console's clock, and how far it thinks the console's is from its own.
+    pub clock_locked: bool,
+    pub console_offset_ms: Option<i64>,
+    /// Running an update that has not yet confirmed itself: a reboot now rolls back.
+    pub pending_verify: bool,
+    /// The error codes it reports.
+    pub errors: Vec<String>,
+}
 
 /// One configured output.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -1246,6 +2098,16 @@ pub enum OutputKind {
     OpenHaunt,
 }
 
+/// The outputs one zone channel comes out of on one station, counting from one.
+///
+/// Its own type rather than a `Vec<u16>` because of how a show is read: the SQLite path
+/// parses a column by its *type*, so a field attribute would be skipped there, and a
+/// show from before there were lists — `[1, 2]`, one output per zone channel — would
+/// stop the show opening. This reads both, and is always written as a list.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct Outputs(pub Vec<u16>);
+
 /// A paper size, in the only series this console offers.
 ///
 /// A-series only: a production office prints A3 and a rigger reads A3. Adding Letter
@@ -1281,12 +2143,11 @@ pub struct ParameterCapture {
     pub fixture_id: Uuid,
     pub parameter_kind: ParameterKind,
     pub value: ParameterValue,
-    /// How long this capture takes when the parameter is going *up*, and when it is
-    /// going nowhere a console can rank — a colour, a relay. Zero means the cue's.
+    /// How long this capture takes when its cue is taken, whichever way the parameter
+    /// is going. Zero means the cue's in time.
     pub fade_in_ms: u32,
-    /// The same, for a parameter coming *down*. Zero means the cue's out time, and a
-    /// cue with no out time either means the in time: a show that never says
-    /// otherwise fades one way in both directions, as it always has.
+    /// How long it takes to go when its cue ends — the sequence going back past it,
+    /// or off. Zero means the cue's out time.
     pub fade_out_ms: u32,
     pub delay_in_ms: u32,
     /// A periodic instruction instead of a destination. When this is set the capture
@@ -1342,9 +2203,13 @@ pub struct ParameterDefinition {
     /// Which encoder page this belongs on: `Dimmer`, `Position`, `Color`, `Beam`.
     #[serde(default)]
     pub feature_group: Option<String>,
-    /// The light sources a colour parameter mixes across. Empty on everything else.
+    /// The light sources a color parameter mixes across. Empty on everything else.
     #[serde(default)]
     pub emitters: Vec<Emitter>,
+    /// Whether this parameter exists once per cell, on a type with cells: a bar's RGB
+    /// is, its master dimmer is not. See [`FixtureType::cells`].
+    #[serde(default)]
+    pub per_cell: bool,
 }
 
 /// Which way a parameter flows.
@@ -1392,8 +2257,8 @@ pub enum ParameterKind {
     ColorWheel(u8),
     Prism(u8),
     Frost(u8),
-    /// Correlated colour temperature in kelvin, for a variable-white fixture. Not a
-    /// colour: a tunable-white bar has this and no RGB at all.
+    /// Correlated color temperature in kelvin, for a variable-white fixture. Not a
+    /// color: a tunable-white bar has this and no RGB at all.
     ColorTemperature,
     Raw(u8),
     /// A switched output: a relay, a dry contact the console closes.
@@ -1411,6 +2276,67 @@ pub enum ParameterKind {
     /// console has never heard of. The name it gave is the whole identity: it is
     /// what the operator sees and what the parameter key is built from.
     Named(String),
+    /// One cell of a multi-cell fixture's per-cell parameter: the seventh pixel's
+    /// color, the third segment of a bar. Counted from 1, spelled `ColorRgb@7` as a
+    /// key.
+    ///
+    /// Part of the kind rather than a field beside it, for the reason `Gobo(2)` is:
+    /// everything in the console is keyed by a fixture and a kind — the programmer,
+    /// a capture, a preset, a running fade, a take — so a cell that is part of the
+    /// kind reaches all of them with no field added and no consumer forked. Never
+    /// nested: [`ParameterKind::in_cell`] is how one is made.
+    Cell { cell: u16, of: Box<ParameterKind> },
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PendingKey {
+    pub fixture_id: Uuid,
+    pub key: String,
+    pub from_ms: u32,
+}
+
+/// One pass of a pending take.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PendingPass {
+    /// The recording's sha.
+    pub asset: String,
+    /// The input it came off, where it came off a wire.
+    #[serde(default)]
+    pub input_id: Option<Uuid>,
+    /// Each key the pass recorded and where its stretch starts. A key from the
+    /// programmer starts at its first touch; a take off a wire, where every key was
+    /// listening from the start, at the start.
+    pub keys: Vec<PendingKey>,
+    /// Where every key's stretch ends: where the pass stopped.
+    pub out_ms: u32,
+    /// The flash keys pressed during the pass, ready to be added.
+    #[serde(default)]
+    pub flashes: Vec<TimelineFlash>,
+}
+
+/// A recording that has stopped and is waiting to be looked at.
+///
+/// **Nothing a take records is merged until somebody says so.** A pass is stored as an
+/// asset at once — the bytes are safe the moment the timeline stops — and listed here;
+
+/// the page that armed the recording asks which of it to keep, and Merge writes the
+/// chosen keys into the rows in one gesture. PERSISTED, so a take nobody has answered
+/// for yet survives a failover and a restart alike, and so undoing a Merge puts the
+/// take back up for review rather than losing it.
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+pub struct PendingTake {
+    /// The page that armed the recording (`Timeline::armed_by` at the time), which is
+    /// the one that opens the review by itself. Every other page offers it.
+    #[serde(default)]
+    pub armed_by: Option<String>,
+    /// One per pass, in the order they were recorded: a looping rehearsal is a pass per
+    /// lap, and a later lap is merged over an earlier one.
+    pub passes: Vec<PendingPass>,
+    /// The cues taken while it rolled — a Go, a Back, an Off — as the events they would
+    /// be on the timeline, waiting with the rest. Recorded as the state the act left the
+    /// sequence in, so a Go played back goes to the cue that came next when it was taken.
+    #[serde(default)]
+    pub events: Vec<TimelineEvent>,
 }
 
 /// What a parameter's 0..1 actually spans.
@@ -1448,7 +2374,7 @@ pub enum PhysicalUnit {
     Seconds,
     Hertz,
     Kelvin,
-    Metres,
+    Meters,
     Watts,
 }
 
@@ -1471,6 +2397,28 @@ pub enum PictureMode {
     #[default]
     Real,
     Photoreal,
+}
+
+/// How a strip head is patched: on its address, beside the serial and the head.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PixelStrip {
+    /// The strip output on the board, the `<n>` in `/api/v1/pixels/<n>`.
+    pub output: u8,
+    pub mode: StripMode,
+    pub count: u16,
+    /// The color order on the strip's own wire. The universes always carry R, G, B
+    /// (and W), so this matters to the node and to nothing here but the channel count.
+    pub order: String,
+    /// Where pixel 0's first channel is, in `sacn` mode. Kept in `effect` mode too, so
+    /// switching back and forth does not lose it.
+    pub universe: u16,
+    pub address: u16,
+    /// How long the node holds its last frame when every source has gone.
+    #[serde(default)]
+    pub hold_ms: u32,
+    /// Distance from one pixel to the next, in meters: 60 to the meter unless said.
+    #[serde(default)]
+    pub pitch_m: f32,
 }
 
 /// What a fixture of this type is drawn as, seen from above.
@@ -1596,6 +2544,14 @@ pub struct Preset {
     /// What it says, per fixture and parameter. A preset that names no fixture at all
     /// is legal and does nothing — which is what one being built looks like.
     pub values: Vec<PresetValue>,
+    /// The card's color, as `#rrggbb`, or `None` for its panel category's color.
+    /// What an operator paints a pool object to find it again; it means nothing to
+    /// the rig.
+    #[serde(default)]
+    pub color: Option<String>,
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    #[serde(default)]
+    pub folder: Option<Uuid>,
 }
 
 /// One parameter of one fixture, as a preset holds it.
@@ -1706,9 +2662,23 @@ pub enum Rate {
     Master { id: Uuid, multiplier: f32 },
 }
 
-/// A rectangle on the sheet, in millimetres from its top-left corner.
+/// What a take is recorded from.
 ///
-/// Millimetres rather than fractions of the page, because a viewport at 1:50 is a
+/// Two sources and one shape at the end of either: decoded values against a position.
+/// An input is somebody else's console on a wire, decoded through the patch; the
+/// programmer is the operator at this one, already a value. Neither is bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum RecordSource {
+    /// What an input hears, recorded by the station holding its socket.
+    Input(Uuid),
+    /// Every programmer key that changes while the timeline rolls, recorded by the
+    /// leader. `release` gives those keys back to the take when it is stored.
+    Programmer { release: bool },
+}
+
+/// A rectangle on the sheet, in millimeters from its top-left corner.
+///
+/// Millimeters rather than fractions of the page, because a viewport at 1:50 is a
 /// window of a known size onto the rig and a fraction would change what it framed when
 /// somebody moved the sheet from A3 to A2.
 #[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
@@ -1768,23 +2738,23 @@ pub struct SceneObject {
     /// Or a shared one, which is how a rig of forty identical truss sections holds
     /// one mesh rather than forty.
     pub symbol: Option<Uuid>,
-    /// Or none of the above: a piece out of the console's own catalogue, named
-    /// rather than modelled — `"f34-2m"` is two metres of box truss and the browser
+    /// Or none of the above: a piece out of the console's own catalog, named
+    /// rather than modeled — `"f34-2m"` is two meters of box truss and the browser
     /// draws one.
     ///
     /// Last of the three, and a mesh that came with a drawing wins: it is the truth
     /// about that object. This is what a console draws for a rig it made itself,
     /// where until now there was nothing to draw and the lights hung in the air.
     ///
-    /// See [`crate::types::catalogue`].
+    /// See [`crate::types::catalog`].
     #[serde(default)]
-    pub catalogue: Option<String>,
-    /// What a piece out of the catalogue was asked for: a deck's leg height, a
-    /// panel's finish. Declared per piece in [`crate::types::catalogue`], so the
+    pub catalog: Option<String>,
+    /// What a piece out of the catalog was asked for: a deck's leg height, a
+    /// panel's finish. Declared per piece in [`crate::types::catalog`], so the
     /// keys are the piece's and an object carrying a key the piece never declared
     /// is simply ignored rather than refused.
     ///
-    /// An object out of a drawing has an empty map: a mesh somebody modelled says
+    /// An object out of a drawing has an empty map: a mesh somebody modeled says
     /// what it is, and there is nothing here to ask it.
     ///
     /// A JSON column, the way `PluginPackage::config` is.
@@ -1794,17 +2764,17 @@ pub struct SceneObject {
     ///
     /// The show's rather than the browser's, unlike layer visibility: locking the
     /// house rig so nobody drags it is a decision about the rig, and a lock only
-    /// one screen honoured would be no lock at all. A locked object is still drawn,
+    /// one screen honored would be no lock at all. A locked object is still drawn,
     /// still pickable and still says what it is — what it has is no gizmo.
     #[serde(default)]
     pub locked: bool,
     /// What this one weighs, in kilograms, where somebody has said.
     ///
-    /// Overrides the nominal figure a catalogue piece carries, and is the only weight
+    /// Overrides the nominal figure a catalog piece carries, and is the only weight
     /// there is for an object out of a drawing — MVR says where a truss is and never
     /// what it weighs. A loading table distinguishes the two: a total resting on
     /// entered weights is a different claim from one resting on
-    /// [`crate::types::catalogue::StockPiece::weight_kg`], and printing them as the
+    /// [`crate::types::catalog::StockPiece::weight_kg`], and printing them as the
     /// same number is how a nominal figure becomes a rigging decision.
     #[serde(default)]
     pub weight_kg: Option<f32>,
@@ -1883,7 +2853,7 @@ pub enum SelectionOrder {
         #[serde(default)]
         descending: Option<bool>,
     },
-    /// Outwards from a point, which is what makes a centre-out chase possible.
+    /// Outwards from a point, which is what makes a center-out chase possible.
     ByDistance { from: Vec3 },
 }
 
@@ -1895,6 +2865,16 @@ pub enum SelectionOrder {
 pub struct SelectionQuery {
     pub clauses: Vec<SelectionClause>,
     pub order: SelectionOrder,
+    /// Which cells of every multi-cell fixture the query answers: MA's `.`, so "these
+    /// three strips, cells 1 to 20" is one query. Empty is the whole fixture. Applied
+    /// after the clauses and the order, by [`elements`]; a fixture with no cells is in
+    /// whole whatever this says, since there is nothing of it to cut.
+    ///
+    /// One list for the query rather than one per fixture, deliberately: a
+    /// sub-selection is a question about a kind of place *on* a fixture, and two
+    /// strips cut differently are two selections.
+    #[serde(default)]
+    pub cells: Vec<CellSpan>,
 }
 
 /// One test a fixture either passes or fails.
@@ -1914,8 +2894,8 @@ pub enum SelectionTerm {
     OfType { type_id: Uuid },
     /// Case-insensitive substring of the fixture's name.
     Named { text: String },
-    /// Within `radius` metres of a point.
-    Sphere { centre: Vec3, radius: f32 },
+    /// Within `radius` meters of a point.
+    Sphere { center: Vec3, radius: f32 },
     /// Inside an axis-aligned region. The two corners may be given either way round.
     Box { from: Vec3, to: Vec3 },
     /// The spec's radial selection: a cone from a point, opening along a direction.
@@ -1926,6 +2906,10 @@ pub enum SelectionTerm {
     /// whole stage behind the fixtures you meant.
     #[serde(rename_all = "camelCase")]
     Cone { from: Vec3, direction: Vec3, angle_deg: f32, reach: f32 },
+    /// Everything hung off one object, however deep: a truss and its group handles, or
+    /// the handle a pixel strip's cells hang off. Not geometric, so a fixture hung off
+    /// it that has not been placed yet is still in it.
+    Hanging { object: Uuid },
 }
 
 /// An ordered list of cues (called a "sequence" by the operator).
@@ -1944,6 +2928,32 @@ pub struct Sequence {
     /// agree on when it started, not merely that it did.
     #[serde(default)]
     pub went_at: Option<u64>,
+    /// The sequence's level, 0 to 1, or `None` for full: its playback fader.
+    ///
+    /// It scales the **intensities** this sequence is driving and nothing else — a
+    /// color, a position and a relay go where the cue says however low the fader is,
+    /// and the programmer, a recording and a resting value are never dimmed by it
+    /// ([`Masters`] decides which). At zero the sequence is still on and still owns
+    /// what it owns; taking it off is [`Sequence::off`].
+    ///
+    /// SYNCED beside `active_cue_index` rather than PERSISTED: a fader is where the
+    /// operator has it now, every station and page has to agree on it, a failover
+    /// keeps it, and a show opens at full.
+    #[serde(default)]
+    pub master: Option<f32>,
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    #[serde(default)]
+    pub folder: Option<Uuid>,
+    /// How its intensities meet another sequence's on the same light, or `None` for
+    /// [`Merge::Ltp`]. See [`Merge`].
+    #[serde(default)]
+    pub merge: Option<Merge>,
+    /// Whether Go past the last cue takes the first, and Go back before the first
+    /// takes the last. `None` is no: a sequence stays on its last cue, which is what
+    /// every sequence did before there was a choice. A loop of chases at a haunt goes
+    /// around; a play does not.
+    #[serde(default)]
+    pub wrap: Option<bool>,
 }
 
 /// What one service was told, what it managed, and what went wrong.
@@ -1967,7 +2977,7 @@ pub struct ServiceBinding {
 /// One sheet of the paperwork.
 ///
 /// Seeded into a new show rather than being a built-in preset the way a
-/// [`super::layout::Layout`] is. The consequence, recorded because it will be asked
+/// [`super::workspace::Workspace`] is. The consequence, recorded because it will be asked
 /// about: a showfile made before this feature existed opens with no sheets and stays
 /// that way, and a show made today never picks up a later version's better defaults.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -1991,11 +3001,14 @@ pub struct Sheet {
     pub title_block: bool,
     #[serde(default)]
     pub blocks: Vec<SheetBlock>,
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    #[serde(default)]
+    pub folder: Option<Uuid>,
 }
 
 /// One thing on a sheet.
 ///
-/// Tagged by `type` for the reason [`super::layout::LayoutNode`] is: the frontend
+/// Tagged by `type` for the reason [`super::workspace::WorkspaceNode`] is: the frontend
 /// discriminates on a field, and every operation over a sheet is written against that
 /// tag.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -2020,6 +3033,19 @@ pub struct Show {
     /// banner rather than quietly storing over the first one's work.
     #[serde(default)]
     pub editing_cue: Option<Uuid>,
+    /// Blind: the programmer reaches no lamp. Playback runs the stage as though the
+    /// programmer were empty — its fades and effects are not held back under keys the
+    /// programmer has — while every screen goes on showing the programmer over it, so
+    /// a look is built where it can be seen and nobody in the room sees it. Store and
+    /// Update read the programmer as always. Switching it off puts what is in the
+    /// programmer on stage, the way every other desk does.
+    ///
+    /// One for the show, because there is one programmer: being blind is a fact about
+    /// whether the programmer reaches the output, not about who is looking. SYNCED so
+    /// every station and screen agree, and not PERSISTED so a show never opens blind
+    /// with a programmer nobody remembers filling.
+    #[serde(default)]
+    pub blind: bool,
     /// How many of an operator's own changes stay reachable, for undo and for the
     /// history panel.
     ///
@@ -2094,21 +3120,68 @@ pub struct Show {
     /// says so in its own `preferences.toml` instead — that is a fact about the
     /// machine, and it is a veto rather than a setting.
     pub mvr_xchange: XchangeSettings,
+    /// What the show is doing when nobody has touched it: which sequences are on and
+    /// at which cue, at which master level, and which timelines run. `None` is nothing.
+    ///
+    /// Show data, because it is a fact about the show — the ambience that goes round
+    /// and the house lights that are on — and a showfile carried to another console
+    /// should come up the same way. Applied by the leader when a show opens with
+    /// nothing running (`infra/default_state.rs`), and by hand from the Show menu. The
+    /// programmer is never part of it: a held value is somebody at the desk.
+    #[serde(default)]
+    pub default_state: Option<DefaultState>,
 }
 
-/// One named position on a wheel: a gobo, a colour, a prism facet.
+/// One named position on a wheel: a gobo, a color, a prism facet.
 ///
 /// What turns "Gobo 1 at 37%" into "Gobo 1: Breakup".
 #[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Slot {
     pub name: String,
-    /// The colour of this slot, where it has one, as linear RGB. A colour wheel's
+    /// The color of this slot, where it has one, as linear RGB. A color wheel's
     /// slots do; a gobo wheel's do not.
     #[serde(default)]
     pub color: Option<Vec3>,
     /// The gobo image, in the asset store, where the file carried one.
     #[serde(default)]
     pub media: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SpeakerZone {
+    pub id: Uuid,
+    pub name: String,
+    /// A CSS color, or `None` for the category's own.
+    #[serde(default)]
+    pub color: Option<String>,
+    /// How many channels the zone is: 1 mono, 2 stereo, more for a cluster. What a
+    /// station maps has to be exactly this many, so a stereo bed cannot quietly become
+    /// a downmix because somebody ticked one box of two.
+    pub width: u16,
+    /// Where each of the zone's channels comes out on each station: per station, one
+    /// list per zone channel (left, right, …) of that station's output channels,
+    /// counting from one. A list may hold several outputs — a bed on all eight Dante
+    /// channels — and an output may be in two lists, which sums them there.
+    ///
+    /// A show from before there were lists reads `[1, 2]` as left on 1 and right on 2
+    /// (`one_per_side`), which is what it meant.
+    #[serde(default)]
+    pub channels: BTreeMap<NodeId, Vec<Outputs>>,
+    /// Node loudspeakers that are in the zone as well.
+    #[serde(default)]
+    pub nodes: Vec<ZoneNode>,
+    /// The zone's own level in dB, over every clip that goes to it: a room whose
+    /// speakers are too loud for every scare in it is turned down here, once, rather
+    /// than in each clip. `None` is 0 dB — and is an `Option` so that a show from
+    /// before there was a level opens with the column empty. On a node it cannot go
+    /// above 0 dB, as a clip's own level cannot.
+    #[serde(default)]
+    pub level_db: Option<f32>,
+    #[serde(default)]
+    pub notes: String,
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    #[serde(default)]
+    pub folder: Option<Uuid>,
 }
 
 /// One tempo several effects can follow.
@@ -2155,7 +3228,7 @@ pub enum Spread {
     /// One cycle spread across the selection.
     Linear,
     /// Symmetric about the middle of the selection.
-    Centre,
+    Center,
     /// Linear, from the other end.
     Reversed,
     /// Mirrored in `n` wings.
@@ -2175,11 +3248,11 @@ pub struct StagePlan {
     /// The image's own size, so the view can lay it out before the bytes arrive.
     pub width_px: u32,
     pub height_px: u32,
-    /// The world point, in metres, that the image's top-left corner sits on.
+    /// The world point, in meters, that the image's top-left corner sits on.
     pub origin: Vec3,
     /// How much of the room one image pixel covers. Set by measuring something on
     /// the plan whose real length is known.
-    pub metres_per_pixel: f32,
+    pub meters_per_pixel: f32,
     pub rotation_deg: f32,
     pub opacity: f32,
     pub visible: bool,
@@ -2202,6 +3275,20 @@ pub struct Station {
     /// fetches from. Defaulted, because an older peer will not send it.
     #[serde(default)]
     pub http_addr: String,
+    /// Where an OpenHaunt node reaches this station's broker, as `ip:port`, were it
+    /// to lead. The leader lists every station's in the broker list it hands its nodes
+    /// (`openhaunt/brokers`, doc 15), leader first, so a node whose leader dies finds
+    /// the next one without anybody having to see it over mDNS. Empty from an older
+    /// peer, which is then simply not in the list.
+    #[serde(default)]
+    pub broker_addr: String,
+    /// Every address that door is reachable at, best first; `broker_addr` is the first
+    /// of them, kept for a peer that reads nothing else. Plural because a console in a
+    /// venue usually has two networks, and which one its nodes are on is something
+    /// only the leader — which has seen the nodes — can answer. Never loopback while
+    /// the machine has anything else (`infra::net::reachable`).
+    #[serde(default)]
+    pub broker_doors: Vec<String>,
     pub cpu_percent: f32,
     pub mem_used: u64,
     pub mem_total: u64,
@@ -2228,7 +3315,7 @@ pub struct Station {
     /// that was told about a fade once are not two samples of one number.
     ///
     /// Defaulted, so a peer running a build that cannot say still sends a row that
-    /// deserialises.
+    /// deserializes.
     #[serde(default)]
     pub frame_costs: Vec<FrameCost>,
     /// What the *machine* is doing, as against what this console is costing.
@@ -2240,9 +3327,14 @@ pub struct Station {
     /// a station at 4% on a machine at 96% is not a comfortable station, it is a
     /// console about to be starved by something nobody is looking at.
     ///
-    /// All defaulted, so a peer on an older build still deserialises.
+    /// All defaulted, so a peer on an older build still deserializes.
     #[serde(default)]
     pub machine: MachineStats,
+    /// How much decoded sound this station is holding, against what it may hold.
+    ///
+    /// Defaulted, and a `budget` of zero is a station on an older build that cannot say.
+    #[serde(default)]
+    pub audio_cache: AudioCacheStats,
     /// What this machine's network interfaces carried over the window just reported,
     /// each way, and how long that window was.
     ///
@@ -2257,7 +3349,7 @@ pub struct Station {
     /// sends to itself would otherwise arrive twice — sent and received — and swamp
     /// the figure it is there to give.
     ///
-    /// Defaulted, so a peer on an older build still deserialises.
+    /// Defaulted, so a peer on an older build still deserializes.
     #[serde(default)]
     pub net_received: u64,
     #[serde(default)]
@@ -2286,11 +3378,52 @@ pub struct Station {
     /// each one says what it took. `None` on a leader, which is at the top of the
     /// ladder rather than in a slot.
     ///
-    /// Defaulted, so a peer on an older build still deserialises.
+    /// Defaulted, so a peer on an older build still deserializes.
     #[serde(default)]
     pub sacn_slot: Option<u8>,
+    /// The command wing plugged into this station, if one is.
+    ///
+    /// The station's own `wing` row is LOCAL, so a page on another station could not
+    /// otherwise know there is a wing here to drive. A page drives a wing over a socket
+    /// to the station it is plugged into, wherever the page came from, and this is how
+    /// it finds one. `None` is a station started with no wing at all.
+    ///
+    /// Defaulted, so a peer on an older build still deserializes.
+    #[serde(default)]
+    pub wing: Option<WingState>,
     /// When this station last said any of the above.
     pub last_seen: Timestamp,
+}
+
+/// What one station plays through, and what it calls the card and its channels: the
+/// `station_audio` collection, keyed by the station's `NodeId`.
+///
+/// So a zone can be mapped for a machine from another one — the booth mapping the
+/// spare's channels — with the names that machine gave them. The names stay that
+/// machine's preference (`[audio.names]`); this row only says what they are, and a
+/// station rewrites it only when something in it moved, like `station_networks`.
+///
+/// **PERSISTED, so a station is remembered while it is off.** It was SYNCED, on the
+/// grounds that which card is in a machine does not travel with a show — and then a
+/// station that was off was nowhere in the zone matrix, and its routing could not be
+/// set until it was on (HHG, 2026-10-27). The row is also the show's list of stations
+/// it has seen, which is why it carries the hostname; forgetting one is deleting it.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct StationAudio {
+    /// The station's `NodeId`.
+    pub id: Uuid,
+    /// What the machine is called, so a station that is off is still named.
+    #[serde(default)]
+    pub hostname: String,
+    /// The output card, by its own name: open, or the one the station is told to use.
+    pub device: Option<String>,
+    /// What the station calls it.
+    pub alias: Option<String>,
+    /// How many output channels it has: the open card's count, or as many as are named
+    /// when nothing is open yet.
+    pub channels: u16,
+    /// The channel names, the first being channel 1; empty is unnamed.
+    pub channel_names: Vec<String>,
 }
 
 /// What one station's networking looks like: what it has, and what it did with it.
@@ -2326,6 +3459,68 @@ pub struct StationNetwork {
     /// looked at. A station that has been up all afternoon with nothing replugged
     /// should say so rather than claim it noticed something two seconds ago.
     pub changed_at: Timestamp,
+}
+
+/// Which of the two ways a strip runs.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    serde::Serialize,
+    serde::Deserialize
+)]
+#[serde(rename_all = "lowercase")]
+pub enum StripMode {
+    /// The node draws the pixels, from parameters.
+    #[default]
+    Effect,
+    /// The console draws the pixels, and sends them as sACN.
+    Sacn,
+}
+
+/// One page of tiles.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Surface {
+    pub id: Uuid,
+    pub name: String,
+    /// The tiles, in reading order, as one JSON column.
+    pub tiles: Vec<SurfaceTile>,
+    /// The card's color, as `#rrggbb`, or `None` for its panel category's color.
+    /// What an operator paints a pool object to find it again; it means nothing to
+    /// the rig.
+    #[serde(default)]
+    pub color: Option<String>,
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    #[serde(default)]
+    pub folder: Option<Uuid>,
+}
+
+/// One physical control, as the surface numbers it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind")]
+pub enum SurfaceControl {
+    /// A key, by the index the surface reports it under.
+    Key { index: u16 },
+    Fader { index: u16 },
+    Encoder { index: u16 },
+    /// One of the wing's seven digital inputs, 0 to 6, on its rear panel. Read as
+    /// pressed while its bit is set, which no closed contact has confirmed yet.
+    Digital { index: u16 },
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SurfaceTile {
+    /// Stable across reorders, so a tile being dragged keeps its identity.
+    pub id: Uuid,
+    /// What the tile says. Empty means the name of what it points at.
+    pub label: String,
+    /// A CSS color for the tile itself, `#rrggbb`.
+    pub color: Option<String>,
+    pub size: TileSize,
+    pub target: TileTarget,
 }
 
 /// A piece of geometry drawn once and placed many times.
@@ -2384,11 +3579,61 @@ pub enum TableKind {
 pub struct TextBlock {
     pub rect: Rect,
     pub text: String,
-    /// Cap height in millimetres. 2.5 mm is a drawing's small text, 5 mm a heading.
+    /// Cap height in millimeters. 2.5 mm is a drawing's small text, 5 mm a heading.
     #[serde(default)]
     pub size_mm: f32,
     #[serde(default)]
     pub bold: bool,
+}
+
+/// How much of a row a tile takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum TileSize {
+    /// Half a phone's width: two to a row.
+    Half,
+    /// The whole width.
+    Full,
+}
+
+/// What a tile shows, or does when it is pressed.
+///
+/// Tagged by `kind` so the browser discriminates on a field, as `WorkspaceNode` does.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind")]
+pub enum TileTarget {
+    /// A label across the page, and nothing else. What makes "Area 1" and
+    /// "Area 2" two groups of tiles rather than one list of six.
+    Heading,
+    /// Press a flow's `Button` node, exactly as its own Press does.
+    FlowButton { node_id: Uuid },
+    /// What a variable holds: a flag as a light, a number as a figure.
+    VariableReadout {
+        variable_id: Uuid,
+        /// The color for each value, the highest stop not above it winning. Empty
+        /// means the tile's own color when the value is on and gray when off.
+        stops: Vec<ColorStop>,
+        /// What pressing it does, or `None` for a readout that only shows. A flag
+        /// that is its own switch is one tile rather than a light beside a button.
+        #[serde(default)]
+        press: Option<VariableOp>,
+    },
+    /// Change a variable. Unattributed, through the `variable.*` RPCs, so a phone
+    /// resetting an area writes no row in the History panel.
+    VariableSetter { variable_id: Uuid, op: VariableOp },
+    /// Play or stop a timeline, with whether it is running and where it is.
+    Timeline {
+        timeline_id: Uuid,
+        /// Play from the top rather than from where it stopped: a scare, as
+        /// against an ambience that carries on.
+        from_start: bool,
+    },
+    /// Go on a sequence.
+    SequenceGo { sequence_id: Uuid },
+    /// Take a sequence off.
+    SequenceOff { sequence_id: Uuid },
+    /// What one parameter of one fixture is putting out now — a traffic light's
+    /// color, a relay — evaluated in the page the way the sheet does it.
+    Parameter { fixture_id: Uuid, parameter: ParameterKind },
 }
 
 /// A position, and everything written against it.
@@ -2396,24 +3641,19 @@ pub struct TextBlock {
 pub struct Timeline {
     pub id: Uuid,
     pub name: String,
-    /// The audio asset this timeline runs against, where there is one.
+    /// The sound on this timeline: files at positions, each going somewhere.
     ///
     /// Played by the station [`Timeline::node_id`] names, off the audio callback's own
     /// sample clock — see `infra/audio` — so the sound is the reference and everything
-    /// else follows the anchor it writes. A timeline with **no** audio is an ordinary
+    /// else follows the anchor it writes. A timeline with **no** clips is an ordinary
     /// stopwatch and runs exactly as it did before any of this existed, which is what
     /// "timecode without timecode" means and is the property that must not be lost.
-    #[serde(default)]
-    pub audio: Option<String>,
-    /// The reduced waveform of [`Timeline::audio`], as its own asset sha.
     ///
-    /// Computed once by whichever station first held the file and written here, so
-    /// every browser in the building fetches one small asset rather than decoding
-    /// fifty megabytes. A field rather than a lookup because the alternative — deriving
-    /// the peaks asset's name from the audio's — would be a second content-addressing
-    /// scheme, and a tablet would have to ask for a sha that might not exist yet.
+    /// A list rather than one file because a scare is a scream in one zone *and* a bang
+    /// in another, and making that two timelines started together would be two things
+    /// to keep in step that one clock already keeps in step for free.
     #[serde(default)]
-    pub peaks: Option<String>,
+    pub clips: Vec<AudioClip>,
     /// What the beat detector last found. See [`Detected`] on why this is not `grid`.
     #[serde(default)]
     pub detected: Option<Detected>,
@@ -2426,6 +3666,14 @@ pub struct Timeline {
     pub events: Vec<TimelineEvent>,
     #[serde(default)]
     pub tracks: Vec<TimelineTrack>,
+    /// The flash keys recorded onto this timeline, over every take. An `Option` only
+    /// because a non-`Option` column added to a show that already exists is one the
+    /// show cannot be opened with; `None` is none. See [`TimelineFlash`].
+    #[serde(default)]
+    pub flashes: Option<Vec<TimelineFlash>>,
+    /// A recording waiting to be reviewed. See [`PendingTake`].
+    #[serde(default)]
+    pub pending: Option<PendingTake>,
     /// A speed master this timeline drives from its grid.
     ///
     /// While the timeline runs, the **leader** writes that master's `bpm` and `t0` at
@@ -2442,6 +3690,16 @@ pub struct Timeline {
     /// would mean chasing a clock this station cannot hear.
     #[serde(default)]
     pub node_id: Option<NodeId>,
+    /// Where the timeline ends, and what it does there. `None` runs for ever, as a
+    /// timeline always has.
+    ///
+    /// A scare is a timeline, and a scare has to *finish*: until it does it is still
+    /// running, and a flow told to ignore a running timeline would ignore it for the
+    /// rest of the night. Acted on by the leader, as an event is, and anchored on the
+    /// wall millisecond the end fell at rather than whenever the pass got there — so a
+    /// loop does not drift by a pass's lateness every time round.
+    #[serde(default)]
+    pub end: Option<TimelineEnd>,
     /// The transport, replicated so every station and every browser reads the same
     /// playhead out of the same four numbers.
     #[serde(default)]
@@ -2452,21 +3710,46 @@ pub struct Timeline {
     pub position_at_anchor_ms: u64,
     #[serde(default)]
     pub rate: f32,
-    /// The input a take is being recorded from, if one is armed.
+    /// What a take is being recorded from, if one is armed.
     ///
     /// SYNCED rather than LOCAL because the station that *arms* it is usually not the
-    /// station holding the socket: an operator at the booth arms a recording from the
-    /// stage rack's input, and the rack has to hear about it.
+    /// station recording: an operator at the booth arms a recording from the stage
+    /// rack's input, and the rack has to hear about it; a tablet arms the programmer,
+    /// and the leader records it.
     #[serde(default)]
-    pub recording: Option<Uuid>,
+    pub recording: Option<RecordSource>,
+    /// The page that armed the recording, by the id it gave itself — the one that
+    /// opens the review when the take stops. SYNCED with `recording`, for the same
+    /// reason: the station recording is usually not the one that page is on.
+    #[serde(default)]
+    pub armed_by: Option<String>,
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    #[serde(default)]
+    pub folder: Option<Uuid>,
 }
 
-/// What a timeline does to a sequence, and when.
+/// What a timeline does, and when: to a sequence, to another timeline, or to a variable.
+///
+/// The timeline and variable acts are the flow's own (`flow::TriggerAction`), so a
+/// timeline can hand over to the next one — a loop that a PIR stops in favour of a
+/// scare, and a scare whose last event plays the loop again — without a flow having
+/// to know how long the scare is. Added at Heinz Horror Garten, 2026-10-25.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum TimelineAction {
     GoToCue { sequence_id: Uuid, cue_id: Uuid },
     GoNext { sequence_id: Uuid },
     Off { sequence_id: Uuid },
+    /// Play a timeline from its start — this one too, which is a restart.
+    PlayTimeline { timeline_id: Uuid, #[serde(default)] if_running: IfRunning },
+    StopTimeline { timeline_id: Uuid },
+    SetVariable { variable_id: Uuid, op: VariableOp },
+}
+
+/// Where a timeline ends, and what it does when it gets there.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TimelineEnd {
+    pub at_ms: u64,
+    pub then: AtEnd,
 }
 
 /// A Go written against a position.
@@ -2475,6 +3758,24 @@ pub struct TimelineEvent {
     pub id: Uuid,
     pub at_ms: u32,
     pub action: TimelineAction,
+}
+
+/// A flash key pressed while a take rolled: one value on one parameter, for a while.
+///
+/// Not a stretch of a recording. A press is one act with a length, so it is kept as
+/// one — an object an operator can move, stretch and delete — rather than as two change
+/// points in a file nobody can edit. It goes on top of every take and cuts none
+/// (`pult_render::compose_with`), so a button pressed during a second pass adds to the
+/// first instead of erasing it. Told apart from a fader by `model::takes::Pass`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TimelineFlash {
+    pub id: Uuid,
+    pub fixture_id: Uuid,
+    /// The parameter key, spelled the way a take's rows spell it.
+    pub key: String,
+    pub value: ParameterValue,
+    pub at_ms: u32,
+    pub duration_ms: u32,
 }
 
 /// Where a timeline's position comes from.
@@ -2491,7 +3792,7 @@ pub enum TimelineSource {
     ///
     /// `offset_frames` is signed and is subtracted from the decoded position, because
     /// a show that starts at `01:00:00:00` is the normal case rather than the odd one:
-    /// timecode from an hour is how a reel says "this is the programme and not the
+    /// timecode from an hour is how a reel says "this is the program and not the
     /// leader".
     Ltc { fps: LtcRate, offset_frames: i64 },
 }
@@ -2510,16 +3811,31 @@ pub struct TimelineTrack {
     pub asset: String,
     /// Which input it was recorded from, where it was recorded here. Kept so a take
     /// can be re-recorded from the same place without anybody remembering which cable
-    /// it came in on.
+    /// it came in on. `None` is a take recorded from the programmer.
     pub input_id: Option<Uuid>,
     /// Nudge, in milliseconds. Signed: a take is as often early as late.
     pub offset_ms: i32,
     pub enabled: bool,
+    /// The parameter of the recording this row plays: a fixture (or, for a recorded
+    /// sequence level, the sequence) and a parameter key. A row per parameter, so each
+    /// is cropped, sliced and replaced on its own; `None` is a take stored before that,
+    /// playing every parameter in its recording until the station splits it.
+    #[serde(default)]
+    pub fixture_id: Option<Uuid>,
+    #[serde(default)]
+    pub key: Option<String>,
+    /// The stretch of the timeline this row plays, in timeline milliseconds, `None`
+    /// open on that side. Inside it the row is completely in charge of its parameter —
+    /// see `pult_render::compose`.
+    #[serde(default)]
+    pub from_ms: Option<u32>,
+    #[serde(default)]
+    pub to_ms: Option<u32>,
 }
 
 /// Where something is, what it is turned to, and how big it is.
 ///
-/// Metres, and XYZ Euler degrees — three.js's default order, and so the console's,
+/// Meters, and XYZ Euler degrees — three.js's default order, and so the console's,
 /// stated here and assumed everywhere else.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Transform {
@@ -2536,7 +3852,14 @@ pub struct Transform {
 pub enum TriggerAction {
     GoNext { sequence_id: Uuid },
     GoToCue { sequence_id: Uuid, cue_id: Uuid },
+    /// Take a sequence off: what it was driving goes home, as the Off key does.
+    Off { sequence_id: Uuid },
     SetParameter { fixture_id: Uuid, parameter: ParameterKind, value: ParameterValue },
+    /// Change a show variable, resolved against what it holds when the change lands.
+    SetVariable { variable_id: Uuid, op: VariableOp },
+    /// Play a timeline from its start.
+    PlayTimeline { timeline_id: Uuid, if_running: IfRunning },
+    StopTimeline { timeline_id: Uuid },
 }
 
 /// When a condition passes a signal on.
@@ -2559,6 +3882,9 @@ pub enum TriggerSource {
     /// One parameter of one fixture. A contact on an I/O node, a temperature, or
     /// anything else a device reports.
     Parameter { fixture_id: Uuid, parameter: ParameterKind },
+    /// A show variable, read as a level: a flag is true when on, a number when off
+    /// zero, and the conditions compare the number itself.
+    Variable { variable_id: Uuid },
 }
 
 /// One person working on the show.
@@ -2566,14 +3892,54 @@ pub enum TriggerSource {
 pub struct User {
     pub id: Uuid,
     pub name: String,
-    /// How this user's changes are marked in the history, as a CSS colour.
+    /// How this user's changes are marked in the history, as a CSS color.
     ///
     /// Persisted rather than derived from the id, so somebody who dislikes the one
     /// they were given can change it and it stays changed.
-    pub colour: String,
+    pub color: String,
 }
 
-/// A point in the rig, in metres, from whatever origin the show uses.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Variable {
+    pub id: Uuid,
+    pub name: String,
+    pub kind: VariableKind,
+    pub initial: f64,
+    /// Bounds a write is clamped to. A count with a floor of zero cannot be driven
+    /// negative by an exit somebody walked through twice.
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+    /// What it holds now. `None` is the initial value — see the module docs.
+    pub value: Option<f64>,
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    #[serde(default)]
+    pub folder: Option<Uuid>,
+}
+
+/// What a variable holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum VariableKind {
+    /// On or off. Held as 0 and 1, so a flag reads as a level and a number alike.
+    Flag,
+    Number,
+}
+
+/// A change to a variable, resolved against what it holds when it lands.
+///
+/// A change rather than a destination where it can be, for the reason `__by` is one:
+/// two PIRs reporting in the same millisecond must both count.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum VariableOp {
+    Set(f64),
+    /// Increment and decrement are `Add(1.0)` and `Add(-1.0)`.
+    Add(f64),
+    /// Zero becomes one and anything else becomes zero.
+    Toggle,
+    /// Back to the initial value.
+    Reset,
+}
+
+/// A point in the rig, in meters, from whatever origin the show uses.
 #[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Vec3 {
     pub x: f32,
@@ -2617,7 +3983,7 @@ pub struct Version {
     /// Nothing reads it yet. It is here because a version is the only record of a
     /// past state that survives the oplog's retention, and a diff between two of
     /// them has to be able to say which came first on which station — which a
-    /// timestamp across machines with unsynchronised clocks cannot.
+    /// timestamp across machines with unsynchronized clocks cannot.
     #[serde(default)]
     pub clock: VectorClock,
 }
@@ -2700,7 +4066,7 @@ pub enum ViewStyle {
         /// drawing — that would be a document changing the show it documents, and on a
         /// console with the lamps on it would be visible in the room.
         ///
-        /// Several, because a look is usually more than one sequence: a colour state
+        /// Several, because a look is usually more than one sequence: a color state
         /// and a movement running over it. They are applied in order, so a later one
         /// wins where two capture the same parameter.
         #[serde(default)]
@@ -2726,7 +4092,7 @@ pub struct ViewportBlock {
     /// every time.
     #[serde(default)]
     pub layers: Option<Vec<Uuid>>,
-    /// The lines of a head's label, in order. Empty for an unlabelled drawing.
+    /// The lines of a head's label, in order. Empty for an unlabeled drawing.
     #[serde(default)]
     pub labels: Vec<LabelField>,
     #[serde(default)]
@@ -2738,6 +4104,151 @@ pub struct ViewportBlock {
     /// Dimensions along each bar, where this viewport carries them. See [`Dimensions`].
     #[serde(default)]
     pub dimensions: Option<Dimensions>,
+}
+
+/// One encoder's calculator: which of the five, and what has been typed into it.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct WingCalculator {
+    pub slot: u8,
+    pub text: String,
+}
+
+/// The encoder bar: five slots of the selection's attributes, one page of them.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct WingEncoders {
+    pub page: u32,
+    pub pages: u32,
+    /// Always five; `None` past the end of what the selection has.
+    pub slots: Vec<Option<WingSlot>>,
+}
+
+/// The wing's half of an operator: its command line, its encoders, the calculator,
+/// learning, and the selection all of them act on.
+///
+/// The station's, so the wing does the same thing whether or not a page is open
+/// (found at the gig: a page drawing the rig lagged every key behind it). A page that
+/// claims the wing reads this to show it, and shares its selection with it.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct WingOperator {
+    /// What the keypad has typed and PLEASE has not yet run.
+    pub line: String,
+    /// The calculator a large encoder's press opens, while one is.
+    pub calculator: Option<WingCalculator>,
+    /// The selection's attributes as the five encoders page through them.
+    pub encoders: WingEncoders,
+    /// Waiting for the next control touched, to bind it.
+    pub learning: bool,
+    pub selection: WingSelection,
+    /// The sequence GO and GO BACK act on: the claiming page's cue sheet touched last,
+    /// or the sequence that went most recently. `None` when there is none.
+    pub go_sequence: Option<Uuid>,
+    /// The page of bindings the controls act on, from 1: PAGE_UP and PAGE_DOWN turn it.
+    /// LOCAL like the rest of this, so a restarted station is back on page 1.
+    #[serde(default)]
+    pub page: u32,
+}
+
+/// Where the wing on this station has got to.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind")]
+pub enum WingPhase {
+    /// This station was started without a wing, which is what every test is.
+    #[default]
+    Off,
+    /// Looking, and nothing is plugged in.
+    Absent,
+    /// It is on the bus and the boot conversation is under way.
+    Booting,
+    /// Taking its application: `sent` of `total` bytes.
+    Loading { sent: u32, total: u32 },
+    /// Up, and reporting what is pressed.
+    Running,
+    /// It cannot be run here, and why — no grandMA3 install to find the image in, or
+    /// another program holding the interface.
+    Fault { reason: String },
+}
+
+/// What the wing has selected: the claiming page's selection, or one made on the wing.
+///
+/// `rev` counts changes, and `from_wing` says the last one was made on the wing — a
+/// group key, a typed `fixture 3` — which is the one kind a page takes on as its own.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct WingSelection {
+    pub fixtures: Vec<Uuid>,
+    #[serde(default)]
+    pub cells: Vec<CellSpan>,
+    /// The question, where the selection is one: a group recalled keeps following the
+    /// rig on the page that takes it on.
+    pub query: Option<SelectionQuery>,
+    pub rev: u32,
+    pub from_wing: bool,
+}
+
+/// One position on the encoder bar: a parameter, or one channel of a color.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct WingSlot {
+    pub kind: ParameterKind,
+    pub component: Option<ColorComponent>,
+    pub default_value: ParameterValue,
+}
+
+/// The LOCAL `wing` row: what the wing on *this* station is doing, and who shows it.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct WingState {
+    pub phase: WingPhase,
+    /// What it said it is, once it has said.
+    pub device: Option<String>,
+    /// The short session id of the page showing it, or `None` when no page is.
+    ///
+    /// The wing works with no page at all: the station runs every control. A page
+    /// that claims it is the one that shares its selection with the wing, shows its
+    /// command line and encoders, and answers what needs a screen — the Store
+    /// dialog, a learned control waiting to be bound.
+    pub claimed_by: Option<String>,
+    /// The seven digital inputs as the wing last reported them, one bit each, or
+    /// `None` before it has. A level rather than a press, so where they rest can be
+    /// read before any of them is bound.
+    #[serde(default)]
+    pub digital: Option<u8>,
+    /// What the wing's operator has in hand, kept by the station.
+    pub operator: WingOperator,
+}
+
+/// One saved arrangement of the panels.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Workspace {
+    pub id: Uuid,
+    pub name: String,
+    /// The whole arrangement, as one JSON column.
+    pub tree: WorkspaceNode,
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    #[serde(default)]
+    pub folder: Option<Uuid>,
+}
+
+/// One node of a workspace tree: either a division of the space, or panels in it.
+///
+/// Tagged by `type` so the TypeScript side discriminates on a field rather than on
+/// the shape of an object — the layout operations in the frontend are written against
+/// that tag, and a bare externally-tagged enum would make every one of them a
+/// two-key lookup.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type")]
+pub enum WorkspaceNode {
+    /// Space divided among children, each taking its share of `sizes`.
+    Split {
+        direction: SplitDirection,
+        /// One fraction per child, summing to 1.
+        sizes: Vec<f32>,
+        children: Vec<WorkspaceNode>,
+    },
+    /// Panels sharing one rectangle, one of them on top.
+    Tabs {
+        /// Panel ids, in tab order.
+        panels: Vec<String>,
+        /// Which of them is showing.
+        active: usize,
+    },
 }
 
 /// How this console reaches its group.
@@ -2785,6 +4296,25 @@ pub struct XchangeSettings {
     pub url: String,
 }
 
+/// A node's loudspeaker, as a member of a zone.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ZoneNode {
+    /// The node's serial: the key the device list and every MQTT topic use.
+    pub serial: String,
+    /// No longer read: whether a node stores a clip or has it streamed is the clip's
+    /// own [`AudioClip::stored`] (see [`clip_node_targets`]). Kept so a show written
+    /// while it was decided here still opens.
+    #[serde(default)]
+    pub mode: NodeAudioMode,
+    /// Which of the node's outputs each zone channel comes out of, counting from one:
+    /// a node is two channels in the routing matrix, the way a station's card is its
+    /// own count, so a stereo zone can be L on 1 and R on 2, or a mono zone only on the
+    /// node's left. Empty is a member from before there was a matrix, and is the whole
+    /// node — every zone channel on every output, which is what it meant.
+    #[serde(default)]
+    pub channels: Vec<Outputs>,
+}
+
 /// The map key for a parameter, in `home_values`, `sensed_values`, `live_fades` and
 /// `live_effects` alike.
 ///
@@ -2817,5 +4347,6 @@ pub fn parameter_key(kind: &ParameterKind) -> String {
         ParameterKind::AirQuality => "AirQuality".into(),
         ParameterKind::Text => "Text".into(),
         ParameterKind::Named(name) => format!("Named:{name}"),
+        ParameterKind::Cell { cell, of } => format!("{}@{cell}", parameter_key(of)),
     }
 }

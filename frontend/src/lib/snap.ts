@@ -3,12 +3,12 @@
  *
  * Two rules, and they are the whole of building a rig by hand.
  *
- * **A grid**, because a rig is set out in half-metres and an operator dragging a truss
- * means "six metres up", not 5.9847. Alt bypasses it for the one time in twenty when
+ * **A grid**, because a rig is set out in half-meters and an operator dragging a truss
+ * means "six meters up", not 5.9847. Alt bypasses it for the one time in twenty when
  * somebody means 1.37.
  *
  * **Connectors**, because a grid cannot say that a truss end bolts to a truss end. Each
- * catalogue piece declares where it joins its neighbours and what kind of joint that
+ * catalog piece declares where it joins its neighbors and what kind of joint that
  * is; like mates like and nothing else, so a deck edge never catches a truss however
  * close it is dragged. Mating puts the two points together and turns the moving piece
  * so the two faces are opposite — which is what a bolt does, and the reason the
@@ -18,7 +18,7 @@
  * Pure. Everything here takes world-space placements and answers world-space ones; the
  * panel is what turns a gizmo's drag into a `SceneObject.transform` through `localOf`.
  * `crates/pult-schema/tests/stock.rs` states the mating rule from the other side, over
- * the whole catalogue.
+ * the whole catalog.
  */
 
 import type { Connector, ConnectorKind, SceneObject, Transform, Vec3 } from './generated/index.js';
@@ -26,16 +26,16 @@ import { basisToEuler, eulerToBasis, IDENTITY } from './scene.js';
 import { piece } from './stock.js';
 
 /**
- * How close two joints have to be before they bolt together, in metres.
+ * How close two joints have to be before they bolt together, in meters.
  *
- * Three hundred millimetres, which is about a truss's own square: close enough that
+ * Three hundred millimeters, which is about a truss's own square: close enough that
  * nothing snaps by surprise across a stage, generous enough that a drag does not have
- * to be accurate to the centimetre. A joint that *has* snapped shows it by moving, so
+ * to be accurate to the centimeter. A joint that *has* snapped shows it by moving, so
  * there is no state to explain.
  */
 export const SNAP_RADIUS = 0.3;
 
-/** How close two joints have to be to count as already bolted, in metres. */
+/** How close two joints have to be to count as already bolted, in meters. */
 const MATED = 0.001;
 
 /** One connector, placed in the world. */
@@ -61,13 +61,13 @@ export function pointToGrid(point: Vec3, grid: number): Vec3 {
 /**
  * Every joint a piece has, where the piece actually is.
  *
- * An object with no catalogue id has none: a mesh out of a drawing says nothing about
+ * An object with no catalog id has none: a mesh out of a drawing says nothing about
  * where it bolts, and inventing joints for one would make a truss somebody measured
  * snap to a place nobody measured. That is a named limit rather than an oversight —
  * *connectors declared on imported meshes* is out of scope.
  */
 export function connectorsOf(object: SceneObject, world: Transform): PlacedConnector[] {
-	const entry = piece(object.catalogue);
+	const entry = piece(object.catalog);
 	if (!entry) return [];
 	return entry.connectors.map((connector, index) => ({
 		object: object.id,
@@ -179,10 +179,10 @@ export function mate(moving: Transform, mine: PlacedConnector, onto: PlacedConne
  * whichever face was pressed, which is what makes the run turn.
  */
 export function placedOnConnector(
-	catalogueId: string,
+	catalogId: string,
 	onto: PlacedConnector
 ): Transform | null {
-	const entry = piece(catalogueId);
+	const entry = piece(catalogId);
 	const mine = entry?.connectors.find((connector) => connector.kind === onto.kind);
 	if (!entry || !mine) return null;
 	// From its own frame at the origin, which is what a piece that does not exist yet
@@ -228,7 +228,7 @@ function turned(transform: Transform, direction: Vec3): Vec3 {
 		y: direction.y * Math.sign(transform.scale.y || 1),
 		z: direction.z * Math.sign(transform.scale.z || 1)
 	};
-	return normalise(rotate(basis, scaled));
+	return normalize(rotate(basis, scaled));
 }
 
 function rotate(basis: Basis, v: Vec3): Vec3 {
@@ -247,8 +247,8 @@ function multiply(a: Basis, b: Basis): Basis {
 
 /** The rotation matrix taking one unit vector to another, the short way round. */
 export function rotationTaking(from: Vec3, to: Vec3): Basis {
-	const a = normalise(from);
-	const b = normalise(to);
+	const a = normalize(from);
+	const b = normalize(to);
 	const along = Math.min(1, Math.max(-1, dot(a, b)));
 	if (along > 0.999999) return eulerToBasis({ x: 0, y: 0, z: 0 });
 	// Exactly opposite — a section going on the far end of a run, which is most of
@@ -262,7 +262,7 @@ export function rotationTaking(from: Vec3, to: Vec3): Basis {
 			? Math.abs(a.y) < 0.9
 				? { x: 0, y: 1, z: 0 }
 				: { x: 1, y: 0, z: 0 }
-			: normalise(cross(a, b));
+			: normalize(cross(a, b));
 	return axisAngle(axis, Math.acos(along));
 }
 
@@ -288,7 +288,7 @@ function dot(a: Vec3, b: Vec3): number {
 	return a.x * b.x + a.y * b.y + a.z * b.z;
 }
 
-function normalise(v: Vec3): Vec3 {
+function normalize(v: Vec3): Vec3 {
 	const length = Math.hypot(v.x, v.y, v.z);
 	return length < 1e-9 ? { x: 1, y: 0, z: 0 } : { x: v.x / length, y: v.y / length, z: v.z / length };
 }

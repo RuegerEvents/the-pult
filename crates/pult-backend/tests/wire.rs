@@ -247,3 +247,97 @@ async fn letting_go_stops_the_peer_drawing() {
         "and it is keeping nothing on the booth's behalf"
     );
 }
+
+// ── Forcing channels on a peer's wire ─────────────────────────────────────────
+
+/// Force channels on a peer's output the way `output.test` does: register the test
+/// here, then send the merged answer down the link.
+async fn force(
+    from: &Running,
+    on: &Running,
+    output: uuid::Uuid,
+    who: uuid::Uuid,
+    test: pult_schema::types::output::ChannelTest,
+) {
+    let merged = from.viewers.tests.set(on.node_id, output, who, test).expect("the test moved");
+    from.sync.test_peer_output(on.node_id, output, merged).await;
+}
+
+fn channel_10_at_full_on_universe_4() -> pult_schema::types::output::ChannelTest {
+    pult_schema::types::output::ChannelTest {
+        universes: vec![pult_schema::types::output::TestUniverse {
+            universe: 4,
+            solo: false,
+            levels: [(10u16, 255u8)].into_iter().collect(),
+        }],
+    }
+}
+
+/// Wait for the roof's wire to show `channel` (1-based) of universe 4 at `level`.
+async fn wire_shows(
+    rx: &mut tokio::sync::broadcast::Receiver<(pult_schema::path::Path, serde_json::Value)>,
+    roof: &Running,
+    channel: usize,
+    level: u8,
+    within: Duration,
+) -> bool {
+    let deadline = tokio::time::Instant::now() + within;
+    loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let Some(view) = seen(rx, roof, left).await else { return false };
+        let SectionBody::Universes(traffic) = &view.sections[0].body else { continue };
+        if let Some(focused) = &traffic.focused {
+            if focused.universe == 4 && focused.channels[channel - 1] == level {
+                return true;
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_console_forces_channels_on_a_peers_wire_and_sees_them_go_out() {
+    let roof = a_station().await;
+    let booth = a_station().await;
+    a_fixture(&roof).await;
+    let output = an_artnet_output(&roof).await;
+    join(&roof, &booth).await;
+
+    let alice = uuid::Uuid::new_v4();
+    let mut at_the_booth = booth.updates.0.subscribe();
+    watch(&booth, &roof, output, alice, Some("4")).await;
+    // Universe 4 has nothing patched on it: the first use of this is a line nobody
+    // has put a fixture on yet.
+    force(&booth, &roof, output, alice, channel_10_at_full_on_universe_4()).await;
+
+    assert!(
+        wire_shows(&mut at_the_booth, &roof, 10, 255, Duration::from_secs(5)).await,
+        "the roof put the forced byte on its own wire and told the booth what it sent"
+    );
+}
+
+#[tokio::test]
+async fn a_link_that_goes_takes_the_forcing_with_it() {
+    let roof = a_station().await;
+    let booth = a_station().await;
+    a_fixture(&roof).await;
+    let output = an_artnet_output(&roof).await;
+    join(&roof, &booth).await;
+
+    let alice = uuid::Uuid::new_v4();
+    let mut at_the_booth = booth.updates.0.subscribe();
+    watch(&booth, &roof, output, alice, Some("4")).await;
+    force(&booth, &roof, output, alice, channel_10_at_full_on_universe_4()).await;
+    assert!(wire_shows(&mut at_the_booth, &roof, 10, 255, Duration::from_secs(5)).await);
+    assert!(!roof.viewers.tests.of(roof.node_id).is_empty());
+
+    // The console goes away without letting go: the case this is for. A light left at
+    // full by a tablet that lost its signal is the failure worth a test.
+    booth.sync.disconnect_all().await;
+    for _ in 0..100 {
+        if roof.viewers.tests.of(roof.node_id).is_empty() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("the roof is still forcing channels for a console that is no longer connected");
+}

@@ -2,7 +2,7 @@
  * The console's palette, in one place.
  *
  * Every panel written before this one hard-codes the same dozen hex values, and they
- * had already begun to drift — three greys for the same border, two blues for the
+ * had already begun to drift — three grays for the same border, two blues for the
  * same accent. New components use these; the older ones are left alone rather than
  * churned, so a diff that says "the store menu" is about the store menu.
  */
@@ -40,7 +40,7 @@
 	 * what anybody who has stood behind a desk already reads without being told, and
 	 * a private palette would cost exactly that recognition for nothing. The
 	 * programmer's is `--live`, which is already the console's "this is reaching the
-	 * rig", so it is one colour and not two that have to be kept equal.
+	 * rig", so it is one color and not two that have to be kept equal.
 	 */
 	--src-programmer: var(--live);
 	--src-cue: #fff;
@@ -48,6 +48,20 @@
 	--src-effect: #e879f9;
 	--src-track: #4ade80;
 	--src-home: #6b7280;
+
+	/*
+	 * The six panel categories (`layout/categories.ts`). Chosen for a dark ground: each
+	 * reads at better than 7:1 against `--bg-chrome`, so the active tab's edge and the
+	 * picker's column headings are legible at 11px. Program is orange rather than the
+	 * console's amber, because amber already *means* something — a value the
+	 * programmer is holding — and a tab must not look like a live value.
+	 */
+	--cat-program: #fb923c;
+	--cat-playback: #34d399;
+	--cat-automation: #b9a6fc;
+	--cat-stage: #60a5fa;
+	--cat-system: #94a3b8;
+	--cat-setup: #f472b6;
 
 	--radius: 4px;
 	--font-md: 14px;

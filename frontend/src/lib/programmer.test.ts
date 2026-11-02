@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import type {
 	Cue,
@@ -5,6 +6,7 @@ import type {
 	Fixture,
 	FixtureType,
 	ParameterCapture,
+	ParameterKind,
 	ParameterValue,
 	Preset,
 	ProgrammerValue
@@ -14,18 +16,21 @@ import {
 	asFloat,
 	commonValue,
 	editableParameters,
+	rowTargets,
 	entriesFromCue,
 	entryId,
 	hexToRgb,
 	mergePresetValues,
 	nudge,
 	presetGroups,
+	presetIntoCue,
 	presetReach,
 	presetValues,
 	rgbToHex,
-	storeCaptures,
 	withFloat
 } from './programmer.js';
+import { parameterKey } from './patch.js';
+import type { Element } from './selection.js';
 import { readingOf } from './stores/output.js';
 import { aFixture, aFixtureType, aParameter } from './test-fixtures.js';
 
@@ -142,7 +147,7 @@ describe('reading a selection back', () => {
 		expect(commonValue(two, 'Intensity', showing)).toEqual({ value: level(0.5), mixed: false });
 	});
 
-	it('compares colours channel by channel', () => {
+	it('compares colors channel by channel', () => {
 		const red: ParameterValue = { type: 'Color', value: { r: 1, g: 0, b: 0, overrides: {} } };
 		const green: ParameterValue = { type: 'Color', value: { r: 0, g: 1, b: 0, overrides: {} } };
 		expect(
@@ -151,69 +156,6 @@ describe('reading a selection back', () => {
 		expect(
 			commonValue(two, 'ColorRgb', readingOf({ 'f/ColorRgb': red, 'g/ColorRgb': green })).mixed
 		).toBe(true);
-	});
-});
-
-describe('storing', () => {
-	const entry = (over: Partial<ProgrammerValue> = {}): ProgrammerValue => ({
-		id: 'e1',
-		fixture_id: 'f',
-		parameter_kind: 'Intensity',
-		value: { type: 'Float', value: 0.7 },
-		effect: null,
-		preset: null,
-		locked: false,
-		...over
-	});
-
-	const capture = (over: Partial<ParameterCapture> = {}): ParameterCapture => ({
-		fixture_id: 'f',
-		parameter_kind: 'Intensity',
-		value: { type: 'Float', value: 0.1 },
-		fade_in_ms: 0,
-		fade_out_ms: 0,
-		delay_in_ms: 0,
-		effect: null,
-		easing: 'Linear',
-		preset: null,
-		...over
-	});
-
-	it('merges over the same parameter and leaves the rest of the cue alone', () => {
-		const existing = [capture(), capture({ fixture_id: 'g' })];
-		const stored = storeCaptures(existing, [entry()], 'merge', new Set(['e1']));
-		expect(stored).toHaveLength(2);
-		expect(stored.find((c) => c.fixture_id === 'f')!.value).toEqual({ type: 'Float', value: 0.7 });
-		expect(stored.find((c) => c.fixture_id === 'g')!.value).toEqual({ type: 'Float', value: 0.1 });
-	});
-
-	it('keeps a capture for a different parameter of the same fixture', () => {
-		const existing = [capture({ parameter_kind: 'Pan' })];
-		const stored = storeCaptures(existing, [entry()], 'merge', new Set(['e1']));
-		expect(stored).toHaveLength(2);
-	});
-
-	it('replaces the cue with what is in the programmer', () => {
-		const existing = [capture({ fixture_id: 'g' })];
-		const stored = storeCaptures(existing, [entry()], 'replace', new Set(['e1']));
-		expect(stored).toHaveLength(1);
-		expect(stored[0].fixture_id).toBe('f');
-	});
-
-	it('stores only what was ticked', () => {
-		const entries = [entry(), entry({ id: 'e2', parameter_kind: 'Pan' })];
-		expect(storeCaptures([], entries, 'replace', new Set(['e2']))).toHaveLength(1);
-		expect(storeCaptures([], entries, 'replace', new Set())).toEqual([]);
-	});
-
-	it('leaves times at zero so the cue’s own timing is inherited', () => {
-		const [stored] = storeCaptures([], [entry()], 'replace', new Set(['e1']));
-		expect([stored.fade_in_ms, stored.fade_out_ms, stored.delay_in_ms]).toEqual([0, 0, 0]);
-	});
-
-	it('deselecting everything under merge leaves the cue exactly as it was', () => {
-		const existing = [capture()];
-		expect(storeCaptures(existing, [entry()], 'merge', new Set())).toEqual(existing);
 	});
 });
 
@@ -249,35 +191,11 @@ describe('loading a cue back into the programmer', () => {
 		expect(loaded.locked).toBe(false);
 	});
 
-	it('round-trips back into the same captures', () => {
-		const entries = entriesFromCue(cue);
-		// The cue's own captures go in, which is what `updateEdit` passes: the
-		// programmer holds values and no timing at all, so they are the only thing
-		// that knows what this capture's fade, delay and curve were.
-		const stored = storeCaptures(cue.captures, entries, 'replace', new Set(entries.map((e) => e.id)));
-		expect(stored).toEqual(cue.captures);
-	});
 
-	it('keeps timing an operator set, through a store that replaces the value', () => {
-		const timed: Cue = {
-			...cue,
-			captures: [{ ...cue.captures[0], fade_in_ms: 4_000, delay_in_ms: 250, easing: 'EaseOut' }]
-		};
-		const entries = entriesFromCue(timed);
-		const [stored] = storeCaptures(timed.captures, entries, 'replace', new Set(entries.map((e) => e.id)));
-		expect(stored.fade_in_ms).toBe(4_000);
-		expect(stored.delay_in_ms).toBe(250);
-		expect(stored.easing).toBe('EaseOut');
-	});
 
-	it('gives a parameter the cue never held no timing of its own', () => {
-		// Which the station reads as "the cue's", and the cue as "the show's". A zero
-		// here is not a snap and a null is not linear.
-		const entries = entriesFromCue(cue);
-		const [stored] = storeCaptures([], entries, 'replace', new Set(entries.map((e) => e.id)));
-		expect(stored.fade_in_ms).toBe(0);
-		expect(stored.easing).toBeNull();
-	});
+
+
+
 });
 
 describe('values', () => {
@@ -300,13 +218,13 @@ describe('values', () => {
 		expect(withFloat({ type: 'Float', value: 0 }, -1)).toEqual({ type: 'Float', value: 0 });
 	});
 
-	it('round-trips a colour through hex', () => {
+	it('round-trips a color through hex', () => {
 		expect(rgbToHex({ r: 1, g: 0, b: 0 })).toBe('#ff0000');
 		expect(hexToRgb('#ff0000')).toEqual({ r: 1, g: 0, b: 0 });
 		expect(hexToRgb('f00')).toEqual({ r: 1, g: 0, b: 0 });
 	});
 
-	it('refuses something that is not a colour', () => {
+	it('refuses something that is not a color', () => {
 		expect(hexToRgb('nonsense')).toBeNull();
 		expect(hexToRgb('#12345')).toBeNull();
 	});
@@ -340,6 +258,18 @@ describe('an effect through store and back', () => {
 		t0
 	});
 
+	const stored = (effect: EffectSpec | null): ParameterCapture => ({
+		fixture_id: 'f',
+		parameter_kind: 'Intensity',
+		value: { type: 'Float', value: 0 },
+		fade_in_ms: 0,
+		fade_out_ms: 0,
+		delay_in_ms: 0,
+		effect,
+		easing: null,
+		preset: null
+	});
+
 	const held: ProgrammerValue = {
 		id: 'e1',
 		fixture_id: 'f',
@@ -350,17 +280,9 @@ describe('an effect through store and back', () => {
 		locked: false
 	};
 
-	it('drops the anchor on the way in, because the cue supplies one', () => {
-		const [capture] = storeCaptures([], [held], 'replace', new Set(['e1']));
-
-		expect(capture.effect).not.toBeNull();
-		expect(capture.effect?.t0).toBeNull();
-		expect(capture.effect?.phase).toBe(0.25);
-		expect(capture.effect?.rate).toEqual({ Hz: 0.5 });
-	});
-
 	it('takes a fresh one on the way out, because the operator is holding it again', () => {
-		const [capture] = storeCaptures([], [held], 'replace', new Set(['e1']));
+		// As the station stores it (`infra/storing.rs`): the anchor dropped.
+		const capture = stored({ ...held.effect!, t0: null });
 		const before = Date.now();
 
 		const [restored] = entriesFromCue({
@@ -380,8 +302,7 @@ describe('an effect through store and back', () => {
 	});
 
 	it('leaves a plain value alone', () => {
-		const plain = { ...held, effect: null };
-		const [capture] = storeCaptures([], [plain], 'replace', new Set(['e1']));
+		const capture = stored(null);
 
 		expect(capture.effect).toBeNull();
 		expect(entriesFromCue({
@@ -403,6 +324,7 @@ describe('presets', () => {
 	const preset: Preset = {
 		id: 'p1',
 		name: 'Warm',
+		color: null,
 		values: [
 			{ fixture_id: 'f1', parameter_kind: 'Intensity', value: value(0.8) },
 			{ fixture_id: 'f1', parameter_kind: 'Pan', value: value(0.25) },
@@ -470,7 +392,7 @@ describe('presets', () => {
 	});
 
 	/** A preset that also holds a position should not lose it because somebody
-	 *  re-grabbed the colour. */
+	 *  re-grabbed the color. */
 	it('merges rather than replacing when it is updated', () => {
 		const merged = mergePresetValues(preset.values, [
 			{ fixture_id: 'f1', parameter_kind: 'Intensity', value: value(0.2) }
@@ -487,15 +409,146 @@ describe('presets', () => {
 		expect(presetGroups(preset)).toEqual(['Intensity', 'Position']);
 	});
 
-	it('carries the reference through a store and back', () => {
-		const held: ProgrammerValue[] = [
-			{ id: 'a', fixture_id: 'f1', parameter_kind: 'Intensity', value: value(0.8), effect: null, preset: 'p1', locked: false }
-		];
-		const [capture] = storeCaptures([], held, 'replace', new Set(['a']));
-		expect(capture.preset).toBe('p1');
-		expect(capture.value).toEqual(value(0.8));
-
+	// The way in is the station's (`infra/storing.rs`, which tests that it keeps the
+	// reference); the way back out is this page's.
+	it('carries the reference back out of a cue', () => {
+		const capture: ParameterCapture = {
+			fixture_id: 'f1',
+			parameter_kind: 'Intensity',
+			value: value(0.8),
+			preset: 'p1',
+			fade_in_ms: 0,
+			fade_out_ms: 0,
+			delay_in_ms: 0,
+			effect: null,
+			easing: null
+		};
 		const [back] = entriesFromCue({ id: 'c', name: 'x', number: 1, captures: [capture], follow_mode: 'Manual', fade_in_ms: 0, fade_out_ms: 0, easing: null, is_active: false });
 		expect(back.preset).toBe('p1');
 	});
 });
+
+describe('a preset dropped onto a cue', () => {
+	const v = (n: number): ParameterValue => ({ type: 'Float', value: n });
+	const preset: Preset = {
+		id: 'warm',
+		name: 'Warm',
+		color: null,
+		values: [
+			{ fixture_id: 'a', parameter_kind: 'Intensity', value: v(0.8) },
+			{ fixture_id: 'b', parameter_kind: 'Intensity', value: v(0.6) }
+		]
+	};
+	const capture = (fixture: string, kind: 'Intensity' | 'Pan', value: number, fade = 0) => ({
+		fixture_id: fixture,
+		parameter_kind: kind,
+		value: v(value),
+		preset: null,
+		fade_in_ms: fade,
+		fade_out_ms: 0,
+		delay_in_ms: 0,
+		effect: null,
+		easing: null
+	});
+
+	it('captures every value by reference, and keeps what the cue said about anything else', () => {
+		const out = presetIntoCue([capture('a', 'Pan', 0.5)], preset);
+		expect(out).toHaveLength(3);
+		expect(out.filter((c) => c.preset === 'warm')).toHaveLength(2);
+		expect(out.find((c) => c.parameter_kind === 'Pan')?.preset).toBeNull();
+	});
+
+	it('changes what a parameter says, not how it moves', () => {
+		const out = presetIntoCue([capture('a', 'Intensity', 0.1, 3000)], preset);
+		const a = out.find((c) => c.fixture_id === 'a')!;
+		expect(a.value).toEqual(v(0.8));
+		expect(a.fade_in_ms).toBe(3000);
+	});
+});
+
+describe('setting a parameter on cells', () => {
+	const color = { type: 'Color', value: { r: 0, g: 0, b: 0, overrides: {} } } as const;
+	const strip = aFixtureType({
+		id: 'strip',
+		cells: 3,
+		parameters: [aParameter({ kind: 'ColorRgb', default_value: color, per_cell: true })]
+	});
+	const bar = aFixtureType({
+		id: 'bar',
+		cells: 2,
+		parameters: [
+			aParameter({ kind: 'Intensity', default_value: { type: 'Float', value: 0 } }),
+			aParameter({ kind: 'ColorRgb', default_value: color, per_cell: true })
+		]
+	});
+	const par = aFixtureType({
+		id: 'par',
+		parameters: [aParameter({ kind: 'ColorRgb', default_value: color })]
+	});
+	const typeOf = (id: string) => ({ s: strip, b: bar, p: par })[id as 's' | 'b' | 'p'];
+	const keys = (t: { fixtureId: string; kind: Parameters<typeof parameterKey>[0] }[]) =>
+		t.map((x) => `${x.fixtureId}/${parameterKey(x.kind)}`);
+
+	it('lands on each selected cell, and on a par beside them as itself', () => {
+		const targets = rowTargets('ColorRgb', [
+			{ fixture: 's', cell: 2 },
+			{ fixture: 's', cell: 3 },
+			{ fixture: 'p', cell: null }
+		], typeOf);
+		expect(keys(targets)).toEqual(['s/ColorRgb@2', 's/ColorRgb@3', 'p/ColorRgb']);
+	});
+
+	it('sets a bar’s master once however many of its cells are selected', () => {
+		const targets = rowTargets('Intensity', [
+			{ fixture: 'b', cell: 1 },
+			{ fixture: 'b', cell: 2 }
+		], typeOf);
+		expect(keys(targets)).toEqual(['b/Intensity']);
+	});
+
+	it('takes a per-cell parameter on a strip selected whole as every cell', () => {
+		expect(keys(rowTargets('ColorRgb', [{ fixture: 's', cell: null }], typeOf))).toEqual([
+			's/ColorRgb@1',
+			's/ColorRgb@2',
+			's/ColorRgb@3'
+		]);
+	});
+});
+
+/**
+ * `testdata/cell-targets.json` is read here and by
+ * `crates/pult-schema/tests/cell_targets_corpus.rs`: the Programmer and the command
+ * line, which asks the station, have to put one value on the same keys.
+ */
+describe('the cell-targets corpus', () => {
+	type Spec = { cells: number; parameters: { kind: ParameterKind; perCell: boolean }[] };
+	const corpus = JSON.parse(
+		readFileSync(new URL('../../../testdata/cell-targets.json', import.meta.url), 'utf8')
+	) as {
+		types: Record<string, Spec>;
+		fixtures: Record<string, string>;
+		reaches?: Record<string, string[]>;
+		cases: { name: string; kind: ParameterKind; elements: Element[]; expected: string[] }[];
+	};
+	const types = Object.fromEntries(
+		Object.entries(corpus.types).map(([name, spec]) => [
+			name,
+			aFixtureType({
+				id: name,
+				cells: spec.cells,
+				parameters: spec.parameters.map((p) =>
+					aParameter({ kind: p.kind, default_value: { type: 'Float', value: 0 }, per_cell: p.perCell })
+				)
+			})
+		])
+	);
+	const typeOf = (id: string) => types[corpus.fixtures[id]];
+	for (const c of corpus.cases) {
+		it(c.name, () => {
+			const reaches = (id: string, key: string) => corpus.reaches?.[id]?.includes(key) ?? true;
+			const got = rowTargets(c.kind, c.elements, typeOf, reaches).map((t) => `${t.fixtureId}/${parameterKey(t.kind)}`);
+			expect(got).toEqual(c.expected);
+		});
+	}
+});
+

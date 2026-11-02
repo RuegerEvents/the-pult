@@ -24,6 +24,16 @@ use crate::schema::*;
 
 // ── What a command is given ──────────────────────────────────────────────────
 
+/// Arguments for `sequences.goBack`.
+///
+/// Every field is optional, so `&Default::default()` is a whole call.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SequenceGoBackArgs {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub at: Option<f64>,
+}
+
 /// Arguments for `sequences.goNext`.
 ///
 /// Every field is optional, so `&Default::default()` is a whole call.
@@ -75,10 +85,19 @@ pub struct TimelinePlayArgs {
 }
 
 /// Arguments for `timelines.record`.
+///
+/// Every field is optional, so `&Default::default()` is a whole call.
 #[derive(Debug, Clone, Default, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TimelineRecordArgs {
-    pub input_id: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_id: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub programmer: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub armed_by: Option<String>,
 }
 
 /// Arguments for `timelines.stop`.
@@ -89,6 +108,291 @@ pub struct TimelineRecordArgs {
 pub struct TimelineStopArgs {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub at: Option<f64>,
+}
+
+// ── control_bindings ────────────────────────────────────────────────────
+
+/// One control, bound.
+///
+/// The `control_bindings` collection.
+pub fn control_bindings() -> ControlBindingCollection {
+    ControlBindingCollection { at: Collection::at("control_bindings") }
+}
+
+/// The `control_bindings` collection, reached by [`control_bindings()`].
+pub struct ControlBindingCollection {
+    at: Collection,
+}
+
+impl ControlBindingCollection {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// Every row, in the show's own order.
+    pub fn get(&self) -> Result<Vec<ControlBinding>, String> {
+        self.at.get()
+    }
+
+    /// One row by its id.
+    pub fn by_id(&self, id: Uuid) -> ControlBindingEntity {
+        ControlBindingEntity { at: self.at.by_id(id) }
+    }
+
+    /// One row by position in the collection's order.
+    pub fn nth(&self, index: usize) -> ControlBindingEntity {
+        ControlBindingEntity { at: self.at.nth(index) }
+    }
+
+    /// Add a row. One gesture, so it is one Ctrl-Z for whoever asked.
+    pub fn create(&self, value: &ControlBinding) -> Result<(), String> {
+        self.at.create(value)
+    }
+
+    /// Be told when the collection itself changes — a create, a delete.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe()
+    }
+
+    /// Be told about anything at or under the collection, a level moving
+    /// included.
+    pub fn subscribe_deep(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// Put something back where it rests when nothing is driving it.
+    ///
+    /// `programmer_values`. `{ "fixtureId": <uuid> }` sends every output parameter of
+    /// that fixture home, and naming a `parameterKind` as well sends just the one. The
+    /// station resolves it against what it holds, so a plugin can ask for home without
+    /// being able to read the rig.
+    pub fn home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__home", args)
+    }
+
+    /// Make where a parameter rests be wherever it is now.
+    ///
+    /// `fixtures`, and the same arguments as [`Self::home`] backwards. Evaluated at
+    /// the instant it is asked, which is why it is a verb and not a write.
+    pub fn take_home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__set_home", args)
+    }
+
+    /// Save: a point to come back to.
+    ///
+    /// `versions`. `{ "name": "Act 1" }`, and a quick Save gives no name. A verb
+    /// rather than a create because two of the row's fields are the engine's own.
+    pub fn checkpoint(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__checkpoint", args)
+    }
+}
+
+/// One `control_bindings` row, reached by [`ControlBindingCollection::by_id`] or
+/// [`ControlBindingCollection::nth`].
+pub struct ControlBindingEntity {
+    at: Entity,
+}
+
+impl ControlBindingEntity {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// The whole row.
+    pub fn get(&self) -> Result<ControlBinding, String> {
+        self.at.get()
+    }
+
+    /// Replace the whole row.
+    pub fn set(&self, value: &ControlBinding) -> Result<(), String> {
+        self.at.set(value)
+    }
+
+    /// Delete the row.
+    pub fn delete(&self) -> Result<(), String> {
+        self.at.delete()
+    }
+
+    /// Be told when this row changes.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// PERSISTED.
+    pub fn id(&self) -> Field<Uuid> {
+        self.at.field("id")
+    }
+
+    /// Which kind of surface: [`COMMAND_WING`].
+    ///
+    /// PERSISTED.
+    pub fn surface(&self) -> Field<String> {
+        self.at.field("surface")
+    }
+
+    /// PERSISTED.
+    pub fn control(&self) -> Field<SurfaceControl> {
+        self.at.field("control")
+    }
+
+    /// PERSISTED.
+    pub fn action(&self) -> Field<BindingAction> {
+        self.at.field("action")
+    }
+
+    /// What the panel calls it. Empty means the name of what it is bound to.
+    ///
+    /// PERSISTED.
+    pub fn label(&self) -> Field<String> {
+        self.at.field("label")
+    }
+
+    /// The page it acts on, from 1. `None` is page 1, which is where every binding made
+    /// before there were pages is: optional because a required column added to a show
+    /// that has rows is a column nothing filled, and such a show refuses to open.
+    ///
+    /// PERSISTED.
+    pub fn page(&self) -> Field<Option<u32>> {
+        self.at.field("page")
+    }
+}
+
+// ── control_pages ───────────────────────────────────────────────────────
+
+/// A page of bindings, named. A page with bindings and no row is just its number, so
+/// only a page somebody has named has one.
+///
+/// The `control_pages` collection.
+pub fn control_pages() -> ControlPageCollection {
+    ControlPageCollection { at: Collection::at("control_pages") }
+}
+
+/// The `control_pages` collection, reached by [`control_pages()`].
+pub struct ControlPageCollection {
+    at: Collection,
+}
+
+impl ControlPageCollection {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// Every row, in the show's own order.
+    pub fn get(&self) -> Result<Vec<ControlPage>, String> {
+        self.at.get()
+    }
+
+    /// One row by its id.
+    pub fn by_id(&self, id: Uuid) -> ControlPageEntity {
+        ControlPageEntity { at: self.at.by_id(id) }
+    }
+
+    /// One row by position in the collection's order.
+    pub fn nth(&self, index: usize) -> ControlPageEntity {
+        ControlPageEntity { at: self.at.nth(index) }
+    }
+
+    /// Add a row. One gesture, so it is one Ctrl-Z for whoever asked.
+    pub fn create(&self, value: &ControlPage) -> Result<(), String> {
+        self.at.create(value)
+    }
+
+    /// Be told when the collection itself changes — a create, a delete.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe()
+    }
+
+    /// Be told about anything at or under the collection, a level moving
+    /// included.
+    pub fn subscribe_deep(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// Put something back where it rests when nothing is driving it.
+    ///
+    /// `programmer_values`. `{ "fixtureId": <uuid> }` sends every output parameter of
+    /// that fixture home, and naming a `parameterKind` as well sends just the one. The
+    /// station resolves it against what it holds, so a plugin can ask for home without
+    /// being able to read the rig.
+    pub fn home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__home", args)
+    }
+
+    /// Make where a parameter rests be wherever it is now.
+    ///
+    /// `fixtures`, and the same arguments as [`Self::home`] backwards. Evaluated at
+    /// the instant it is asked, which is why it is a verb and not a write.
+    pub fn take_home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__set_home", args)
+    }
+
+    /// Save: a point to come back to.
+    ///
+    /// `versions`. `{ "name": "Act 1" }`, and a quick Save gives no name. A verb
+    /// rather than a create because two of the row's fields are the engine's own.
+    pub fn checkpoint(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__checkpoint", args)
+    }
+}
+
+/// One `control_pages` row, reached by [`ControlPageCollection::by_id`] or
+/// [`ControlPageCollection::nth`].
+pub struct ControlPageEntity {
+    at: Entity,
+}
+
+impl ControlPageEntity {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// The whole row.
+    pub fn get(&self) -> Result<ControlPage, String> {
+        self.at.get()
+    }
+
+    /// Replace the whole row.
+    pub fn set(&self, value: &ControlPage) -> Result<(), String> {
+        self.at.set(value)
+    }
+
+    /// Delete the row.
+    pub fn delete(&self) -> Result<(), String> {
+        self.at.delete()
+    }
+
+    /// Be told when this row changes.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// PERSISTED.
+    pub fn id(&self) -> Field<Uuid> {
+        self.at.field("id")
+    }
+
+    /// Which kind of surface: [`COMMAND_WING`].
+    ///
+    /// PERSISTED.
+    pub fn surface(&self) -> Field<String> {
+        self.at.field("surface")
+    }
+
+    /// The page, from 1.
+    ///
+    /// PERSISTED.
+    pub fn number(&self) -> Field<u32> {
+        self.at.field("number")
+    }
+
+    /// PERSISTED.
+    pub fn name(&self) -> Field<String> {
+        self.at.field("name")
+    }
 }
 
 // ── cues ────────────────────────────────────────────────────────────────
@@ -228,15 +532,17 @@ impl CueEntity {
         self.at.field("follow_mode")
     }
 
-    /// What every capture of this cue takes on the way up, unless it says its own.
+    /// How long this cue takes to come in: every capture it takes, up or down, unless
+    /// the capture says its own.
     ///
     /// PERSISTED.
     pub fn fade_in_ms(&self) -> Field<u32> {
         self.at.field("fade_in_ms")
     }
 
-    /// And on the way down. Zero is not "snap": it means this cue does not split its
-    /// fade, and everything takes the in time in both directions.
+    /// How long what it set takes to go when it ends: going back past it lets go of
+    /// what only it and later cues set, and Off lets go of everything. Zero is the
+    /// show's *letting go* time (`Show::home_fade_ms`).
     ///
     /// PERSISTED.
     pub fn fade_out_ms(&self) -> Field<u32> {
@@ -263,6 +569,148 @@ impl CueEntity {
     /// SYNCED.
     pub fn is_active(&self) -> Field<bool> {
         self.at.field("is_active")
+    }
+}
+
+// ── effect_templates ────────────────────────────────────────────────────
+
+/// A named effect in the pool.
+///
+/// The `effect_templates` collection.
+pub fn effect_templates() -> EffectTemplateCollection {
+    EffectTemplateCollection { at: Collection::at("effect_templates") }
+}
+
+/// The `effect_templates` collection, reached by [`effect_templates()`].
+pub struct EffectTemplateCollection {
+    at: Collection,
+}
+
+impl EffectTemplateCollection {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// Every row, in the show's own order.
+    pub fn get(&self) -> Result<Vec<EffectTemplate>, String> {
+        self.at.get()
+    }
+
+    /// One row by its id.
+    pub fn by_id(&self, id: Uuid) -> EffectTemplateEntity {
+        EffectTemplateEntity { at: self.at.by_id(id) }
+    }
+
+    /// One row by position in the collection's order.
+    pub fn nth(&self, index: usize) -> EffectTemplateEntity {
+        EffectTemplateEntity { at: self.at.nth(index) }
+    }
+
+    /// Add a row. One gesture, so it is one Ctrl-Z for whoever asked.
+    pub fn create(&self, value: &EffectTemplate) -> Result<(), String> {
+        self.at.create(value)
+    }
+
+    /// Be told when the collection itself changes — a create, a delete.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe()
+    }
+
+    /// Be told about anything at or under the collection, a level moving
+    /// included.
+    pub fn subscribe_deep(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// Put something back where it rests when nothing is driving it.
+    ///
+    /// `programmer_values`. `{ "fixtureId": <uuid> }` sends every output parameter of
+    /// that fixture home, and naming a `parameterKind` as well sends just the one. The
+    /// station resolves it against what it holds, so a plugin can ask for home without
+    /// being able to read the rig.
+    pub fn home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__home", args)
+    }
+
+    /// Make where a parameter rests be wherever it is now.
+    ///
+    /// `fixtures`, and the same arguments as [`Self::home`] backwards. Evaluated at
+    /// the instant it is asked, which is why it is a verb and not a write.
+    pub fn take_home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__set_home", args)
+    }
+
+    /// Save: a point to come back to.
+    ///
+    /// `versions`. `{ "name": "Act 1" }`, and a quick Save gives no name. A verb
+    /// rather than a create because two of the row's fields are the engine's own.
+    pub fn checkpoint(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__checkpoint", args)
+    }
+}
+
+/// One `effect_templates` row, reached by [`EffectTemplateCollection::by_id`] or
+/// [`EffectTemplateCollection::nth`].
+pub struct EffectTemplateEntity {
+    at: Entity,
+}
+
+impl EffectTemplateEntity {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// The whole row.
+    pub fn get(&self) -> Result<EffectTemplate, String> {
+        self.at.get()
+    }
+
+    /// Replace the whole row.
+    pub fn set(&self, value: &EffectTemplate) -> Result<(), String> {
+        self.at.set(value)
+    }
+
+    /// Delete the row.
+    pub fn delete(&self) -> Result<(), String> {
+        self.at.delete()
+    }
+
+    /// Be told when this row changes.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// PERSISTED.
+    pub fn id(&self) -> Field<Uuid> {
+        self.at.field("id")
+    }
+
+    /// PERSISTED.
+    pub fn name(&self) -> Field<String> {
+        self.at.field("name")
+    }
+
+    /// PERSISTED.
+    pub fn layers(&self) -> Field<Vec<EffectLayer>> {
+        self.at.field("layers")
+    }
+
+    /// The card's color, as `#rrggbb`, or `None` for its panel category's color.
+    /// What an operator paints a pool object to find it again; it means nothing to
+    /// the rig.
+    ///
+    /// PERSISTED.
+    pub fn color(&self) -> Field<Option<String>> {
+        self.at.field("color")
+    }
+
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    ///
+    /// PERSISTED.
+    pub fn folder(&self) -> Field<Option<Uuid>> {
+        self.at.field("folder")
     }
 }
 
@@ -426,7 +874,7 @@ impl FixtureEntity {
     /// resolved against the parent piece's chords, and for an imported truss those
     /// come off the mesh's own bounds — which the station never loads, because only
     /// `frontend/src/lib/geometry.ts` measures a mesh. So the *browser* is the writer
-    /// for every parent, whether the piece came out of the catalogue or out of a
+    /// for every parent, whether the piece came out of the catalog or out of a
     /// drawing, and what keeps its arithmetic equal to
     /// [`crate::types::mount::Mount::transform`]'s is `testdata/mounts.json`.
     ///
@@ -500,6 +948,20 @@ impl FixtureEntity {
         self.at.field("sensed_values")
     }
 
+    /// When each of `sensed_values` last *changed*, in console milliseconds, keyed the
+    /// same way.
+    ///
+    /// Stamped by the station that heard the device, and only on a change: a node
+    /// repeating the value it already reported moves nothing. What makes "somebody
+    /// was here thirty seconds ago" a reading every page agrees on — a page that only
+    /// noted when *it* saw a change would show nothing until the next one, and two
+    /// phones would disagree. A layout's decay reads it; see [`crate::types::layout`].
+    ///
+    /// SYNCED.
+    pub fn sensed_at(&self) -> Field<HashMap<String, u64>> {
+        self.at.field("sensed_at")
+    }
+
     /// What shape is driving each of this fixture's parameters, keyed by parameter
     /// key.
     ///
@@ -537,6 +999,16 @@ impl FixtureEntity {
         self.at.field("live_fades")
     }
 
+    /// What other sequences are playing on an intensity beside the one in
+    /// `live_effects` or `live_fades`, under an HTP merge, keyed by parameter key. The
+    /// parameter shows the highest of them all; see `sequence::Merge`. Empty on almost
+    /// every fixture, and LOCAL and defaulted for the reasons the two above are.
+    ///
+    /// LOCAL.
+    pub fn live_htp(&self) -> Field<HashMap<String, Vec<serde_json::Value>>> {
+        self.at.field("live_htp")
+    }
+
     /// What this fixture's parameters rest at when nothing is driving them, keyed by
     /// parameter key. Empty on nearly every fixture, and then the answer is
     /// whatever its type declares.
@@ -550,6 +1022,36 @@ impl FixtureEntity {
     /// PERSISTED.
     pub fn home_values(&self) -> Field<HashMap<String, ParameterValue>> {
         self.at.field("home_values")
+    }
+
+    /// What somebody called this fixture's parameters, keyed by parameter key: "Ausgang
+    /// PIR" for `Contact:4`. Absent is a parameter called what its type calls it.
+    ///
+    /// A label and never a kind. `Named:<name>` is a parameter's *identity*, and every
+    /// cue, flow and binding holds it; this is only what an operator reads. On an
+    /// OpenHaunt node's fixtures the node keeps them too, as port labels, and the station
+    /// keeps the two the same — see [`Fixture::agreed_names`].
+    ///
+    /// `Option` only for the showfile: a non-`Option` field is a column every existing
+    /// row holds NULL in, and that is a generation bump and an upgrade for every show. A
+    /// show that never named anything reads `None`, which means the same as empty.
+    ///
+    /// PERSISTED.
+    pub fn parameter_labels(&self) -> Field<Option<BTreeMap<String, String>>> {
+        self.at.field("parameter_labels")
+    }
+
+    /// The names this fixture and its OpenHaunt node last agreed on: the name or head
+    /// label, and the parameter labels. None on anything that is not a node's, and on a
+    /// node's until the two have first agreed.
+    ///
+    /// What tells a change apart from a disagreement. A name that differs from the
+    /// node's, where the node still says what was agreed, was changed *here* — while it
+    /// was off, or by an undo — and is passed on. One where the node moved is asked about.
+    ///
+    /// PERSISTED.
+    pub fn agreed_names(&self) -> Field<Option<AgreedNames>> {
+        self.at.field("agreed_names")
     }
 }
 
@@ -779,6 +1281,16 @@ impl FixtureTypeEntity {
     pub fn thumbnail(&self) -> Field<Option<String>> {
         self.at.field("thumbnail")
     }
+
+    /// How many cells one of these has: the pixels of a strip, the segments of a bar.
+    /// 0 is a fixture with none, which is almost every fixture. A parameter marked
+    /// [`ParameterDefinition::per_cell`] exists once per cell, as
+    /// [`ParameterKind::Cell`]; the rest exist once.
+    ///
+    /// PERSISTED.
+    pub fn cells(&self) -> Field<u16> {
+        self.at.field("cells")
+    }
 }
 
 // ── flows ───────────────────────────────────────────────────────────────
@@ -904,6 +1416,13 @@ impl FlowEntity {
     /// PERSISTED.
     pub fn enabled(&self) -> Field<bool> {
         self.at.field("enabled")
+    }
+
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    ///
+    /// PERSISTED.
+    pub fn folder(&self) -> Field<Option<Uuid>> {
+        self.at.field("folder")
     }
 }
 
@@ -1181,6 +1700,15 @@ impl FlowNodeEntity {
         self.at.field("kind")
     }
 
+    /// What an operator calls it — "Exit PIR (stand-in)" — or `None` for what its kind
+    /// is called. Shown as its title, and where a button is pressed from elsewhere (a
+    /// surface tile, the palette), as the button's name.
+    ///
+    /// PERSISTED.
+    pub fn name(&self) -> Field<Option<String>> {
+        self.at.field("name")
+    }
+
     /// Where the node sits on the canvas. Not a rig position — this is the drawing.
     ///
     /// PERSISTED.
@@ -1193,7 +1721,8 @@ impl FlowNodeEntity {
         self.at.field("y")
     }
 
-    /// Lit right now: a level that is true, or a pulse that just passed through.
+    /// Lit right now: a level that is true, or a delay counting down — a state that
+    /// lasts. A pulse is not one: it is [`FlowNode::pulsed_at`].
     ///
     /// SYNCED rather than LOCAL so every console watching the same flow sees the
     /// same thing light up. Without it a graph is a diagram; with it, it is an
@@ -1204,9 +1733,41 @@ impl FlowNodeEntity {
         self.at.field("active")
     }
 
+    /// A button's press, and an action's last firing. The engine reads a button's to
+    /// see it pressed, so nothing but a press writes it there.
+    ///
     /// SYNCED.
     pub fn last_fired_at(&self) -> Field<Option<Timestamp>> {
         self.at.field("last_fired_at")
+    }
+
+    /// When a pulse last went through it, console ms: what makes a node flash once
+    /// in the editor. A pulse used to light `active` until the next pass, which
+    /// came with the next input and could be minutes later.
+    ///
+    /// SYNCED.
+    pub fn pulsed_at(&self) -> Field<Option<u64>> {
+        self.at.field("pulsed_at")
+    }
+
+    /// For a delay that is counting, the console ms it comes due; `None` while it is
+    /// not. What lets a page draw the time left and a bar running down: the deadline
+    /// itself lives in the leader's flow engine, which no page can see. Written by the
+    /// leader on every start, restart and reset, never per frame.
+    ///
+    /// SYNCED.
+    pub fn due_at(&self) -> Field<Option<u64>> {
+        self.at.field("due_at")
+    }
+
+    /// Switched off: a pulse reaching it stops there, and nothing fires. For an action
+    /// that would be a nuisance while the rest of a maze is being tried — the fog, the
+    /// air cannon — without unwiring it and losing where it went. `None` is on, so a
+    /// show from before this field opens with every node doing what it did.
+    ///
+    /// PERSISTED.
+    pub fn disabled(&self) -> Field<Option<bool>> {
+        self.at.field("disabled")
     }
 
     /// Press a button node.
@@ -1220,6 +1781,141 @@ impl FlowNodeEntity {
     /// replicates like any other write.
     pub fn press(&self) -> Result<(), String> {
         self.at.command("press", &serde_json::json!({}))
+    }
+}
+
+// ── folders ─────────────────────────────────────────────────────────────
+
+/// One folder in one pool.
+///
+/// The `folders` collection.
+pub fn folders() -> FolderCollection {
+    FolderCollection { at: Collection::at("folders") }
+}
+
+/// The `folders` collection, reached by [`folders()`].
+pub struct FolderCollection {
+    at: Collection,
+}
+
+impl FolderCollection {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// Every row, in the show's own order.
+    pub fn get(&self) -> Result<Vec<Folder>, String> {
+        self.at.get()
+    }
+
+    /// One row by its id.
+    pub fn by_id(&self, id: Uuid) -> FolderEntity {
+        FolderEntity { at: self.at.by_id(id) }
+    }
+
+    /// One row by position in the collection's order.
+    pub fn nth(&self, index: usize) -> FolderEntity {
+        FolderEntity { at: self.at.nth(index) }
+    }
+
+    /// Add a row. One gesture, so it is one Ctrl-Z for whoever asked.
+    pub fn create(&self, value: &Folder) -> Result<(), String> {
+        self.at.create(value)
+    }
+
+    /// Be told when the collection itself changes — a create, a delete.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe()
+    }
+
+    /// Be told about anything at or under the collection, a level moving
+    /// included.
+    pub fn subscribe_deep(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// Put something back where it rests when nothing is driving it.
+    ///
+    /// `programmer_values`. `{ "fixtureId": <uuid> }` sends every output parameter of
+    /// that fixture home, and naming a `parameterKind` as well sends just the one. The
+    /// station resolves it against what it holds, so a plugin can ask for home without
+    /// being able to read the rig.
+    pub fn home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__home", args)
+    }
+
+    /// Make where a parameter rests be wherever it is now.
+    ///
+    /// `fixtures`, and the same arguments as [`Self::home`] backwards. Evaluated at
+    /// the instant it is asked, which is why it is a verb and not a write.
+    pub fn take_home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__set_home", args)
+    }
+
+    /// Save: a point to come back to.
+    ///
+    /// `versions`. `{ "name": "Act 1" }`, and a quick Save gives no name. A verb
+    /// rather than a create because two of the row's fields are the engine's own.
+    pub fn checkpoint(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__checkpoint", args)
+    }
+}
+
+/// One `folders` row, reached by [`FolderCollection::by_id`] or
+/// [`FolderCollection::nth`].
+pub struct FolderEntity {
+    at: Entity,
+}
+
+impl FolderEntity {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// The whole row.
+    pub fn get(&self) -> Result<Folder, String> {
+        self.at.get()
+    }
+
+    /// Replace the whole row.
+    pub fn set(&self, value: &Folder) -> Result<(), String> {
+        self.at.set(value)
+    }
+
+    /// Delete the row.
+    pub fn delete(&self) -> Result<(), String> {
+        self.at.delete()
+    }
+
+    /// Be told when this row changes.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// PERSISTED.
+    pub fn id(&self) -> Field<Uuid> {
+        self.at.field("id")
+    }
+
+    /// PERSISTED.
+    pub fn name(&self) -> Field<String> {
+        self.at.field("name")
+    }
+
+    /// The folder this one is in, or `None` at the top of its pool.
+    ///
+    /// PERSISTED.
+    pub fn parent(&self) -> Field<Option<Uuid>> {
+        self.at.field("parent")
+    }
+
+    /// Which kind of object it holds, by the pools' name for the kind.
+    ///
+    /// PERSISTED.
+    pub fn kind(&self) -> Field<String> {
+        self.at.field("kind")
     }
 }
 
@@ -1349,6 +2045,22 @@ impl GroupEntity {
     /// PERSISTED.
     pub fn query(&self) -> Field<SelectionQuery> {
         self.at.field("query")
+    }
+
+    /// The card's color, as `#rrggbb`, or `None` for its panel category's color.
+    /// What an operator paints a pool object to find it again; it means nothing to
+    /// the rig.
+    ///
+    /// PERSISTED.
+    pub fn color(&self) -> Field<Option<String>> {
+        self.at.field("color")
+    }
+
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    ///
+    /// PERSISTED.
+    pub fn folder(&self) -> Field<Option<Uuid>> {
+        self.at.field("folder")
     }
 }
 
@@ -1508,6 +2220,17 @@ impl InputConfigEntity {
     pub fn enabled(&self) -> Field<bool> {
         self.at.field("enabled")
     }
+
+    /// The port to listen on, where it is not the one the protocol names (5568 for
+    /// sACN, 6454 for Art-Net). `None` is the protocol's own, which is what a real rig
+    /// wants. A port of its own is for two stations sharing one machine, where the
+    /// protocol's port is shared too and a unicast packet reaches only one of them,
+    /// and for a test that must not hear whatever else on the machine is speaking.
+    ///
+    /// PERSISTED.
+    pub fn port(&self) -> Field<Option<u16>> {
+        self.at.field("port")
+    }
 }
 
 // ── layers ──────────────────────────────────────────────────────────────
@@ -1653,7 +2376,7 @@ impl LayerEntity {
 
 // ── layouts ─────────────────────────────────────────────────────────────
 
-/// One saved arrangement of the workspace.
+/// One drawing.
 ///
 /// The `layouts` collection.
 pub fn layouts() -> LayoutCollection {
@@ -1771,11 +2494,69 @@ impl LayoutEntity {
         self.at.field("name")
     }
 
-    /// The whole arrangement, as one JSON column.
+    /// The canvas, in its own units. The drawing keeps this aspect on any screen.
     ///
     /// PERSISTED.
-    pub fn tree(&self) -> Field<LayoutNode> {
-        self.at.field("tree")
+    pub fn width(&self) -> Field<f32> {
+        self.at.field("width")
+    }
+
+    /// PERSISTED.
+    pub fn height(&self) -> Field<f32> {
+        self.at.field("height")
+    }
+
+    /// What a dragged element snaps to, in canvas units. Zero is no snapping.
+    ///
+    /// PERSISTED.
+    pub fn grid(&self) -> Field<f32> {
+        self.at.field("grid")
+    }
+
+    /// A drawing somebody was handed, stretched over the canvas: the asset's sha256.
+    ///
+    /// PERSISTED.
+    pub fn backdrop(&self) -> Field<Option<String>> {
+        self.at.field("backdrop")
+    }
+
+    /// The layout's answer to how a reading decays; an element may say otherwise.
+    ///
+    /// PERSISTED.
+    pub fn decay(&self) -> Field<Decay> {
+        self.at.field("decay")
+    }
+
+    /// The elements, back to front, as one JSON column.
+    ///
+    /// PERSISTED.
+    pub fn elements(&self) -> Field<Vec<LayoutElement>> {
+        self.at.field("elements")
+    }
+
+    /// The card's color, as `#rrggbb`, or `None` for its panel category's color.
+    ///
+    /// PERSISTED.
+    pub fn color(&self) -> Field<Option<String>> {
+        self.at.field("color")
+    }
+
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    ///
+    /// PERSISTED.
+    pub fn folder(&self) -> Field<Option<Uuid>> {
+        self.at.field("folder")
+    }
+
+    /// The key an operating link carries (`/layout/<id>?key=<k>`), or `None` while
+    /// there is none and every shared page only looks — which is what every layout
+    /// made before this was. Made fresh each time operating is allowed, so allowing it
+    /// again revokes the links handed out before. Not a password: anybody on the
+    /// network can open the desk itself. It keeps the read-only link read-only.
+    ///
+    /// PERSISTED.
+    pub fn operate_key(&self) -> Field<Option<String>> {
+        self.at.field("operate_key")
     }
 }
 
@@ -1920,6 +2701,292 @@ impl NamedAssetEntity {
     /// PERSISTED.
     pub fn mime(&self) -> Field<String> {
         self.at.field("mime")
+    }
+}
+
+// ── node_health ─────────────────────────────────────────────────────────
+
+/// What the station driving the nodes knows about every adopted node's health: the
+/// SYNCED `node_health` collection, one row per station, the shape `node_reports` has
+/// and for its reason — only that station is asking the nodes.
+///
+/// The `node_health` collection.
+pub fn node_health() -> NodeHealthReportCollection {
+    NodeHealthReportCollection { at: Collection::at("node_health") }
+}
+
+/// The `node_health` collection, reached by [`node_health()`].
+pub struct NodeHealthReportCollection {
+    at: Collection,
+}
+
+impl NodeHealthReportCollection {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// Every row, in the show's own order.
+    pub fn get(&self) -> Result<Vec<NodeHealthReport>, String> {
+        self.at.get()
+    }
+
+    /// One row by its id.
+    pub fn by_id(&self, id: Uuid) -> NodeHealthReportEntity {
+        NodeHealthReportEntity { at: self.at.by_id(id) }
+    }
+
+    /// One row by position in the collection's order.
+    pub fn nth(&self, index: usize) -> NodeHealthReportEntity {
+        NodeHealthReportEntity { at: self.at.nth(index) }
+    }
+
+    /// Add a row. One gesture, so it is one Ctrl-Z for whoever asked.
+    pub fn create(&self, value: &NodeHealthReport) -> Result<(), String> {
+        self.at.create(value)
+    }
+
+    /// Be told when the collection itself changes — a create, a delete.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe()
+    }
+
+    /// Be told about anything at or under the collection, a level moving
+    /// included.
+    pub fn subscribe_deep(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// Put something back where it rests when nothing is driving it.
+    ///
+    /// `programmer_values`. `{ "fixtureId": <uuid> }` sends every output parameter of
+    /// that fixture home, and naming a `parameterKind` as well sends just the one. The
+    /// station resolves it against what it holds, so a plugin can ask for home without
+    /// being able to read the rig.
+    pub fn home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__home", args)
+    }
+
+    /// Make where a parameter rests be wherever it is now.
+    ///
+    /// `fixtures`, and the same arguments as [`Self::home`] backwards. Evaluated at
+    /// the instant it is asked, which is why it is a verb and not a write.
+    pub fn take_home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__set_home", args)
+    }
+
+    /// Save: a point to come back to.
+    ///
+    /// `versions`. `{ "name": "Act 1" }`, and a quick Save gives no name. A verb
+    /// rather than a create because two of the row's fields are the engine's own.
+    pub fn checkpoint(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__checkpoint", args)
+    }
+}
+
+/// One `node_health` row, reached by [`NodeHealthReportCollection::by_id`] or
+/// [`NodeHealthReportCollection::nth`].
+pub struct NodeHealthReportEntity {
+    at: Entity,
+}
+
+impl NodeHealthReportEntity {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// The whole row.
+    pub fn get(&self) -> Result<NodeHealthReport, String> {
+        self.at.get()
+    }
+
+    /// Replace the whole row.
+    pub fn set(&self, value: &NodeHealthReport) -> Result<(), String> {
+        self.at.set(value)
+    }
+
+    /// Delete the row.
+    pub fn delete(&self) -> Result<(), String> {
+        self.at.delete()
+    }
+
+    /// Be told when this row changes.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// The station's `NodeId`.
+    ///
+    /// SYNCED.
+    pub fn id(&self) -> Field<Uuid> {
+        self.at.field("id")
+    }
+
+    /// This station is the one driving the nodes. A row with this false says nothing.
+    ///
+    /// SYNCED.
+    pub fn driving(&self) -> Field<bool> {
+        self.at.field("driving")
+    }
+
+    /// Every adopted node, by serial.
+    ///
+    /// SYNCED.
+    pub fn nodes(&self) -> Field<BTreeMap<String, NodeVitals>> {
+        self.at.field("nodes")
+    }
+}
+
+// ── node_reports ────────────────────────────────────────────────────────
+
+/// What a station knows about the nodes' sound: the SYNCED `node_reports` collection,
+/// keyed by the station's `NodeId`, one row per station.
+///
+/// **Only the station driving the nodes can say**: it holds the broker, it hears each
+/// node's `audio/status`, it uploads the clips and streams. A station that is not
+/// driving them has its own mDNS browse and nothing else, so its own view said a node
+/// was offline, or not there at all, while the leader was playing through it (found at
+/// the gig, 2026-10-25). So the driving station publishes what it knows here, and every
+/// other station and page reads the driving row instead of guessing. Rewritten only
+/// when something in it moved, like `station_audio`: the per-second parts of a node's
+/// status are left out on purpose ([`NodeAudioSummary`]).
+///
+/// A row is read only while its station still has a `stations` row, so a driver that
+/// died mid-show stops being believed when its station row is pruned.
+///
+/// The `node_reports` collection.
+pub fn node_reports() -> NodeReportCollection {
+    NodeReportCollection { at: Collection::at("node_reports") }
+}
+
+/// The `node_reports` collection, reached by [`node_reports()`].
+pub struct NodeReportCollection {
+    at: Collection,
+}
+
+impl NodeReportCollection {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// Every row, in the show's own order.
+    pub fn get(&self) -> Result<Vec<NodeReport>, String> {
+        self.at.get()
+    }
+
+    /// One row by its id.
+    pub fn by_id(&self, id: Uuid) -> NodeReportEntity {
+        NodeReportEntity { at: self.at.by_id(id) }
+    }
+
+    /// One row by position in the collection's order.
+    pub fn nth(&self, index: usize) -> NodeReportEntity {
+        NodeReportEntity { at: self.at.nth(index) }
+    }
+
+    /// Add a row. One gesture, so it is one Ctrl-Z for whoever asked.
+    pub fn create(&self, value: &NodeReport) -> Result<(), String> {
+        self.at.create(value)
+    }
+
+    /// Be told when the collection itself changes — a create, a delete.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe()
+    }
+
+    /// Be told about anything at or under the collection, a level moving
+    /// included.
+    pub fn subscribe_deep(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// Put something back where it rests when nothing is driving it.
+    ///
+    /// `programmer_values`. `{ "fixtureId": <uuid> }` sends every output parameter of
+    /// that fixture home, and naming a `parameterKind` as well sends just the one. The
+    /// station resolves it against what it holds, so a plugin can ask for home without
+    /// being able to read the rig.
+    pub fn home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__home", args)
+    }
+
+    /// Make where a parameter rests be wherever it is now.
+    ///
+    /// `fixtures`, and the same arguments as [`Self::home`] backwards. Evaluated at
+    /// the instant it is asked, which is why it is a verb and not a write.
+    pub fn take_home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__set_home", args)
+    }
+
+    /// Save: a point to come back to.
+    ///
+    /// `versions`. `{ "name": "Act 1" }`, and a quick Save gives no name. A verb
+    /// rather than a create because two of the row's fields are the engine's own.
+    pub fn checkpoint(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__checkpoint", args)
+    }
+}
+
+/// One `node_reports` row, reached by [`NodeReportCollection::by_id`] or
+/// [`NodeReportCollection::nth`].
+pub struct NodeReportEntity {
+    at: Entity,
+}
+
+impl NodeReportEntity {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// The whole row.
+    pub fn get(&self) -> Result<NodeReport, String> {
+        self.at.get()
+    }
+
+    /// Replace the whole row.
+    pub fn set(&self, value: &NodeReport) -> Result<(), String> {
+        self.at.set(value)
+    }
+
+    /// Delete the row.
+    pub fn delete(&self) -> Result<(), String> {
+        self.at.delete()
+    }
+
+    /// Be told when this row changes.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// The station's `NodeId`.
+    ///
+    /// SYNCED.
+    pub fn id(&self) -> Field<Uuid> {
+        self.at.field("id")
+    }
+
+    /// This station is the one driving the nodes. A row with this false says nothing.
+    ///
+    /// SYNCED.
+    pub fn driving(&self) -> Field<bool> {
+        self.at.field("driving")
+    }
+
+    /// Every node with a loudspeaker, by serial.
+    ///
+    /// SYNCED.
+    pub fn nodes(&self) -> Field<BTreeMap<String, DrivenNode>> {
+        self.at.field("nodes")
+    }
+
+    /// Why a node clip is not playing: by timeline id, then clip id, then node serial.
+    ///
+    /// SYNCED.
+    pub fn clip_faults(&self) -> Field<BTreeMap<String, BTreeMap<String, BTreeMap<String, String>>>> {
+        self.at.field("clip_faults")
     }
 }
 
@@ -2571,6 +3638,22 @@ impl PresetEntity {
     pub fn values(&self) -> Field<Vec<PresetValue>> {
         self.at.field("values")
     }
+
+    /// The card's color, as `#rrggbb`, or `None` for its panel category's color.
+    /// What an operator paints a pool object to find it again; it means nothing to
+    /// the rig.
+    ///
+    /// PERSISTED.
+    pub fn color(&self) -> Field<Option<String>> {
+        self.at.field("color")
+    }
+
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    ///
+    /// PERSISTED.
+    pub fn folder(&self) -> Field<Option<Uuid>> {
+        self.at.field("folder")
+    }
 }
 
 // ── programmer_values ───────────────────────────────────────────────────
@@ -3036,27 +4119,27 @@ impl SceneObjectEntity {
         self.at.field("symbol")
     }
 
-    /// Or none of the above: a piece out of the console's own catalogue, named
-    /// rather than modelled — `"f34-2m"` is two metres of box truss and the browser
+    /// Or none of the above: a piece out of the console's own catalog, named
+    /// rather than modeled — `"f34-2m"` is two meters of box truss and the browser
     /// draws one.
     ///
     /// Last of the three, and a mesh that came with a drawing wins: it is the truth
     /// about that object. This is what a console draws for a rig it made itself,
     /// where until now there was nothing to draw and the lights hung in the air.
     ///
-    /// See [`crate::types::catalogue`].
+    /// See [`crate::types::catalog`].
     ///
     /// PERSISTED.
-    pub fn catalogue(&self) -> Field<Option<String>> {
-        self.at.field("catalogue")
+    pub fn catalog(&self) -> Field<Option<String>> {
+        self.at.field("catalog")
     }
 
-    /// What a piece out of the catalogue was asked for: a deck's leg height, a
-    /// panel's finish. Declared per piece in [`crate::types::catalogue`], so the
+    /// What a piece out of the catalog was asked for: a deck's leg height, a
+    /// panel's finish. Declared per piece in [`crate::types::catalog`], so the
     /// keys are the piece's and an object carrying a key the piece never declared
     /// is simply ignored rather than refused.
     ///
-    /// An object out of a drawing has an empty map: a mesh somebody modelled says
+    /// An object out of a drawing has an empty map: a mesh somebody modeled says
     /// what it is, and there is nothing here to ask it.
     ///
     /// A JSON column, the way `PluginPackage::config` is.
@@ -3070,7 +4153,7 @@ impl SceneObjectEntity {
     ///
     /// The show's rather than the browser's, unlike layer visibility: locking the
     /// house rig so nobody drags it is a decision about the rig, and a lock only
-    /// one screen honoured would be no lock at all. A locked object is still drawn,
+    /// one screen honored would be no lock at all. A locked object is still drawn,
     /// still pickable and still says what it is — what it has is no gizmo.
     ///
     /// PERSISTED.
@@ -3080,11 +4163,11 @@ impl SceneObjectEntity {
 
     /// What this one weighs, in kilograms, where somebody has said.
     ///
-    /// Overrides the nominal figure a catalogue piece carries, and is the only weight
+    /// Overrides the nominal figure a catalog piece carries, and is the only weight
     /// there is for an object out of a drawing — MVR says where a truss is and never
     /// what it weighs. A loading table distinguishes the two: a total resting on
     /// entered weights is a different claim from one resting on
-    /// [`crate::types::catalogue::StockPiece::weight_kg`], and printing them as the
+    /// [`crate::types::catalog::StockPiece::weight_kg`], and printing them as the
     /// same number is how a nominal figure becomes a rigging decision.
     ///
     /// PERSISTED.
@@ -3238,7 +4321,65 @@ impl SequenceEntity {
         self.at.field("went_at")
     }
 
-    /// Advance to the next cue, staying on the last one when there is no next.
+    /// The sequence's level, 0 to 1, or `None` for full: its playback fader.
+    ///
+    /// It scales the **intensities** this sequence is driving and nothing else — a
+    /// color, a position and a relay go where the cue says however low the fader is,
+    /// and the programmer, a recording and a resting value are never dimmed by it
+    /// ([`Masters`] decides which). At zero the sequence is still on and still owns
+    /// what it owns; taking it off is [`Sequence::off`].
+    ///
+    /// SYNCED beside `active_cue_index` rather than PERSISTED: a fader is where the
+    /// operator has it now, every station and page has to agree on it, a failover
+    /// keeps it, and a show opens at full.
+    ///
+    /// SYNCED.
+    pub fn master(&self) -> Field<Option<f32>> {
+        self.at.field("master")
+    }
+
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    ///
+    /// PERSISTED.
+    pub fn folder(&self) -> Field<Option<Uuid>> {
+        self.at.field("folder")
+    }
+
+    /// How its intensities meet another sequence's on the same light, or `None` for
+    /// [`Merge::Ltp`]. See [`Merge`].
+    ///
+    /// PERSISTED.
+    pub fn merge(&self) -> Field<Option<Merge>> {
+        self.at.field("merge")
+    }
+
+    /// Whether Go past the last cue takes the first, and Go back before the first
+    /// takes the last. `None` is no: a sequence stays on its last cue, which is what
+    /// every sequence did before there was a choice. A loop of chases at a haunt goes
+    /// around; a play does not.
+    ///
+    /// PERSISTED.
+    pub fn wrap(&self) -> Field<Option<bool>> {
+        self.at.field("wrap")
+    }
+
+    /// Step back one cue: the cue before the active one is taken, the way a Go takes
+    /// the next.
+    ///
+    /// Taking an earlier cue is already a thing playback knows how to do — jumping
+    /// back releases what only later cues capture — so this is that jump, one step at
+    /// a time. At the first cue it stays there rather than taking the sequence off,
+    /// for the reason Go at the last cue stays: "off" is its own act. A sequence that
+    /// goes around takes its last instead.
+    ///
+    /// The command `sequences.goBack`, which the station applies to the row and
+    /// replicates like any other write.
+    pub fn go_back(&self, args: &SequenceGoBackArgs) -> Result<(), String> {
+        self.at.command("goBack", args)
+    }
+
+    /// Advance to the next cue, staying on the last one when there is no next — or,
+    /// for a sequence that [goes around](Sequence::wrap), taking the first.
     ///
     /// Running out of cues is not turning the sequence off. A light does not go dark
     /// because the operator pressed Go once more than there were cues, and the way to
@@ -3287,7 +4428,7 @@ impl SequenceEntity {
 /// One sheet of the paperwork.
 ///
 /// Seeded into a new show rather than being a built-in preset the way a
-/// [`super::layout::Layout`] is. The consequence, recorded because it will be asked
+/// [`super::workspace::Workspace`] is. The consequence, recorded because it will be asked
 /// about: a showfile made before this feature existed opens with no sheets and stays
 /// that way, and a show made today never picks up a later version's better defaults.
 ///
@@ -3447,6 +4588,13 @@ impl SheetEntity {
     pub fn blocks(&self) -> Field<Vec<SheetBlock>> {
         self.at.field("blocks")
     }
+
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    ///
+    /// PERSISTED.
+    pub fn folder(&self) -> Field<Option<Uuid>> {
+        self.at.field("folder")
+    }
 }
 
 // ── show ────────────────────────────────────────────────────────────────
@@ -3509,6 +4657,23 @@ impl ShowSingleton {
     /// SYNCED.
     pub fn editing_cue(&self) -> Field<Option<Uuid>> {
         self.at.field("editing_cue")
+    }
+
+    /// Blind: the programmer reaches no lamp. Playback runs the stage as though the
+    /// programmer were empty — its fades and effects are not held back under keys the
+    /// programmer has — while every screen goes on showing the programmer over it, so
+    /// a look is built where it can be seen and nobody in the room sees it. Store and
+    /// Update read the programmer as always. Switching it off puts what is in the
+    /// programmer on stage, the way every other desk does.
+    ///
+    /// One for the show, because there is one programmer: being blind is a fact about
+    /// whether the programmer reaches the output, not about who is looking. SYNCED so
+    /// every station and screen agree, and not PERSISTED so a show never opens blind
+    /// with a programmer nobody remembers filling.
+    ///
+    /// SYNCED.
+    pub fn blind(&self) -> Field<bool> {
+        self.at.field("blind")
     }
 
     /// How many of an operator's own changes stay reachable, for undo and for the
@@ -3613,6 +4778,199 @@ impl ShowSingleton {
     /// PERSISTED.
     pub fn mvr_xchange(&self) -> Field<XchangeSettings> {
         self.at.field("mvr_xchange")
+    }
+
+    /// What the show is doing when nobody has touched it: which sequences are on and
+    /// at which cue, at which master level, and which timelines run. `None` is nothing.
+    ///
+    /// Show data, because it is a fact about the show — the ambience that goes round
+    /// and the house lights that are on — and a showfile carried to another console
+    /// should come up the same way. Applied by the leader when a show opens with
+    /// nothing running (`infra/default_state.rs`), and by hand from the Show menu. The
+    /// programmer is never part of it: a held value is somebody at the desk.
+    ///
+    /// PERSISTED.
+    pub fn default_state(&self) -> Field<Option<DefaultState>> {
+        self.at.field("default_state")
+    }
+}
+
+// ── speaker_zones ───────────────────────────────────────────────────────
+
+///
+/// The `speaker_zones` collection.
+pub fn speaker_zones() -> SpeakerZoneCollection {
+    SpeakerZoneCollection { at: Collection::at("speaker_zones") }
+}
+
+/// The `speaker_zones` collection, reached by [`speaker_zones()`].
+pub struct SpeakerZoneCollection {
+    at: Collection,
+}
+
+impl SpeakerZoneCollection {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// Every row, in the show's own order.
+    pub fn get(&self) -> Result<Vec<SpeakerZone>, String> {
+        self.at.get()
+    }
+
+    /// One row by its id.
+    pub fn by_id(&self, id: Uuid) -> SpeakerZoneEntity {
+        SpeakerZoneEntity { at: self.at.by_id(id) }
+    }
+
+    /// One row by position in the collection's order.
+    pub fn nth(&self, index: usize) -> SpeakerZoneEntity {
+        SpeakerZoneEntity { at: self.at.nth(index) }
+    }
+
+    /// Add a row. One gesture, so it is one Ctrl-Z for whoever asked.
+    pub fn create(&self, value: &SpeakerZone) -> Result<(), String> {
+        self.at.create(value)
+    }
+
+    /// Be told when the collection itself changes — a create, a delete.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe()
+    }
+
+    /// Be told about anything at or under the collection, a level moving
+    /// included.
+    pub fn subscribe_deep(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// Put something back where it rests when nothing is driving it.
+    ///
+    /// `programmer_values`. `{ "fixtureId": <uuid> }` sends every output parameter of
+    /// that fixture home, and naming a `parameterKind` as well sends just the one. The
+    /// station resolves it against what it holds, so a plugin can ask for home without
+    /// being able to read the rig.
+    pub fn home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__home", args)
+    }
+
+    /// Make where a parameter rests be wherever it is now.
+    ///
+    /// `fixtures`, and the same arguments as [`Self::home`] backwards. Evaluated at
+    /// the instant it is asked, which is why it is a verb and not a write.
+    pub fn take_home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__set_home", args)
+    }
+
+    /// Save: a point to come back to.
+    ///
+    /// `versions`. `{ "name": "Act 1" }`, and a quick Save gives no name. A verb
+    /// rather than a create because two of the row's fields are the engine's own.
+    pub fn checkpoint(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__checkpoint", args)
+    }
+}
+
+/// One `speaker_zones` row, reached by [`SpeakerZoneCollection::by_id`] or
+/// [`SpeakerZoneCollection::nth`].
+pub struct SpeakerZoneEntity {
+    at: Entity,
+}
+
+impl SpeakerZoneEntity {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// The whole row.
+    pub fn get(&self) -> Result<SpeakerZone, String> {
+        self.at.get()
+    }
+
+    /// Replace the whole row.
+    pub fn set(&self, value: &SpeakerZone) -> Result<(), String> {
+        self.at.set(value)
+    }
+
+    /// Delete the row.
+    pub fn delete(&self) -> Result<(), String> {
+        self.at.delete()
+    }
+
+    /// Be told when this row changes.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// PERSISTED.
+    pub fn id(&self) -> Field<Uuid> {
+        self.at.field("id")
+    }
+
+    /// PERSISTED.
+    pub fn name(&self) -> Field<String> {
+        self.at.field("name")
+    }
+
+    /// A CSS color, or `None` for the category's own.
+    ///
+    /// PERSISTED.
+    pub fn color(&self) -> Field<Option<String>> {
+        self.at.field("color")
+    }
+
+    /// How many channels the zone is: 1 mono, 2 stereo, more for a cluster. What a
+    /// station maps has to be exactly this many, so a stereo bed cannot quietly become
+    /// a downmix because somebody ticked one box of two.
+    ///
+    /// PERSISTED.
+    pub fn width(&self) -> Field<u16> {
+        self.at.field("width")
+    }
+
+    /// Where each of the zone's channels comes out on each station: per station, one
+    /// list per zone channel (left, right, …) of that station's output channels,
+    /// counting from one. A list may hold several outputs — a bed on all eight Dante
+    /// channels — and an output may be in two lists, which sums them there.
+    ///
+    /// A show from before there were lists reads `[1, 2]` as left on 1 and right on 2
+    /// (`one_per_side`), which is what it meant.
+    ///
+    /// PERSISTED.
+    pub fn channels(&self) -> Field<BTreeMap<NodeId, Vec<Outputs>>> {
+        self.at.field("channels")
+    }
+
+    /// Node loudspeakers that are in the zone as well.
+    ///
+    /// PERSISTED.
+    pub fn nodes(&self) -> Field<Vec<ZoneNode>> {
+        self.at.field("nodes")
+    }
+
+    /// The zone's own level in dB, over every clip that goes to it: a room whose
+    /// speakers are too loud for every scare in it is turned down here, once, rather
+    /// than in each clip. `None` is 0 dB — and is an `Option` so that a show from
+    /// before there was a level opens with the column empty. On a node it cannot go
+    /// above 0 dB, as a clip's own level cannot.
+    ///
+    /// PERSISTED.
+    pub fn level_db(&self) -> Field<Option<f32>> {
+        self.at.field("level_db")
+    }
+
+    /// PERSISTED.
+    pub fn notes(&self) -> Field<String> {
+        self.at.field("notes")
+    }
+
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    ///
+    /// PERSISTED.
+    pub fn folder(&self) -> Field<Option<Uuid>> {
+        self.at.field("folder")
     }
 }
 
@@ -3900,7 +5258,7 @@ impl StagePlanEntity {
         self.at.field("height_px")
     }
 
-    /// The world point, in metres, that the image's top-left corner sits on.
+    /// The world point, in meters, that the image's top-left corner sits on.
     ///
     /// PERSISTED.
     pub fn origin(&self) -> Field<Vec3> {
@@ -3911,8 +5269,8 @@ impl StagePlanEntity {
     /// the plan whose real length is known.
     ///
     /// PERSISTED.
-    pub fn metres_per_pixel(&self) -> Field<f32> {
-        self.at.field("metres_per_pixel")
+    pub fn meters_per_pixel(&self) -> Field<f32> {
+        self.at.field("meters_per_pixel")
     }
 
     /// PERSISTED.
@@ -4077,6 +5435,28 @@ impl StationEntity {
         self.at.field("http_addr")
     }
 
+    /// Where an OpenHaunt node reaches this station's broker, as `ip:port`, were it
+    /// to lead. The leader lists every station's in the broker list it hands its nodes
+    /// (`openhaunt/brokers`, doc 15), leader first, so a node whose leader dies finds
+    /// the next one without anybody having to see it over mDNS. Empty from an older
+    /// peer, which is then simply not in the list.
+    ///
+    /// SYNCED.
+    pub fn broker_addr(&self) -> Field<String> {
+        self.at.field("broker_addr")
+    }
+
+    /// Every address that door is reachable at, best first; `broker_addr` is the first
+    /// of them, kept for a peer that reads nothing else. Plural because a console in a
+    /// venue usually has two networks, and which one its nodes are on is something
+    /// only the leader — which has seen the nodes — can answer. Never loopback while
+    /// the machine has anything else (`infra::net::reachable`).
+    ///
+    /// SYNCED.
+    pub fn broker_doors(&self) -> Field<Vec<String>> {
+        self.at.field("broker_doors")
+    }
+
     /// SYNCED.
     pub fn cpu_percent(&self) -> Field<f32> {
         self.at.field("cpu_percent")
@@ -4134,7 +5514,7 @@ impl StationEntity {
     /// that was told about a fade once are not two samples of one number.
     ///
     /// Defaulted, so a peer running a build that cannot say still sends a row that
-    /// deserialises.
+    /// deserializes.
     ///
     /// SYNCED.
     pub fn frame_costs(&self) -> Field<Vec<FrameCost>> {
@@ -4150,11 +5530,20 @@ impl StationEntity {
     /// a station at 4% on a machine at 96% is not a comfortable station, it is a
     /// console about to be starved by something nobody is looking at.
     ///
-    /// All defaulted, so a peer on an older build still deserialises.
+    /// All defaulted, so a peer on an older build still deserializes.
     ///
     /// SYNCED.
     pub fn machine(&self) -> Field<MachineStats> {
         self.at.field("machine")
+    }
+
+    /// How much decoded sound this station is holding, against what it may hold.
+    ///
+    /// Defaulted, and a `budget` of zero is a station on an older build that cannot say.
+    ///
+    /// SYNCED.
+    pub fn audio_cache(&self) -> Field<AudioCacheStats> {
+        self.at.field("audio_cache")
     }
 
     /// What this machine's network interfaces carried over the window just reported,
@@ -4171,7 +5560,7 @@ impl StationEntity {
     /// sends to itself would otherwise arrive twice — sent and received — and swamp
     /// the figure it is there to give.
     ///
-    /// Defaulted, so a peer on an older build still deserialises.
+    /// Defaulted, so a peer on an older build still deserializes.
     ///
     /// SYNCED.
     pub fn net_received(&self) -> Field<u64> {
@@ -4214,11 +5603,25 @@ impl StationEntity {
     /// each one says what it took. `None` on a leader, which is at the top of the
     /// ladder rather than in a slot.
     ///
-    /// Defaulted, so a peer on an older build still deserialises.
+    /// Defaulted, so a peer on an older build still deserializes.
     ///
     /// SYNCED.
     pub fn sacn_slot(&self) -> Field<Option<u8>> {
         self.at.field("sacn_slot")
+    }
+
+    /// The command wing plugged into this station, if one is.
+    ///
+    /// The station's own `wing` row is LOCAL, so a page on another station could not
+    /// otherwise know there is a wing here to drive. A page drives a wing over a socket
+    /// to the station it is plugged into, wherever the page came from, and this is how
+    /// it finds one. `None` is a station started with no wing at all.
+    ///
+    /// Defaulted, so a peer on an older build still deserializes.
+    ///
+    /// SYNCED.
+    pub fn wing(&self) -> Field<Option<WingState>> {
+        self.at.field("wing")
     }
 
     /// When this station last said any of the above.
@@ -4226,6 +5629,172 @@ impl StationEntity {
     /// SYNCED.
     pub fn last_seen(&self) -> Field<Timestamp> {
         self.at.field("last_seen")
+    }
+}
+
+// ── station_audio ───────────────────────────────────────────────────────
+
+/// What one station plays through, and what it calls the card and its channels: the
+/// `station_audio` collection, keyed by the station's `NodeId`.
+///
+/// So a zone can be mapped for a machine from another one — the booth mapping the
+/// spare's channels — with the names that machine gave them. The names stay that
+/// machine's preference (`[audio.names]`); this row only says what they are, and a
+/// station rewrites it only when something in it moved, like `station_networks`.
+///
+/// **PERSISTED, so a station is remembered while it is off.** It was SYNCED, on the
+/// grounds that which card is in a machine does not travel with a show — and then a
+/// station that was off was nowhere in the zone matrix, and its routing could not be
+/// set until it was on (HHG, 2026-10-27). The row is also the show's list of stations
+/// it has seen, which is why it carries the hostname; forgetting one is deleting it.
+///
+/// The `station_audio` collection.
+pub fn station_audio() -> StationAudioCollection {
+    StationAudioCollection { at: Collection::at("station_audio") }
+}
+
+/// The `station_audio` collection, reached by [`station_audio()`].
+pub struct StationAudioCollection {
+    at: Collection,
+}
+
+impl StationAudioCollection {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// Every row, in the show's own order.
+    pub fn get(&self) -> Result<Vec<StationAudio>, String> {
+        self.at.get()
+    }
+
+    /// One row by its id.
+    pub fn by_id(&self, id: Uuid) -> StationAudioEntity {
+        StationAudioEntity { at: self.at.by_id(id) }
+    }
+
+    /// One row by position in the collection's order.
+    pub fn nth(&self, index: usize) -> StationAudioEntity {
+        StationAudioEntity { at: self.at.nth(index) }
+    }
+
+    /// Add a row. One gesture, so it is one Ctrl-Z for whoever asked.
+    pub fn create(&self, value: &StationAudio) -> Result<(), String> {
+        self.at.create(value)
+    }
+
+    /// Be told when the collection itself changes — a create, a delete.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe()
+    }
+
+    /// Be told about anything at or under the collection, a level moving
+    /// included.
+    pub fn subscribe_deep(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// Put something back where it rests when nothing is driving it.
+    ///
+    /// `programmer_values`. `{ "fixtureId": <uuid> }` sends every output parameter of
+    /// that fixture home, and naming a `parameterKind` as well sends just the one. The
+    /// station resolves it against what it holds, so a plugin can ask for home without
+    /// being able to read the rig.
+    pub fn home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__home", args)
+    }
+
+    /// Make where a parameter rests be wherever it is now.
+    ///
+    /// `fixtures`, and the same arguments as [`Self::home`] backwards. Evaluated at
+    /// the instant it is asked, which is why it is a verb and not a write.
+    pub fn take_home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__set_home", args)
+    }
+
+    /// Save: a point to come back to.
+    ///
+    /// `versions`. `{ "name": "Act 1" }`, and a quick Save gives no name. A verb
+    /// rather than a create because two of the row's fields are the engine's own.
+    pub fn checkpoint(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__checkpoint", args)
+    }
+}
+
+/// One `station_audio` row, reached by [`StationAudioCollection::by_id`] or
+/// [`StationAudioCollection::nth`].
+pub struct StationAudioEntity {
+    at: Entity,
+}
+
+impl StationAudioEntity {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// The whole row.
+    pub fn get(&self) -> Result<StationAudio, String> {
+        self.at.get()
+    }
+
+    /// Replace the whole row.
+    pub fn set(&self, value: &StationAudio) -> Result<(), String> {
+        self.at.set(value)
+    }
+
+    /// Delete the row.
+    pub fn delete(&self) -> Result<(), String> {
+        self.at.delete()
+    }
+
+    /// Be told when this row changes.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// The station's `NodeId`.
+    ///
+    /// PERSISTED.
+    pub fn id(&self) -> Field<Uuid> {
+        self.at.field("id")
+    }
+
+    /// What the machine is called, so a station that is off is still named.
+    ///
+    /// PERSISTED.
+    pub fn hostname(&self) -> Field<String> {
+        self.at.field("hostname")
+    }
+
+    /// The output card, by its own name: open, or the one the station is told to use.
+    ///
+    /// PERSISTED.
+    pub fn device(&self) -> Field<Option<String>> {
+        self.at.field("device")
+    }
+
+    /// What the station calls it.
+    ///
+    /// PERSISTED.
+    pub fn alias(&self) -> Field<Option<String>> {
+        self.at.field("alias")
+    }
+
+    /// How many output channels it has: the open card's count, or as many as are named
+    /// when nothing is open yet.
+    ///
+    /// PERSISTED.
+    pub fn channels(&self) -> Field<u16> {
+        self.at.field("channels")
+    }
+
+    /// The channel names, the first being channel 1; empty is unnamed.
+    ///
+    /// PERSISTED.
+    pub fn channel_names(&self) -> Field<Vec<String>> {
+        self.at.field("channel_names")
     }
 }
 
@@ -4387,6 +5956,150 @@ impl StationNetworkEntity {
     /// SYNCED.
     pub fn changed_at(&self) -> Field<Timestamp> {
         self.at.field("changed_at")
+    }
+}
+
+// ── surfaces ────────────────────────────────────────────────────────────
+
+/// One page of tiles.
+///
+/// The `surfaces` collection.
+pub fn surfaces() -> SurfaceCollection {
+    SurfaceCollection { at: Collection::at("surfaces") }
+}
+
+/// The `surfaces` collection, reached by [`surfaces()`].
+pub struct SurfaceCollection {
+    at: Collection,
+}
+
+impl SurfaceCollection {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// Every row, in the show's own order.
+    pub fn get(&self) -> Result<Vec<Surface>, String> {
+        self.at.get()
+    }
+
+    /// One row by its id.
+    pub fn by_id(&self, id: Uuid) -> SurfaceEntity {
+        SurfaceEntity { at: self.at.by_id(id) }
+    }
+
+    /// One row by position in the collection's order.
+    pub fn nth(&self, index: usize) -> SurfaceEntity {
+        SurfaceEntity { at: self.at.nth(index) }
+    }
+
+    /// Add a row. One gesture, so it is one Ctrl-Z for whoever asked.
+    pub fn create(&self, value: &Surface) -> Result<(), String> {
+        self.at.create(value)
+    }
+
+    /// Be told when the collection itself changes — a create, a delete.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe()
+    }
+
+    /// Be told about anything at or under the collection, a level moving
+    /// included.
+    pub fn subscribe_deep(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// Put something back where it rests when nothing is driving it.
+    ///
+    /// `programmer_values`. `{ "fixtureId": <uuid> }` sends every output parameter of
+    /// that fixture home, and naming a `parameterKind` as well sends just the one. The
+    /// station resolves it against what it holds, so a plugin can ask for home without
+    /// being able to read the rig.
+    pub fn home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__home", args)
+    }
+
+    /// Make where a parameter rests be wherever it is now.
+    ///
+    /// `fixtures`, and the same arguments as [`Self::home`] backwards. Evaluated at
+    /// the instant it is asked, which is why it is a verb and not a write.
+    pub fn take_home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__set_home", args)
+    }
+
+    /// Save: a point to come back to.
+    ///
+    /// `versions`. `{ "name": "Act 1" }`, and a quick Save gives no name. A verb
+    /// rather than a create because two of the row's fields are the engine's own.
+    pub fn checkpoint(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__checkpoint", args)
+    }
+}
+
+/// One `surfaces` row, reached by [`SurfaceCollection::by_id`] or
+/// [`SurfaceCollection::nth`].
+pub struct SurfaceEntity {
+    at: Entity,
+}
+
+impl SurfaceEntity {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// The whole row.
+    pub fn get(&self) -> Result<Surface, String> {
+        self.at.get()
+    }
+
+    /// Replace the whole row.
+    pub fn set(&self, value: &Surface) -> Result<(), String> {
+        self.at.set(value)
+    }
+
+    /// Delete the row.
+    pub fn delete(&self) -> Result<(), String> {
+        self.at.delete()
+    }
+
+    /// Be told when this row changes.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// PERSISTED.
+    pub fn id(&self) -> Field<Uuid> {
+        self.at.field("id")
+    }
+
+    /// PERSISTED.
+    pub fn name(&self) -> Field<String> {
+        self.at.field("name")
+    }
+
+    /// The tiles, in reading order, as one JSON column.
+    ///
+    /// PERSISTED.
+    pub fn tiles(&self) -> Field<Vec<SurfaceTile>> {
+        self.at.field("tiles")
+    }
+
+    /// The card's color, as `#rrggbb`, or `None` for its panel category's color.
+    /// What an operator paints a pool object to find it again; it means nothing to
+    /// the rig.
+    ///
+    /// PERSISTED.
+    pub fn color(&self) -> Field<Option<String>> {
+        self.at.field("color")
+    }
+
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    ///
+    /// PERSISTED.
+    pub fn folder(&self) -> Field<Option<Uuid>> {
+        self.at.field("folder")
     }
 }
 
@@ -4636,30 +6349,21 @@ impl TimelineEntity {
         self.at.field("name")
     }
 
-    /// The audio asset this timeline runs against, where there is one.
+    /// The sound on this timeline: files at positions, each going somewhere.
     ///
     /// Played by the station [`Timeline::node_id`] names, off the audio callback's own
     /// sample clock — see `infra/audio` — so the sound is the reference and everything
-    /// else follows the anchor it writes. A timeline with **no** audio is an ordinary
+    /// else follows the anchor it writes. A timeline with **no** clips is an ordinary
     /// stopwatch and runs exactly as it did before any of this existed, which is what
     /// "timecode without timecode" means and is the property that must not be lost.
     ///
-    /// PERSISTED.
-    pub fn audio(&self) -> Field<Option<String>> {
-        self.at.field("audio")
-    }
-
-    /// The reduced waveform of [`Timeline::audio`], as its own asset sha.
-    ///
-    /// Computed once by whichever station first held the file and written here, so
-    /// every browser in the building fetches one small asset rather than decoding
-    /// fifty megabytes. A field rather than a lookup because the alternative — deriving
-    /// the peaks asset's name from the audio's — would be a second content-addressing
-    /// scheme, and a tablet would have to ask for a sha that might not exist yet.
+    /// A list rather than one file because a scare is a scream in one zone *and* a bang
+    /// in another, and making that two timelines started together would be two things
+    /// to keep in step that one clock already keeps in step for free.
     ///
     /// PERSISTED.
-    pub fn peaks(&self) -> Field<Option<String>> {
-        self.at.field("peaks")
+    pub fn clips(&self) -> Field<Vec<AudioClip>> {
+        self.at.field("clips")
     }
 
     /// What the beat detector last found. See [`Detected`] on why this is not `grid`.
@@ -4694,6 +6398,22 @@ impl TimelineEntity {
         self.at.field("tracks")
     }
 
+    /// The flash keys recorded onto this timeline, over every take. An `Option` only
+    /// because a non-`Option` column added to a show that already exists is one the
+    /// show cannot be opened with; `None` is none. See [`TimelineFlash`].
+    ///
+    /// PERSISTED.
+    pub fn flashes(&self) -> Field<Option<Vec<TimelineFlash>>> {
+        self.at.field("flashes")
+    }
+
+    /// A recording waiting to be reviewed. See [`PendingTake`].
+    ///
+    /// PERSISTED.
+    pub fn pending(&self) -> Field<Option<PendingTake>> {
+        self.at.field("pending")
+    }
+
     /// A speed master this timeline drives from its grid.
     ///
     /// While the timeline runs, the **leader** writes that master's `bpm` and `t0` at
@@ -4716,6 +6436,20 @@ impl TimelineEntity {
     /// PERSISTED.
     pub fn node_id(&self) -> Field<Option<NodeId>> {
         self.at.field("node_id")
+    }
+
+    /// Where the timeline ends, and what it does there. `None` runs for ever, as a
+    /// timeline always has.
+    ///
+    /// A scare is a timeline, and a scare has to *finish*: until it does it is still
+    /// running, and a flow told to ignore a running timeline would ignore it for the
+    /// rest of the night. Acted on by the leader, as an event is, and anchored on the
+    /// wall millisecond the end fell at rather than whenever the pass got there — so a
+    /// loop does not drift by a pass's lateness every time round.
+    ///
+    /// PERSISTED.
+    pub fn end(&self) -> Field<Option<TimelineEnd>> {
+        self.at.field("end")
     }
 
     /// The transport, replicated so every station and every browser reads the same
@@ -4741,15 +6475,32 @@ impl TimelineEntity {
         self.at.field("rate")
     }
 
-    /// The input a take is being recorded from, if one is armed.
+    /// What a take is being recorded from, if one is armed.
     ///
     /// SYNCED rather than LOCAL because the station that *arms* it is usually not the
-    /// station holding the socket: an operator at the booth arms a recording from the
-    /// stage rack's input, and the rack has to hear about it.
+    /// station recording: an operator at the booth arms a recording from the stage
+    /// rack's input, and the rack has to hear about it; a tablet arms the programmer,
+    /// and the leader records it.
     ///
     /// SYNCED.
-    pub fn recording(&self) -> Field<Option<Uuid>> {
+    pub fn recording(&self) -> Field<Option<RecordSource>> {
         self.at.field("recording")
+    }
+
+    /// The page that armed the recording, by the id it gave itself — the one that
+    /// opens the review when the take stops. SYNCED with `recording`, for the same
+    /// reason: the station recording is usually not the one that page is on.
+    ///
+    /// SYNCED.
+    pub fn armed_by(&self) -> Field<Option<String>> {
+        self.at.field("armed_by")
+    }
+
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    ///
+    /// PERSISTED.
+    pub fn folder(&self) -> Field<Option<Uuid>> {
+        self.at.field("folder")
     }
 
     /// Put the playhead somewhere, running or not.
@@ -4775,13 +6526,22 @@ impl TimelineEntity {
         self.at.command("play", args)
     }
 
-    /// Arm, or disarm, recording from an input.
+    /// Arm, or disarm, a recording.
     ///
-    /// Args: `{ "inputId": "<uuid>" | null }`. Arming is a *state*, not an act: the
-    /// station holding that input's socket records from the next play to the next
-    /// stop, so an operator can arm at half past six and press play at the top of the
-    /// show. `null` disarms, which is also what the recording station writes back when
-    /// it has stored the take.
+    /// Args: `{ "inputId": "<uuid>" | null }` records what that input hears, and
+    /// `{ "programmer": true, "release"?: bool }` records what the operator does — every
+    /// programmer key that changes while the timeline rolls. Arming is a *state*, not
+    /// an act: the recording station records from the next play to the next stop, so
+    /// an operator can arm at half past six and press play at the top of the show.
+    /// Nothing named, or `inputId: null`, disarms, which is also what the recording
+    /// station writes back when it has stored the take.
+    ///
+    /// `release` (default true) gives the keys a programmer pass recorded back to the
+    /// take when it is stored. Without it the fader the operator is still holding beats
+    /// the take it just made, for ever, because the programmer is above a track.
+    ///
+    /// `armedBy` is the arming page's own id, so that page is the one that opens the
+    /// review when the take stops (see [`PendingTake`]).
     ///
     /// The command `timelines.record`, which the station applies to the row and
     /// replicates like any other write.
@@ -4921,14 +6681,171 @@ impl UserEntity {
         self.at.field("name")
     }
 
-    /// How this user's changes are marked in the history, as a CSS colour.
+    /// How this user's changes are marked in the history, as a CSS color.
     ///
     /// Persisted rather than derived from the id, so somebody who dislikes the one
     /// they were given can change it and it stays changed.
     ///
     /// PERSISTED.
-    pub fn colour(&self) -> Field<String> {
-        self.at.field("colour")
+    pub fn color(&self) -> Field<String> {
+        self.at.field("color")
+    }
+}
+
+// ── variables ───────────────────────────────────────────────────────────
+
+///
+/// The `variables` collection.
+pub fn variables() -> VariableCollection {
+    VariableCollection { at: Collection::at("variables") }
+}
+
+/// The `variables` collection, reached by [`variables()`].
+pub struct VariableCollection {
+    at: Collection,
+}
+
+impl VariableCollection {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// Every row, in the show's own order.
+    pub fn get(&self) -> Result<Vec<Variable>, String> {
+        self.at.get()
+    }
+
+    /// One row by its id.
+    pub fn by_id(&self, id: Uuid) -> VariableEntity {
+        VariableEntity { at: self.at.by_id(id) }
+    }
+
+    /// One row by position in the collection's order.
+    pub fn nth(&self, index: usize) -> VariableEntity {
+        VariableEntity { at: self.at.nth(index) }
+    }
+
+    /// Add a row. One gesture, so it is one Ctrl-Z for whoever asked.
+    pub fn create(&self, value: &Variable) -> Result<(), String> {
+        self.at.create(value)
+    }
+
+    /// Be told when the collection itself changes — a create, a delete.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe()
+    }
+
+    /// Be told about anything at or under the collection, a level moving
+    /// included.
+    pub fn subscribe_deep(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// Put something back where it rests when nothing is driving it.
+    ///
+    /// `programmer_values`. `{ "fixtureId": <uuid> }` sends every output parameter of
+    /// that fixture home, and naming a `parameterKind` as well sends just the one. The
+    /// station resolves it against what it holds, so a plugin can ask for home without
+    /// being able to read the rig.
+    pub fn home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__home", args)
+    }
+
+    /// Make where a parameter rests be wherever it is now.
+    ///
+    /// `fixtures`, and the same arguments as [`Self::home`] backwards. Evaluated at
+    /// the instant it is asked, which is why it is a verb and not a write.
+    pub fn take_home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__set_home", args)
+    }
+
+    /// Save: a point to come back to.
+    ///
+    /// `versions`. `{ "name": "Act 1" }`, and a quick Save gives no name. A verb
+    /// rather than a create because two of the row's fields are the engine's own.
+    pub fn checkpoint(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__checkpoint", args)
+    }
+}
+
+/// One `variables` row, reached by [`VariableCollection::by_id`] or
+/// [`VariableCollection::nth`].
+pub struct VariableEntity {
+    at: Entity,
+}
+
+impl VariableEntity {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// The whole row.
+    pub fn get(&self) -> Result<Variable, String> {
+        self.at.get()
+    }
+
+    /// Replace the whole row.
+    pub fn set(&self, value: &Variable) -> Result<(), String> {
+        self.at.set(value)
+    }
+
+    /// Delete the row.
+    pub fn delete(&self) -> Result<(), String> {
+        self.at.delete()
+    }
+
+    /// Be told when this row changes.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// PERSISTED.
+    pub fn id(&self) -> Field<Uuid> {
+        self.at.field("id")
+    }
+
+    /// PERSISTED.
+    pub fn name(&self) -> Field<String> {
+        self.at.field("name")
+    }
+
+    /// PERSISTED.
+    pub fn kind(&self) -> Field<VariableKind> {
+        self.at.field("kind")
+    }
+
+    /// PERSISTED.
+    pub fn initial(&self) -> Field<f64> {
+        self.at.field("initial")
+    }
+
+    /// Bounds a write is clamped to. A count with a floor of zero cannot be driven
+    /// negative by an exit somebody walked through twice.
+    ///
+    /// PERSISTED.
+    pub fn min(&self) -> Field<Option<f64>> {
+        self.at.field("min")
+    }
+
+    /// PERSISTED.
+    pub fn max(&self) -> Field<Option<f64>> {
+        self.at.field("max")
+    }
+
+    /// What it holds now. `None` is the initial value — see the module docs.
+    ///
+    /// SYNCED.
+    pub fn value(&self) -> Field<Option<f64>> {
+        self.at.field("value")
+    }
+
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    ///
+    /// PERSISTED.
+    pub fn folder(&self) -> Field<Option<Uuid>> {
+        self.at.field("folder")
     }
 }
 
@@ -5087,11 +7004,146 @@ impl VersionEntity {
     /// Nothing reads it yet. It is here because a version is the only record of a
     /// past state that survives the oplog's retention, and a diff between two of
     /// them has to be able to say which came first on which station — which a
-    /// timestamp across machines with unsynchronised clocks cannot.
+    /// timestamp across machines with unsynchronized clocks cannot.
     ///
     /// PERSISTED.
     pub fn clock(&self) -> Field<VectorClock> {
         self.at.field("clock")
+    }
+}
+
+// ── workspaces ──────────────────────────────────────────────────────────
+
+/// One saved arrangement of the panels.
+///
+/// The `workspaces` collection.
+pub fn workspaces() -> WorkspaceCollection {
+    WorkspaceCollection { at: Collection::at("workspaces") }
+}
+
+/// The `workspaces` collection, reached by [`workspaces()`].
+pub struct WorkspaceCollection {
+    at: Collection,
+}
+
+impl WorkspaceCollection {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// Every row, in the show's own order.
+    pub fn get(&self) -> Result<Vec<Workspace>, String> {
+        self.at.get()
+    }
+
+    /// One row by its id.
+    pub fn by_id(&self, id: Uuid) -> WorkspaceEntity {
+        WorkspaceEntity { at: self.at.by_id(id) }
+    }
+
+    /// One row by position in the collection's order.
+    pub fn nth(&self, index: usize) -> WorkspaceEntity {
+        WorkspaceEntity { at: self.at.nth(index) }
+    }
+
+    /// Add a row. One gesture, so it is one Ctrl-Z for whoever asked.
+    pub fn create(&self, value: &Workspace) -> Result<(), String> {
+        self.at.create(value)
+    }
+
+    /// Be told when the collection itself changes — a create, a delete.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe()
+    }
+
+    /// Be told about anything at or under the collection, a level moving
+    /// included.
+    pub fn subscribe_deep(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// Put something back where it rests when nothing is driving it.
+    ///
+    /// `programmer_values`. `{ "fixtureId": <uuid> }` sends every output parameter of
+    /// that fixture home, and naming a `parameterKind` as well sends just the one. The
+    /// station resolves it against what it holds, so a plugin can ask for home without
+    /// being able to read the rig.
+    pub fn home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__home", args)
+    }
+
+    /// Make where a parameter rests be wherever it is now.
+    ///
+    /// `fixtures`, and the same arguments as [`Self::home`] backwards. Evaluated at
+    /// the instant it is asked, which is why it is a verb and not a write.
+    pub fn take_home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__set_home", args)
+    }
+
+    /// Save: a point to come back to.
+    ///
+    /// `versions`. `{ "name": "Act 1" }`, and a quick Save gives no name. A verb
+    /// rather than a create because two of the row's fields are the engine's own.
+    pub fn checkpoint(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__checkpoint", args)
+    }
+}
+
+/// One `workspaces` row, reached by [`WorkspaceCollection::by_id`] or
+/// [`WorkspaceCollection::nth`].
+pub struct WorkspaceEntity {
+    at: Entity,
+}
+
+impl WorkspaceEntity {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// The whole row.
+    pub fn get(&self) -> Result<Workspace, String> {
+        self.at.get()
+    }
+
+    /// Replace the whole row.
+    pub fn set(&self, value: &Workspace) -> Result<(), String> {
+        self.at.set(value)
+    }
+
+    /// Delete the row.
+    pub fn delete(&self) -> Result<(), String> {
+        self.at.delete()
+    }
+
+    /// Be told when this row changes.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// PERSISTED.
+    pub fn id(&self) -> Field<Uuid> {
+        self.at.field("id")
+    }
+
+    /// PERSISTED.
+    pub fn name(&self) -> Field<String> {
+        self.at.field("name")
+    }
+
+    /// The whole arrangement, as one JSON column.
+    ///
+    /// PERSISTED.
+    pub fn tree(&self) -> Field<WorkspaceNode> {
+        self.at.field("tree")
+    }
+
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    ///
+    /// PERSISTED.
+    pub fn folder(&self) -> Field<Option<Uuid>> {
+        self.at.field("folder")
     }
 }
 

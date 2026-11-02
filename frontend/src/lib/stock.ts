@@ -1,7 +1,7 @@
 /**
  * Drawing the pieces the console knows by name.
  *
- * This used to *be* the geometry: two metres of 290 mm box truss was four cylinders
+ * This used to *be* the geometry: two meters of 290 mm box truss was four cylinders
  * and a zig-zag of bracing, built here out of `CylinderGeometry`. Which drew a rig
  * beautifully and exported nothing — MVR has no primitive, its `GeometryNode` is a
  * file or a symbol instance, so a stock piece written into an archive was an empty
@@ -19,30 +19,30 @@
  *
  * The materials are still this file's, and are shared: a material per object is a
  * shader compile per object, and the `.glb` carries one of its own so that anybody
- * else opening the file sees aluminium rather than white plastic.
+ * else opening the file sees aluminum rather than white plastic.
  */
 
 import * as THREE from 'three';
 
-import { CATALOGUE, piece, type StockPiece } from '$lib/generated/catalogue.js';
+import { CATALOG, piece, type StockPiece } from '$lib/generated/catalog.js';
 import type { PropertyKind, StockShape } from '$lib/generated/index.js';
 import { instance, loadFrom, type Loaded } from './geometry.js';
 
-export { CATALOGUE, piece, type StockPiece };
+export { CATALOG, piece, type StockPiece };
 
 /**
  * How the console's own pieces are finished.
  *
- * Aluminium, and not shiny: a truss under stage light is a matte grey thing, and a
+ * Aluminum, and not shiny: a truss under stage light is a matte gray thing, and a
  * mirror-finish one reads as a prop. Shared by every stock mesh in the rig.
  */
-const ALUMINIUM = new THREE.MeshStandardMaterial({
+const ALUMINUM = new THREE.MeshStandardMaterial({
 	color: 0x9aa0a6,
 	roughness: 0.65,
 	metalness: 0.85
 });
 
-/** Decks and walls are painted, not extruded aluminium. */
+/** Decks and walls are painted, not extruded aluminum. */
 const PAINTED = new THREE.MeshStandardMaterial({
 	color: 0x2e3136,
 	roughness: 0.9,
@@ -50,13 +50,13 @@ const PAINTED = new THREE.MeshStandardMaterial({
 });
 
 function materialFor(shape: StockShape): THREE.Material {
-	return shape === 'Deck' || shape === 'Panel' ? PAINTED : ALUMINIUM;
+	return shape === 'Deck' || shape === 'Panel' ? PAINTED : ALUMINUM;
 }
 
 /**
  * One spelling of what a piece was asked for.
  *
- * The browser's half of `catalogue::canonical_properties`, and it is here for one
+ * The browser's half of `catalog::canonical_properties`, and it is here for one
  * reason: the URL is the cache key. An object saying nothing and an object spelling
  * out the defaults are the same deck, and two spellings would be two downloads of
  * identical bytes. The station canonicalises again on the way in, so being wrong here
@@ -106,7 +106,7 @@ export function stockUrl(id: string, properties: unknown): string {
 }
 
 /**
- * A mesh for one catalogue piece, or `null` for a name this build does not know.
+ * A mesh for one catalog piece, or `null` for a name this build does not know.
  *
  * `null` rather than a placeholder box: an unknown id is a showfile from a later
  * version of this console naming a piece that did not exist yet, and drawing a
@@ -166,15 +166,15 @@ export const PIECE_GROUPS: { shape: StockShape; label: string }[] = [
 ];
 
 /**
- * The catalogue in the order the sheet shows it.
+ * The catalog in the order the sheet shows it.
  *
  * Grouped by what somebody is looking for rather than by shape exactly: a base plate
  * and a top plate are one heading, because nobody goes looking for "top plates".
  */
-export function groupedCatalogue(): { label: string; pieces: StockPiece[] }[] {
+export function groupedCatalog(): { label: string; pieces: StockPiece[] }[] {
 	const claimed = new Set<string>();
 	const groups = PIECE_GROUPS.map(({ shape, label }) => {
-		const pieces = CATALOGUE.filter(
+		const pieces = CATALOG.filter(
 			(entry) =>
 				entry.shape === shape ||
 				(shape === 'BasePlate' && entry.shape === 'TopPlate')
@@ -185,7 +185,7 @@ export function groupedCatalogue(): { label: string; pieces: StockPiece[] }[] {
 
 	// Anything a later version of this console adds that these headings do not cover
 	// still turns up, rather than being quietly missing from the picker.
-	const rest = CATALOGUE.filter((entry) => !claimed.has(entry.id));
+	const rest = CATALOG.filter((entry) => !claimed.has(entry.id));
 	return rest.length > 0 ? [...groups, { label: 'Other', pieces: rest }] : groups;
 }
 

@@ -59,7 +59,7 @@ describe('finding the clamp nearest a point', () => {
 });
 
 describe('the chords a light can be dragged onto', () => {
-	it('are the catalogue piece’s own where there is one', () => {
+	it('are the catalog piece’s own where there is one', () => {
 		const truss = piece('f34-2m');
 		expect(chordsFor(truss, null)).toHaveLength(4);
 		// A corner is 290 mm of block, and a clamp on it would be a light bolted to a

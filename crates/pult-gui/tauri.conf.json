@@ -25,7 +25,8 @@
       "icons/icon.ico"
     ],
     "macOS": {
-      "exceptionDomain": "localhost"
+      "exceptionDomain": "localhost",
+      "entitlements": "Entitlements.plist"
     }
   }
 }

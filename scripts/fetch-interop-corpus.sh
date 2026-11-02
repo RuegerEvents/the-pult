@@ -2,7 +2,7 @@
 # Other people's GDTF and MVR files, and the schemas they are supposed to match.
 #
 # Everything this gathers lands in testdata/corpus/, which is gitignored: these are
-# other people's files under other people's licences, and a corpus checked into the
+# other people's files under other people's licenses, and a corpus checked into the
 # repository would be both large and not ours to redistribute. What *is* checked in
 # is testdata/gdtf/ — small fixtures written here, which the default test suite reads.
 #
@@ -78,7 +78,7 @@ fi
 # The Share's API is a login that sets a cookie, then a download by revision id.
 # The rids below are a spread on purpose, and each is here for a corner:
 #
-#   38193   flashPRO LED PAR RGBWAUV — six emitters, so colour mixing has more than
+#   38193   flashPRO LED PAR RGBWAUV — six emitters, so color mixing has more than
 #           the three every hand-written fixture has
 #   138392  Robe Robin MegaPointe — 39 channels, CMY as subtractive flags, 16-bit
 #           position, two gobo wheels. The first real file this reader was pointed

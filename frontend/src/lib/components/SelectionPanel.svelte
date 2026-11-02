@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Pick from '$lib/components/objects/Pick.svelte';
 	/**
 	 * What is selected, in the order it was selected.
 	 *
@@ -40,6 +41,7 @@
 	import { collection } from '$lib/stores/show.js';
 	import { fixtureTint } from '$lib/stage.js';
 	import { output } from '$lib/stores/output.js';
+	import { uuid } from '$lib/uuid.js';
 
 	const data = getDataContext();
 	const fixtures = collection('fixtures');
@@ -56,7 +58,7 @@
 	let reach = $state(30);
 
 	/**
-	 * The centre of a geometric term.
+	 * The center of a geometric term.
 	 *
 	 * Defaults to the middle of what is selected right now, which is almost always
 	 * what somebody means by "around here" — and saves typing three numbers to say
@@ -76,7 +78,7 @@
 	});
 
 	function addTerm() {
-		const centre = around;
+		const center = around;
 		const term: Term | null =
 			kind === 'Everything'
 				? { kind: 'Everything' }
@@ -85,19 +87,19 @@
 					: kind === 'Named' && text.trim()
 						? { kind: 'Named', text }
 						: kind === 'Sphere'
-							? { kind: 'Sphere', centre, radius }
+							? { kind: 'Sphere', center, radius }
 							: kind === 'Box'
 								? {
 										kind: 'Box',
-										from: { x: centre.x - radius, y: centre.y - radius, z: centre.z - radius },
-										to: { x: centre.x + radius, y: centre.y + radius, z: centre.z + radius }
+										from: { x: center.x - radius, y: center.y - radius, z: center.z - radius },
+										to: { x: center.x + radius, y: center.y + radius, z: center.z + radius }
 									}
 								: kind === 'Cone'
 									? {
 											// Down the room from front of house, which is the shot an
 											// operator means by "that lot over there".
 											kind: 'Cone',
-											from: { x: centre.x, y: centre.y, z: centre.z + reach },
+											from: { x: center.x, y: center.y, z: center.z + reach },
 											direction: { x: 0, y: 0, z: -1 },
 											angleDeg,
 											reach
@@ -122,7 +124,7 @@
 	async function saveGroup() {
 		const name = groupName.trim();
 		if (!name) return;
-		await data.groups.create({ id: crypto.randomUUID(), name, query: asSavedQuery() });
+		await data.groups.create({ id: uuid(), name, query: asSavedQuery(), color: null });
 		groupName = '';
 		naming = false;
 	}
@@ -223,7 +225,7 @@
 		<div class="rules">
 			{#each $query.clauses as clause, i (i)}
 				<span class="rule" class:drop={clause.combine === 'Drop'} class:keep={clause.combine === 'Keep'}>
-					{describeQuery({ clauses: [clause], order: $query.order }, $types)}
+					{describeQuery({ clauses: [clause], order: $query.order, cells: [] }, $types)}
 					<button class="rule-x" aria-label="Remove this rule" onclick={() => removeClause(i)}>×</button>
 				</span>
 			{/each}
@@ -247,12 +249,7 @@
 			</select>
 
 			{#if kind === 'OfType'}
-				<select class="select" bind:value={typeId}>
-					<option value="">choose a type…</option>
-					{#each $types as t (t.id)}
-						<option value={t.id}>{t.name}</option>
-					{/each}
-				</select>
+				<Pick class="select" rows={$types} value={typeId || null} placeholder="choose a type…" onpick={(id) => (typeId = id ?? '')} />
 			{:else if kind === 'Named'}
 				<input class="input" placeholder="part of the name" bind:value={text} />
 			{:else if kind === 'Sphere' || kind === 'Box'}

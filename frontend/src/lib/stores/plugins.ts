@@ -15,7 +15,9 @@
 import { derived, readable, type Readable } from 'svelte/store';
 
 import type { PluginsState } from '$lib/generated/index.js';
-import { PANELS, type PanelMeta } from '$lib/layout/panels.js';
+import { PANELS, type PanelMeta } from '$lib/workspace/panels.js';
+import { isCategory } from '$lib/workspace/categories.js';
+import { pluginIcon } from '$lib/workspace/pluginIcons.js';
 import { showClient } from './show.js';
 
 import BarSurface from '$lib/components/plugins/BarSurface.svelte';
@@ -60,6 +62,10 @@ export const pluginPanels: Readable<Record<string, PanelMeta>> = derived(
 					title: surface.title,
 					component: surface.kind === 'bar' ? BarSurface : ConsoleSurface,
 					fills: true,
+					// A plugin's command line or bar is something somebody programs
+					// through, so it files under Program unless it says otherwise.
+					category: isCategory(surface.category) ? surface.category : 'program',
+					icon: pluginIcon(surface.icon),
 					props: { pluginId: plugin.id, surfaceId: surface.id, status: plugin.status }
 				};
 			}
@@ -68,6 +74,8 @@ export const pluginPanels: Readable<Record<string, PanelMeta>> = derived(
 					title: panel.title,
 					component: WebComponentPanel,
 					fills: panel.fills,
+					category: isCategory(panel.category) ? panel.category : 'program',
+					icon: pluginIcon(panel.icon),
 					props: {
 						pluginId: plugin.id,
 						element: panel.element,
@@ -108,4 +116,40 @@ export function focusConsole(): boolean {
 	if (!focusConsoleInput) return false;
 	focusConsoleInput();
 	return true;
+}
+
+// ── The command line, from outside ────────────────────────────────────────────
+
+/**
+ * An open command line, as something else can type into it: the wing's keypad.
+ *
+ * The keypad types into the prompt an operator can see, and runs what it typed through
+ * the same submit the Enter key does — so what came from the wing lands in the same
+ * scrollback, with the same errors, as what was typed.
+ */
+export type ConsoleLine = {
+	read(): string;
+	write(line: string): void;
+	submit(): Promise<void>;
+};
+
+let consoleLines: ConsoleLine[] = [];
+
+export function registerConsoleLine(line: ConsoleLine): () => void {
+	consoleLines = [...consoleLines, line];
+	return () => {
+		consoleLines = consoleLines.filter((l) => l !== line);
+	};
+}
+
+/** The command line most recently opened, or `null` when none is. */
+export const openConsoleLine = (): ConsoleLine | null => consoleLines.at(-1) ?? null;
+
+/** A running plugin that offers a command line, for running a line when none is open. */
+export function consolePluginOf(state: PluginsState): string | null {
+	for (const plugin of state.plugins) {
+		if (plugin.status.state === 'Failed') continue;
+		if (plugin.surfaces.some((s) => s.kind !== 'bar')) return plugin.id;
+	}
+	return null;
 }

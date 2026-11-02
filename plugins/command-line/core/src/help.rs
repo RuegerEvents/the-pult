@@ -26,18 +26,21 @@ pub fn help(catalog: &Catalog, topic: Option<&str>) -> String {
 const SELECTION_HELP: &str = r#"
 Selecting fixtures
 
-  fixture 3               select one, by its place in the patch
+  fixture 3               select one, by its number
   fixture 1 thru 5        select a range
   fixture 1 thru 5 + 8    ranges combine with + and -
   fixture - 2             take one out of the current selection
   group 3                 select a saved group, by its place or its name
   group "movers"          — and it keeps following the rig, as the group does
   fixture 1 thru 5 + group 2   groups and ranges combine
+  fixture 3 . 1 thru 20   only cells 1 to 20 of a strip or a bar (MA's dot)
+  group 2 . 20 thru 1     a span may run backwards; + joins spans: . 1 + 5
+  . 1 thru 10             cut what is already selected to those cells
   @ 80  /  at 80          the selection to 80% intensity
   at +10  /  at -10       ten percent brighter or darker than it is now
   full  /  out            the selection to 100% / 0%
   home                    every parameter back to where it rests — which for a
-                          house light is on, and for a mover is centred
+                          house light is on, and for a mover is centered
   clear                   empty the programmer (locked values stay)
   clear clear             also drop the selection
 

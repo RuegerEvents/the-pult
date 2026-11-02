@@ -101,8 +101,8 @@ impl Peaks {
         out.extend_from_slice(&self.samples_per_bin.to_le_bytes());
         out.extend_from_slice(&(self.bins.len() as u32).to_le_bytes());
         for (low, high) in &self.bins {
-            out.extend_from_slice(&quantise(*low).to_le_bytes());
-            out.extend_from_slice(&quantise(*high).to_le_bytes());
+            out.extend_from_slice(&quantize(*low).to_le_bytes());
+            out.extend_from_slice(&quantize(*high).to_le_bytes());
         }
         out
     }
@@ -126,7 +126,7 @@ impl Peaks {
             let at = 18 + i * 4;
             let low = i16::from_le_bytes([bytes[at], bytes[at + 1]]);
             let high = i16::from_le_bytes([bytes[at + 2], bytes[at + 3]]);
-            bins.push((dequantise(low), dequantise(high)));
+            bins.push((dequantize(low), dequantize(high)));
         }
         Ok(Peaks { sample_rate, samples_per_bin, bins })
     }
@@ -134,11 +134,11 @@ impl Peaks {
 
 /// `[-1, 1]` to a signed 16-bit column height. Clamped rather than scaled: see the
 /// module header.
-fn quantise(value: f32) -> i16 {
+fn quantize(value: f32) -> i16 {
     (value.clamp(-1.0, 1.0) * i16::MAX as f32).round() as i16
 }
 
-fn dequantise(value: i16) -> f32 {
+fn dequantize(value: i16) -> f32 {
     value as f32 / i16::MAX as f32
 }
 
@@ -176,7 +176,7 @@ mod tests {
     }
 
     #[test]
-    fn the_codec_round_trips_to_the_quantiser_and_no_further() {
+    fn the_codec_round_trips_to_the_quantizer_and_no_further() {
         let peaks = Peaks {
             sample_rate: 48_000,
             samples_per_bin: 480,

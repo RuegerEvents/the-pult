@@ -11,6 +11,8 @@
 		OutputKind,
 		OutputStatus
 	} from '$lib/generated/index.js';
+	import { uuid } from '$lib/uuid.js';
+	import { stationNames } from '$lib/stores/zones.js';
 
 	const client = getClientContext();
 	const data = getDataContext();
@@ -55,7 +57,7 @@
 	}
 
 	/// "sending · 40/s" or the reason it is not.
-	function summarise(output: OutputConfig): string {
+	function summarize(output: OutputConfig): string {
 		if (!output.enabled) return 'off';
 		const status = statusOf(output);
 		if (!status) {
@@ -98,7 +100,7 @@
 		return out;
 	}
 
-	function summariseInput(input: InputConfig): string {
+	function summarizeInput(input: InputConfig): string {
 		if (!input.enabled) return 'off';
 		if (!input.node_id) return 'nobody is listening';
 		if (input.node_id !== thisStation) return 'another station';
@@ -119,7 +121,7 @@
 		const name = newInputName.trim();
 		if (!name) return;
 		await data.inputs.create({
-			id: crypto.randomUUID(),
+			id: uuid(),
 			name,
 			kind: newInputKind,
 			// This station, and there is no "every station" here: a socket is one
@@ -132,7 +134,9 @@
 			// mapping would decode a guest console's universe 1 straight over the
 			// house rig's.
 			universes: {},
-			enabled: true
+			enabled: true,
+			// The protocol's own port.
+			port: null
 		});
 		newInputName = '';
 		creatingInput = false;
@@ -142,7 +146,7 @@
 		const name = newName.trim();
 		if (!name) return;
 		await data.outputs.create({
-			id: crypto.randomUUID(),
+			id: uuid(),
 			name,
 			kind: newKind,
 			target: null,
@@ -292,12 +296,15 @@
 									onchange={(e) =>
 										data.outputs.byId(output.id).node_id.set(e.currentTarget.value || null)}
 								>
-									<option value={thisStation ?? ''}>This station</option>
-									<option value="">Every station</option>
-									{#if output.node_id && output.node_id !== thisStation}
-										<option value={output.node_id}>
-											{output.node_id.slice(0, 8)}…
-										</option>
+									<!-- Naming no station means the leader for a protocol that cannot
+									     share a wire between two senders, and every station for sACN,
+									     which can — `OutputConfig::runs_on`. Said as what it does. -->
+									<option value="">{output.kind === 'Sacn' ? 'Every station' : 'The leader'}</option>
+									{#each $stationNames as s (s.id)}
+										<option value={s.id}>{s.name}{s.id === thisStation ? ' (this one)' : s.online ? '' : ' (offline)'}</option>
+									{/each}
+									{#if output.node_id && !$stationNames.some((s) => s.id === output.node_id)}
+										<option value={output.node_id}>{output.node_id.slice(0, 8)}… (not here)</option>
 									{/if}
 								</select>
 							</td>
@@ -311,7 +318,14 @@
 							</td>
 							<td class="status">
 								<span class="dot" class:on={healthy(output)} class:bad={!!status?.last_error}></span>
-								<span class="summary" title={status?.last_error ?? ''}>{summarise(output)}</span>
+								<span class="summary" title={status?.last_error ?? ''}>{summarize(output)}</span>
+								{#if status?.testing?.length}
+									<span
+										class="testing"
+										title="Channels are being forced by hand on this output; the show is not in control of them"
+										>TEST u{status.testing.join(', ')}</span
+									>
+								{/if}
 							</td>
 							<td>
 								<button
@@ -438,7 +452,7 @@
 									class:on={inputHealthy(input)}
 									class:bad={!!status?.last_error}
 								></span>
-								<span class="summary" title={status?.last_error ?? ''}>{summariseInput(input)}</span>
+								<span class="summary" title={status?.last_error ?? ''}>{summarizeInput(input)}</span>
 							</td>
 							<td>
 								<button
@@ -468,7 +482,7 @@
 <style>
 	.io { padding: 16px 20px; }
 	.block { margin-bottom: 24px; }
-	.block-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+	.block-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 	h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: #999; }
 	.wires { width: 100%; border-collapse: collapse; font-size: 13px; }
 	.wires th { text-align: left; color: #777; font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; padding: 0 6px 6px 0; }
@@ -480,6 +494,7 @@
 	.dot.on { background: #4ade80; }
 	.dot.bad { background: #e05555; }
 	.summary { color: #bbb; font-variant-numeric: tabular-nums; }
+	.testing { margin-left: 8px; padding: 0 6px; border: 1px solid #d99a2b; border-radius: 3px; color: #ffd58a; background: #2a2010; font-size: 11px; letter-spacing: 0.04em; }
 	.hint { color: #777; font-size: 12px; }
 	.new-row { display: flex; gap: 6px; margin-bottom: 4px; }
 	.empty { color: #777; font-size: 13px; padding: 8px 0; }

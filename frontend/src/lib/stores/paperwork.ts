@@ -4,7 +4,7 @@
  * The sheets themselves are the show's — a PERSISTED `sheets` collection, seeded into a
  * new show — so they replicate, undo and travel like anything else. What lives here is
  * one operator's: which sheet they are looking at, which block they have hold of, and
- * how far they have zoomed the preview. The same split as `layouts`, for the same
+ * how far they have zoomed the preview. The same split as `workspaces`, for the same
  * reason: an arrangement is the show's and a scroll position is not.
  *
  * # Every verb is one act
@@ -36,6 +36,7 @@ import type {
 } from '../generated/index.js';
 import { beginGesture, endGesture } from './gesture.js';
 import { collection, showData } from './show.js';
+import { uuid } from '$lib/uuid.js';
 
 /** Every sheet, in the order the export writes them. */
 export const sheets: Readable<Sheet[]> = derived(collection('sheets'), ($sheets) =>
@@ -78,7 +79,7 @@ function sheetById(id: string): Sheet | undefined {
 /** A new, empty sheet at the end of the set. */
 export async function addSheet(name = 'New sheet'): Promise<string> {
 	const existing = get(sheets);
-	const id = crypto.randomUUID();
+	const id = uuid();
 	await asOneAct(async () => {
 		await showData().sheets.create({
 			id,
@@ -98,7 +99,7 @@ export async function addSheet(name = 'New sheet'): Promise<string> {
 export async function duplicateSheet(id: string): Promise<string | null> {
 	const sheet = sheetById(id);
 	if (!sheet) return null;
-	const copy = crypto.randomUUID();
+	const copy = uuid();
 	await asOneAct(async () => {
 		await showData().sheets.create({
 			...sheet,
@@ -202,7 +203,7 @@ export async function removeBlock(sheetId: string, index: number): Promise<void>
 	await asOneAct(async () => {
 		await showData().sheets.byId(sheetId).blocks.set(blocks);
 	});
-	// Cleared rather than moved to a neighbour: the indices after this one have all
+	// Cleared rather than moved to a neighbor: the indices after this one have all
 	// shifted, and a selection that quietly became a different block is an operator
 	// editing something they are not looking at.
 	selectedBlock.set(null);
@@ -254,11 +255,11 @@ export function newText(rect: { x: number; y: number; w: number; h: number }): S
 /** Which edges a grab moves. A move is all four. */
 export type Grip = 'move' | 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
 
-/** The smallest a block may be dragged to, in millimetres. */
+/** The smallest a block may be dragged to, in millimeters. */
 export const MIN_BLOCK_MM = 10;
 
 /**
- * How much of a block must stay on the paper, in millimetres.
+ * How much of a block must stay on the paper, in millimeters.
  *
  * A block dragged entirely past the edge is a block nobody can grab again, and the only
  * way back would be to type its coordinates — which is exactly the thing dragging exists
@@ -268,7 +269,7 @@ export const MIN_BLOCK_MM = 10;
 export const KEEP_ON_PAPER_MM = 8;
 
 /**
- * Where a grip takes a rectangle, given a drag in millimetres.
+ * Where a grip takes a rectangle, given a drag in millimeters.
  *
  * Pure and here rather than in the component so it can be tested, because the cases that
  * matter are not the ordinary one. Dragging a left edge *past* the right edge has to

@@ -1,6 +1,8 @@
 /target/
 /frontend/node_modules/
 /frontend/.svelte-kit/
+# SvelteKit's sync output wherever a tool was run from — the repo root, a worktree.
+.svelte-kit/
 /frontend/build/
 /frontend/src/lib/generated/*.ts
 !/frontend/src/lib/generated/.gitkeep
@@ -50,3 +52,6 @@ testdata/corpus/
 # wing support lives in tools/wing-explorer and is checked in.
 /tools/wing-probe/
 /docs/WING-METHOD.md
+
+# The upgrade fixture: a showfile on purpose, walked up by tests/upgrade.rs.
+!testdata/showfiles/*.db

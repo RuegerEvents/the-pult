@@ -10,10 +10,10 @@ use anyhow::Result;
 use tokio::net::UdpSocket;
 use uuid::Uuid;
 
-use pult_schema::types::output::{OutputSection, SectionBody};
+use pult_schema::types::output::{ChannelTest, OutputSection, SectionBody};
 
 use super::{
-    dmx::{render_carried, Patch, SequenceCounter, UniverseCache, UNIVERSE_SIZE, REFRESH_AFTER},
+    dmx::{force, render_carried, Patch, SequenceCounter, UniverseCache, UNIVERSE_SIZE, REFRESH_AFTER},
     Frame, Frames, OutputPlugin, SendFuture,
 };
 
@@ -30,6 +30,8 @@ pub struct ArtNetOutput {
     /// The universes this node is here for. Empty is every one in the patch, which
     /// is what a configuration that names none means and what `bind` leaves it at.
     carried: Vec<u16>,
+    /// Channels somebody is forcing by hand, laid over the render.
+    test: ChannelTest,
     sent: UniverseCache,
     sequence: SequenceCounter,
 }
@@ -49,6 +51,7 @@ impl ArtNetOutput {
             socket,
             target,
             carried: Vec::new(),
+            test: ChannelTest::default(),
             sent: UniverseCache::default(),
             sequence: SequenceCounter::default(),
         })
@@ -85,7 +88,8 @@ impl OutputPlugin for ArtNetOutput {
             let now = std::time::Instant::now();
             // Timed on its own: rendering is where every parameter of every patched
             // fixture is worked out, and putting the bytes on the wire is the rest.
-            let universes = render_carried(patch, now_ms, &self.carried);
+            let mut universes = render_carried(patch, now_ms, &self.carried);
+            force(&mut universes, &self.test, &self.carried);
             let mut frame = Frame::evaluated(now.elapsed());
             for universe in universes {
                 if !self.sent.needs_send(&universe, now, REFRESH_AFTER) {
@@ -106,6 +110,10 @@ impl OutputPlugin for ArtNetOutput {
             }
             Ok(frame)
         })
+    }
+
+    fn set_test(&mut self, test: &ChannelTest) {
+        self.test = test.clone();
     }
 
     /// The universes as they last went out, read off the dedup cache.

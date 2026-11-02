@@ -57,7 +57,7 @@ function asObject(placed: ChainCase['objects'][number]): SceneObject {
 		class: null,
 		geometry: [],
 		symbol: null,
-		catalogue: null,
+		catalog: null,
 		properties: null,
 		locked: false,
 		weight_kg: null

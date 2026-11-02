@@ -26,7 +26,7 @@
 //
 // So: take several windows, throw the first away, and report the median with the
 // spread beside it. An instrument that cannot say how much it disagrees with itself
-// cannot be used to tell an optimisation from noise, which is the whole job here.
+// cannot be used to tell an optimization from noise, which is the whole job here.
 
 import { connect, sleep } from './demo-ws.mjs';
 

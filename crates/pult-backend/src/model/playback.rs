@@ -26,8 +26,8 @@ use pult_schema::types::{
     fixture::{home_value_by_key, Fixture, FixtureType, ParameterValue},
     preset::{preset_index, Preset},
     programmer::ProgrammerValue,
-    sequence::Sequence,
-    show::FadeCurves,
+    sequence::{Masters, Merge, Sequence},
+    show::{FadeCurves, FadeGroup},
     speedmaster::SpeedMaster,
 };
 
@@ -35,6 +35,7 @@ use pult_schema::types::{
 /// browser and the command-line plugin derive the same key, and one of them being
 /// right is the only version of this worth having.
 pub use pult_schema::types::fixture::parameter_key;
+use pult_render::HtpLayer;
 use uuid::Uuid;
 
 use super::effects;
@@ -59,6 +60,9 @@ pub enum PlaybackEffect {
     /// Including the ones that have arrived. A landed fade is a constant function of
     /// time, and it is the console's only record of where that parameter is.
     SetLiveFades { fixture_id: Uuid, fades: HashMap<String, RunningFade> },
+    /// What other sequences are playing beside the winner on an intensity, under an
+    /// HTP merge. See `Fixture::live_htp`.
+    SetLiveHtp { fixture_id: Uuid, layers: HashMap<String, Vec<HtpLayer>> },
     SetCueActive { cue_id: Uuid, is_active: bool },
     GoNext { sequence_id: Uuid, at: u64 },
 }
@@ -100,6 +104,11 @@ pub struct ShowView<'a> {
     /// [`ParameterCapture::value_in`], and a pass that took resolved values would
     /// have decided the question somewhere else.
     pub presets: HashMap<Uuid, &'a Preset>,
+    /// The sequences' playback faders, by the cues those sequences hold.
+    pub masters: Masters,
+    /// Which sequence each cue belongs to, which is how a fade or an effect says whose
+    /// it is.
+    sequence_of_cue: HashMap<Uuid, Uuid>,
 }
 
 impl<'a> ShowView<'a> {
@@ -125,7 +134,51 @@ impl<'a> ShowView<'a> {
             home_fade_ms,
             fade_curves,
             presets: preset_index(presets),
+            masters: Masters::of(sequences),
+            sequence_of_cue: sequences.iter().flat_map(|s| s.cue_ids.iter().map(move |c| (*c, s.id))).collect(),
         }
+    }
+
+    /// The sequences' levels as they are this moment, where the caller knows more than
+    /// the faders: a playing take that records a level puts it over its fader, and a
+    /// fade a Go starts has to begin from what that level is showing.
+    pub fn with_levels(mut self, masters: Masters) -> Self {
+        self.masters = masters;
+        self
+    }
+
+    /// The sequence a cue is in.
+    fn sequence_of(&self, cue_id: Uuid) -> Option<Uuid> {
+        self.sequence_of_cue.get(&cue_id).copied()
+    }
+
+    fn sequence(&self, id: Uuid) -> Option<&'a Sequence> {
+        self.sequences.iter().find(|s| s.id == id)
+    }
+
+    /// Whether this sequence is on: on a cue.
+    fn is_on(&self, id: Uuid) -> bool {
+        self.sequence(id).is_some_and(|s| s.active_cue_index.is_some())
+    }
+
+    /// The capture a sequence that is on is tracking for this key: the latest one over
+    /// its stack up to the cue it is on, and the cue it belongs to.
+    fn tracked_capture(
+        &self,
+        sequence: &'a Sequence,
+        at: &Key,
+    ) -> Option<(&'a Cue, &'a pult_schema::types::cue::ParameterCapture)> {
+        let index = sequence.active_cue_index?;
+        let mut found = None;
+        for id in sequence.cue_ids.iter().take(index + 1) {
+            let Some(cue) = self.cues.get(id).copied() else { continue };
+            for capture in &cue.captures {
+                if capture.fixture_id == at.0 && parameter_key(&capture.parameter_kind) == at.1 {
+                    found = Some((cue, capture));
+                }
+            }
+        }
+        found
     }
 
     /// One fixture, by id.
@@ -241,6 +294,9 @@ fn parked(fixture_id: Uuid, key: String, value: ParameterValue, at: u64) -> Fade
 
 // ── Playback ──────────────────────────────────────────────────────────────────
 
+/// What a fixture was last handed: its effects, its fades, and what is beside them.
+type Motion = (HashMap<String, RunningEffect>, HashMap<String, RunningFade>, HashMap<String, Vec<HtpLayer>>);
+
 #[derive(Default)]
 pub struct Playback {
     /// The cue each sequence is currently playing, so a change can be spotted.
@@ -252,12 +308,16 @@ pub struct Playback {
     /// programmer's are worked out from its entries on each pass, because that is
     /// where the precedence between the two is decided.
     effects: HashMap<Key, RunningEffect>,
+    /// What other sequences that are on go on playing on an intensity an HTP sequence
+    /// went over, oldest first, each with the sequence it is. The fade or effect above
+    /// is the latest; the light shows the highest of them all. See [`Merge`].
+    beside: HashMap<Key, Vec<(Uuid, HtpLayer)>>,
     /// What was last handed to the engine as `live_effects` and `live_fades`, so an
     /// unchanged description is not written again.
     ///
     /// Nothing else in the system writes those two fields: they are LOCAL and this is
     /// their only writer, so there is no other hand for the cache to be wrong about.
-    motion: HashMap<Uuid, (HashMap<String, RunningEffect>, HashMap<String, RunningFade>)>,
+    motion: HashMap<Uuid, Motion>,
     /// Sequences with a follow cue due, and the console millisecond it is due at.
     follows: HashMap<Uuid, u64>,
     /// Keys a stopping recording was holding, and what it was holding them at.
@@ -304,6 +364,7 @@ impl Playback {
         self.playing.is_empty()
             && self.fades.is_empty()
             && self.effects.is_empty()
+            && self.beside.is_empty()
             && self.motion.is_empty()
             && self.follows.is_empty()
             && self.releasing_tracks.is_empty()
@@ -341,6 +402,16 @@ impl Playback {
                 .map(|f| &f.running)
                 .or_else(|| fixture.live_fades.get(&at.1)),
             home: None,
+            master: None,
+            // The winner alone: what a fade starting here starts from, and what a
+            // stopped effect parks at, are that sequence's own.
+            beside: Default::default(),
+        };
+        // What is on stage, the sequence's fader included: a fade starting from
+        // here is starting from what the audience is looking at.
+        let driving = pult_render::Driving {
+            master: view.masters.over(&at.1, driving.effect, driving.fade),
+            ..driving
         };
         pult_render::value_at(&driving, wall_ms)
             .or_else(|| home_value_by_key(fixture, view.fixture_type(fixture), &at.1))
@@ -395,7 +466,7 @@ impl Playback {
         // collapses a whole system into whichever lamp came last — and then every fade
         // in that system is compared against a value that is not its own and restarted
         // to it. Which is a cue edit moving twenty lights nobody touched, and is what
-        // `demo.sh --demo theatre` found.
+        // `demo.sh --demo theater` found.
         type ByFixture<'c> =
             HashMap<Uuid, HashMap<String, &'c pult_schema::types::cue::ParameterCapture>>;
         let mut wanted: HashMap<Uuid, ByFixture<'_>> = HashMap::new();
@@ -435,8 +506,10 @@ impl Playback {
                 continue;
             }
             let at: Key = (fade.fixture_id, fade.key.clone());
-            let from =
-                self.value_at(view, &at, wall_ms).unwrap_or_else(|| fade.running.from.clone());
+            let from = self
+                .value_at(view, &at, wall_ms)
+                .map(|showing| unmastered(view, &at.1, fade.running.cue_id, showing))
+                .unwrap_or_else(|| fade.running.from.clone());
             moves.push((at, fade.running.cue_id, from, to.clone()));
         }
 
@@ -457,6 +530,118 @@ impl Playback {
                     cue_id,
                 },
             });
+        }
+
+        self.release_dropped_captures(wall_ms, view);
+        self.start_new_captures(wall_ms, view);
+    }
+
+    /// **And a capture a standing cue lost lets its key go.** Taking a value out of the
+    /// cue on stage left its fade where it was, holding the light at a value no cue said
+    /// any more until the next Go. Now the key goes where the stack says: to what another
+    /// live sequence's tracked stack captures, started the way a Go starts it, or home —
+    /// over `home_fade_ms`, from where it is. A key an earlier cue of the *same* sequence
+    /// still tracks is `start_new_captures`' to restart, and is left to it.
+    fn release_dropped_captures(&mut self, wall_ms: u64, view: &ShowView<'_>) {
+        let captured = |cue_id: Uuid, at: &Key| {
+            view.cues.get(&cue_id).is_none_or(|cue| {
+                cue.captures.iter().any(|c| c.fixture_id == at.0 && parameter_key(&c.parameter_kind) == at.1)
+            })
+        };
+        let mut dropped: Vec<(Key, Uuid)> = self
+            .fades
+            .iter()
+            .filter(|f| !f.running.cue_id.is_nil())
+            .map(|f| ((f.fixture_id, f.key.clone()), f.running.cue_id))
+            .filter(|(at, cue_id)| !captured(*cue_id, at))
+            .collect();
+        dropped.extend(self.effects.iter().filter_map(|(at, fx)| match fx.source {
+            EffectSource::Cue(cue_id) if !captured(cue_id, at) => Some((at.clone(), cue_id)),
+            _ => None,
+        }));
+        if dropped.is_empty() {
+            return;
+        }
+
+        let mut live: Vec<&Sequence> = view.sequences.iter().filter(|s| s.active_cue_index.is_some()).collect();
+        live.sort_by_key(|s| s.went_at.unwrap_or(0));
+        let mut wanted: HashMap<Key, (&Sequence, &Cue, &pult_schema::types::cue::ParameterCapture)> = HashMap::new();
+        for sequence in live {
+            let Some(active) = sequence.active_cue_index else { continue };
+            let through = sequence.cue_ids.iter().take(active + 1);
+            for (cue, capture) in pult_schema::types::cue::tracked_through(through, |id| view.cues.get(id).copied()) {
+                wanted.insert((capture.fixture_id, parameter_key(&capture.parameter_kind)), (sequence, cue, capture));
+            }
+        }
+
+        for (at, was) in dropped {
+            match wanted.get(&at) {
+                // The same sequence still tracks it from an earlier cue: restarted there.
+                Some((sequence, _, _)) if sequence.cue_ids.contains(&was) => {}
+                // Another live sequence says it: taken over from where it is.
+                Some((sequence, cue, capture)) => {
+                    let anchor = if capture.effect.is_some() { sequence.went_at.unwrap_or(wall_ms) } else { wall_ms };
+                    let (cue, capture) = (*cue, *capture);
+                    self.start_capture(wall_ms, anchor, cue, cue, capture, view);
+                }
+                None => self.release_key(wall_ms, at, view, view.home_fade_ms),
+            }
+        }
+    }
+
+    /// **And a capture a standing cue gained is started.** Repointing reaches only a
+    /// fade that already exists, so a key stored into the cue on stage for the first
+    /// time — the Store dialog Update opens for the keys no cue was driving — had
+    /// nothing to move. It went live only after the sequence was taken off and on
+    /// again, and when the programmer cleared, the light fell back to home (found at
+    /// the gig, 2026-10-25).
+    ///
+    /// What should be driving each key is worked out the way a Go works it out: the
+    /// latest capture over each live sequence's tracked stack, the sequence that went
+    /// most recently winning a contested key. A key is started when nothing of
+    /// playback's is driving it, or when an *earlier* cue of the same sequence still
+    /// is — the edit made a later cue say it. Anything another sequence or a release is
+    /// doing is left alone, and so is a key already heading where it should.
+    ///
+    /// Started through `start_capture`, from where the parameter is: during Update or a
+    /// Store that is the programmer's value, which is the value being stored, so the
+    /// light does not move.
+    fn start_new_captures(&mut self, wall_ms: u64, view: &ShowView<'_>) {
+        let mut live: Vec<&Sequence> = view.sequences.iter().filter(|s| s.active_cue_index.is_some()).collect();
+        live.sort_by_key(|s| s.went_at.unwrap_or(0));
+        let mut wanted: HashMap<Key, (&Sequence, &Cue, &pult_schema::types::cue::ParameterCapture)> = HashMap::new();
+        for sequence in live {
+            let Some(active) = sequence.active_cue_index else { continue };
+            let through = sequence.cue_ids.iter().take(active + 1);
+            for (cue, capture) in pult_schema::types::cue::tracked_through(through, |id| view.cues.get(id).copied()) {
+                wanted.insert((capture.fixture_id, parameter_key(&capture.parameter_kind)), (sequence, cue, capture));
+            }
+        }
+
+        let mut starts: Vec<(&Sequence, &Cue, &pult_schema::types::cue::ParameterCapture)> = Vec::new();
+        for (at, (sequence, cue, capture)) in &wanted {
+            if let Some(effect) = self.effects.get(at) {
+                // An effect is driving it; only one of this sequence's earlier cues
+                // gives it up to the capture now standing.
+                match effect.source {
+                    EffectSource::Cue(id) if id != cue.id && sequence.cue_ids.contains(&id) => {}
+                    _ => continue,
+                }
+            } else if let Some(fade) = self.fades.iter().find(|f| f.fixture_id == at.0 && f.key == at.1) {
+                let ours = fade.running.cue_id == cue.id;
+                let earlier = !fade.running.cue_id.is_nil() && sequence.cue_ids.contains(&fade.running.cue_id);
+                let heading_there = capture.effect.is_none() && fade.running.to == *capture.value_in(&view.presets);
+                if ours || !earlier || heading_there {
+                    continue;
+                }
+            }
+            starts.push((sequence, cue, capture));
+        }
+        for (sequence, cue, capture) in starts {
+            // An effect keeps the phase the cue's other effects took from its Go; a fade
+            // runs from now.
+            let anchor = if capture.effect.is_some() { sequence.went_at.unwrap_or(wall_ms) } else { wall_ms };
+            self.start_capture(wall_ms, anchor, cue, cue, capture, view);
         }
     }
 
@@ -590,7 +775,8 @@ impl Playback {
                 // reach it, now that Go at the last cue stays there. So everything it
                 // was driving and nothing else is still driving goes home.
                 self.playing.remove(&sequence.id);
-                self.release_sequence(wall_ms, sequence, view);
+                let leaving = previous.and_then(|id| view.cues.get(&id).copied());
+                self.release_sequence(wall_ms, sequence, view, leaving);
                 continue;
             };
             self.playing.insert(sequence.id, cue_id);
@@ -598,7 +784,8 @@ impl Playback {
 
             if let (Some(cue), Some(index)) = (view.cues.get(&cue_id), sequence.active_cue_index) {
                 let anchor = view.anchor_for(sequence, wall_ms);
-                self.take_cue(wall_ms, anchor, index, cue, view, sequence);
+                let leaving = previous.and_then(|id| view.cues.get(&id).copied());
+                self.take_cue(wall_ms, anchor, index, cue, view, sequence, leaving);
             }
         }
     }
@@ -613,7 +800,7 @@ impl Playback {
     /// left it. Jumping forward, the cues in between are applied on the way. And
     /// jumping *back* is the case that used to be wrong: a parameter that a later cue
     /// brought in was left where that cue put it, so going back from cue 5 to cue 1
-    /// in the Theatre demo left the side booms on, because nothing before cue 4
+    /// in the Theater demo left the side booms on, because nothing before cue 4
     /// mentions them. Now it goes home, since no cue at or before cue 1 has it.
     ///
     /// Three kinds of key, worked out from the stack rather than remembered:
@@ -633,6 +820,7 @@ impl Playback {
         cue: &Cue,
         view: &ShowView<'_>,
         sequence: &Sequence,
+        leaving: Option<&Cue>,
     ) {
         // The latest capture of every key, over the stack up to here.
         let mut tracked: HashMap<Key, (&Cue, &pult_schema::types::cue::ParameterCapture)> =
@@ -648,12 +836,14 @@ impl Playback {
         // What only later cues capture goes home — unless something else that is on
         // could still want it, the same rule a release follows.
         let still_driven = view.captured_by_the_sequences_that_are_on(Some(sequence.id));
-        let down = if cue.fade_out_ms > 0 { cue.fade_out_ms } else { cue.fade_in_ms };
         for at in view.captured_by(sequence) {
-            if tracked.contains_key(&at) || still_driven.contains(&at) {
+            if tracked.contains_key(&at) {
                 continue;
             }
-            self.release_key(wall_ms, at, view, down);
+            let driven = still_driven.contains(&at);
+            // What a later cue set goes over the out time of the cue being left.
+            let out = out_time(view, leaving, &at);
+            self.let_go(wall_ms, at, view, out, sequence.id, driven);
         }
 
         let mut latest_end = wall_ms;
@@ -666,7 +856,10 @@ impl Playback {
                     || self
                         .effects
                         .get(&at)
-                        .is_some_and(|fx| fx.source == EffectSource::Cue(owner.id));
+                        .is_some_and(|fx| fx.source == EffectSource::Cue(owner.id))
+                    || self.beside.get(&at).is_some_and(|layers| {
+                        layers.iter().any(|(_, layer)| owner_cue(layer) == Some(owner.id))
+                    });
                 if already {
                     continue;
                 }
@@ -749,6 +942,7 @@ impl Playback {
         wall_ms: u64,
         sequence: &Sequence,
         view: &ShowView<'_>,
+        leaving: Option<&Cue>,
     ) {
         let mine = view.captured_by(sequence);
         if mine.is_empty() {
@@ -757,11 +951,103 @@ impl Playback {
         let still_driven = view.captured_by_the_sequences_that_are_on(Some(sequence.id));
 
         for at in mine {
-            if still_driven.contains(&at) {
-                continue;
-            }
-            self.release_key(wall_ms, at, view, view.home_fade_ms);
+            let driven = still_driven.contains(&at);
+            // Off ends the cue that was up, so its out time is how its values go.
+            let out = out_time(view, leaving, &at);
+            self.let_go(wall_ms, at, view, out, sequence.id, driven);
         }
+    }
+
+    /// One sequence letting go of one parameter: taken off, or gone back past the cue
+    /// that set it.
+    ///
+    /// What it was playing beside the winner goes. Where another sequence that is on
+    /// holds the parameter, that is left alone. Otherwise it is handed back: to the
+    /// latest of what is beside it, or — `driven`, another sequence that is on captures
+    /// it — to that sequence's own capture, over that sequence's cue. Only a parameter
+    /// nothing else wants goes home, over `duration_ms`.
+    ///
+    /// Handing back is new. A parameter used to stay wherever the sequence going off
+    /// left it whenever another sequence *could* drive it, so a scare's last cue at
+    /// black stayed black over the look it was meant to give the room back to.
+    fn let_go(&mut self, wall_ms: u64, at: Key, view: &ShowView<'_>, duration_ms: u32, sequence: Uuid, driven: bool) {
+        if let Some(layers) = self.beside.get_mut(&at) {
+            layers.retain(|(owner, _)| *owner != sequence);
+            if layers.is_empty() {
+                self.beside.remove(&at);
+            }
+        }
+        let primary = self.primary_owner(view, &at);
+        if let Some(Some(owner)) = primary {
+            if owner != sequence && view.is_on(owner) {
+                return;
+            }
+        }
+        if self.promote_beside(&at) {
+            return;
+        }
+        if driven {
+            // Nothing on the parameter at all is nothing to hand back.
+            if primary.is_some() {
+                self.reassert(wall_ms, &at, view, sequence);
+            }
+            return;
+        }
+        self.release_key(wall_ms, at, view, duration_ms);
+    }
+
+    /// Whose the winning fade or effect on a parameter is: `None` for nothing on it,
+    /// `Some(None)` for something no sequence's cue put there — a release, a parked
+    /// value, a flow.
+    fn primary_owner(&self, view: &ShowView<'_>, at: &Key) -> Option<Option<Uuid>> {
+        if let Some(effect) = self.effects.get(at) {
+            return Some(match effect.source {
+                EffectSource::Cue(cue) => view.sequence_of(cue),
+                EffectSource::Programmer => None,
+            });
+        }
+        let fade = self.fades.iter().find(|f| f.fixture_id == at.0 && f.key == at.1)?;
+        Some(if fade.running.cue_id.is_nil() { None } else { view.sequence_of(fade.running.cue_id) })
+    }
+
+    /// The winner on a parameter, taken off it as a layer to keep beside.
+    fn take_primary(&mut self, at: &Key) -> Option<HtpLayer> {
+        let effect = self.effects.remove(at);
+        let fade = self.fades.iter().position(|f| f.fixture_id == at.0 && f.key == at.1).map(|i| self.fades.remove(i).running);
+        self.fades.retain(|f| !(f.fixture_id == at.0 && f.key == at.1));
+        (effect.is_some() || fade.is_some()).then_some(HtpLayer { effect, fade })
+    }
+
+    /// The latest layer beside a parameter becomes its winner. Answers whether there was one.
+    fn promote_beside(&mut self, at: &Key) -> bool {
+        let Some(layers) = self.beside.get_mut(at) else { return false };
+        let Some((_, layer)) = layers.pop() else { return false };
+        if layers.is_empty() {
+            self.beside.remove(at);
+        }
+        self.fades.retain(|f| !(f.fixture_id == at.0 && f.key == at.1));
+        self.effects.remove(at);
+        if let Some(effect) = layer.effect {
+            self.effects.insert(at.clone(), effect);
+        }
+        if let Some(running) = layer.fade {
+            self.fades.push(Fade { fixture_id: at.0, key: at.1.clone(), running });
+        }
+        true
+    }
+
+    /// Give a parameter back to the sequence that is on and went last of those
+    /// capturing it, from where it is now, over that sequence's own cue.
+    fn reassert(&mut self, wall_ms: u64, at: &Key, view: &ShowView<'_>, except: Uuid) {
+        let owner = view
+            .sequences
+            .iter()
+            .filter(|s| s.id != except && s.active_cue_index.is_some())
+            .filter_map(|s| view.tracked_capture(s, at).map(|found| (s, found)))
+            .max_by_key(|(s, _)| s.went_at.unwrap_or(0));
+        let Some((sequence, (owner, capture))) = owner else { return };
+        let Some(cue) = view.active_cue(sequence) else { return };
+        self.start_capture(wall_ms, wall_ms, cue, owner, capture, view);
     }
 
     /// Freeze whatever the effects this predicate picks out were showing, and drop
@@ -789,6 +1075,18 @@ impl Playback {
             let Some(value) = showing else { continue };
             self.fades.retain(|f| !(f.fixture_id == at.0 && f.key == at.1));
             self.fades.push(parked(at.0, at.1, value, wall_ms));
+        }
+        // And beside the winner, parked as what that sequence was showing — still its,
+        // so its fader still scales it.
+        for layers in self.beside.values_mut() {
+            for (_, layer) in layers.iter_mut() {
+                let Some(effect) = layer.effect.as_ref().filter(|fx| which(fx)) else { continue };
+                let EffectSource::Cue(cue_id) = effect.source else { continue };
+                let value = pult_render::effect_value_at(effect, wall_ms);
+                let mut fade = parked(Uuid::nil(), String::new(), value, wall_ms).running;
+                fade.cue_id = cue_id;
+                *layer = HtpLayer { effect: None, fade: Some(fade) };
+            }
         }
     }
 
@@ -825,6 +1123,31 @@ impl Playback {
             // whatever had it. A cue re-taken mid-fade fades on from here.
             let showing = self.value_at(view, &at, wall_ms);
 
+            // An HTP sequence going over an intensity another sequence that is on is
+            // playing keeps that one beside it; an LTP one takes the key from all of
+            // them. Either way this sequence's own earlier layer goes, being replaced.
+            if let Some(mine) = view.sequence_of(owner.id) {
+                if let Some(layers) = self.beside.get_mut(&at) {
+                    layers.retain(|(owner, _)| *owner != mine);
+                }
+                let htp = view.sequence(mine).is_some_and(|s| s.merge() == Merge::Htp)
+                    && FadeGroup::of_key(&key) == FadeGroup::Intensity;
+                if htp {
+                    if let Some(Some(other)) = self.primary_owner(view, &at) {
+                        if other != mine && view.is_on(other) {
+                            if let Some(layer) = self.take_primary(&at) {
+                                self.beside.entry(at.clone()).or_default().push((other, layer));
+                            }
+                        }
+                    }
+                } else {
+                    self.beside.remove(&at);
+                }
+                if self.beside.get(&at).is_some_and(Vec::is_empty) {
+                    self.beside.remove(&at);
+                }
+            }
+
             // Whichever this capture asserts, it takes the key off the other.
             self.fades.retain(|f| !(f.fixture_id == capture.fixture_id && f.key == key));
             self.effects.remove(&at);
@@ -848,21 +1171,23 @@ impl Playback {
             //
             // Read before the key is cleared above? No: `from` is taken from `showing`,
             // which was evaluated for this key before either was removed.
+            //
+            // And from what is on stage *before this sequence's fader scales it*: the
+            // fade below runs at that fader's level, so starting it from the showing
+            // value would dim the start of every Go a sequence below full makes.
             let from = showing
+                .map(|showing| unmastered(view, &key, owner.id, showing))
                 // A fixture whose type has gone: nothing can say where it rests, so
                 // the cue lands rather than fading from a zero nobody vouched for.
                 .unwrap_or_else(|| to.clone());
 
-            // A capture's own time wins; zero means "use the cue's". Which of the two
-            // the parameter takes is decided by where it is going — a split fade is
-            // the whole reason a cue has an out time as well as an in time.
-            let up = if capture.fade_in_ms > 0 { capture.fade_in_ms } else { cue.fade_in_ms };
-            let down = match (capture.fade_out_ms, cue.fade_out_ms) {
-                (0, 0) => up,
-                (0, cue_out) => cue_out,
-                (own, _) => own,
-            };
-            let duration_ms = if descending(&from, &to) { down } else { up };
+            // A capture's own time wins; zero means "use the cue's". The cue's *in*
+            // time, whichever way the parameter is going: a cue's in time is how it
+            // starts, and its out time is how what it set goes when it ends — see
+            // `out_time`. (It used to split by direction, ETC's downtime, which read
+            // as a bug: back into a cue with an out time, every light caught higher
+            // than the cue faded while every one caught lower snapped.)
+            let duration_ms = if capture.fade_in_ms > 0 { capture.fade_in_ms } else { cue.fade_in_ms };
 
             let fade = Fade {
                 fixture_id: capture.fixture_id,
@@ -937,7 +1262,9 @@ impl Playback {
             .fixtures
             .iter()
             .map(|f| f.id)
-            .filter(|id| per_fixture.contains_key(id) || self.motion.contains_key(id))
+            .filter(|id| {
+                per_fixture.contains_key(id) || self.motion.contains_key(id) || self.beside.keys().any(|at| at.0 == *id)
+            })
             .collect();
 
         for fixture_id in considered {
@@ -947,10 +1274,17 @@ impl Playback {
             // about. The map is written whole, so publishing only what this object
             // knows would silently take a parameter's driver away because some *other*
             // parameter of the same fixture moved.
+            //
+            // Never the programmer's own shape, though: that lives exactly as long as
+            // its entry, and `held_effects` above already lists every one still held.
+            // Carried forward, an effect cleared out of the programmer kept running for
+            // ever — Clear took the entry and the light went on chasing, until a plain
+            // value on the same key unlisted it (found at the gig, 2026-10-26).
             if let Some(fixture) = view.fixture(fixture_id) {
                 for (key, effect) in &fixture.live_effects {
                     let mine = (fixture_id, key.clone());
                     if !held.contains(&mine)
+                        && !matches!(effect.source, EffectSource::Programmer)
                         && !self.effects.contains_key(&mine)
                         && !self.holds_a_fade(&mine)
                     {
@@ -969,20 +1303,33 @@ impl Playback {
                 }
             }
 
+            // What is beside the winner, only where the winner is playback's own: the
+            // programmer holding the key is all that reaches the light.
+            let beside: HashMap<String, Vec<HtpLayer>> = self
+                .beside
+                .iter()
+                .filter(|(at, layers)| at.0 == fixture_id && !layers.is_empty() && !held.contains(*at))
+                .map(|(at, layers)| (at.1.clone(), layers.iter().map(|(_, layer)| layer.clone()).collect()))
+                .collect();
+
             let previous = self.motion.get(&fixture_id);
 
-            if previous.map(|(e, f)| (e, f)) != Some((&effects, &fades)) {
+            if previous.map(|(e, f, _)| (e, f)) != Some((&effects, &fades)) {
                 out.push(PlaybackEffect::SetLiveEffects {
                     fixture_id,
                     effects: effects.clone(),
                 });
                 out.push(PlaybackEffect::SetLiveFades { fixture_id, fades: fades.clone() });
             }
+            let empty = HashMap::new();
+            if previous.map_or(&empty, |(_, _, b)| b) != &beside {
+                out.push(PlaybackEffect::SetLiveHtp { fixture_id, layers: beside.clone() });
+            }
 
-            if effects.is_empty() && fades.is_empty() {
+            if effects.is_empty() && fades.is_empty() && beside.is_empty() {
                 self.motion.remove(&fixture_id);
             } else {
-                self.motion.insert(fixture_id, (effects, fades));
+                self.motion.insert(fixture_id, (effects, fades, beside));
             }
         }
 
@@ -991,6 +1338,7 @@ impl Playback {
         self.motion.retain(|id, _| view.by_id.contains_key(id));
         self.fades.retain(|f| view.by_id.contains_key(&f.fixture_id));
         self.effects.retain(|at, _| view.by_id.contains_key(&at.0));
+        self.beside.retain(|at, _| view.by_id.contains_key(&at.0));
     }
 
     /// Does playback itself have a fade on this parameter?
@@ -1016,21 +1364,44 @@ impl Playback {
 
 // ── Parameter helpers ─────────────────────────────────────────────────────────
 
-/// Is this capture asking the parameter to come down rather than to go up?
+/// What a fade this cue starts has to begin from, for the stage not to jump.
 ///
-/// Which decides whether it takes the out time or the in time. Only values with an
-/// order to be on can answer: a colour has three of them and no agreed way to rank
-/// them, a relay has none at all, and a fixture whose parameter changes kind
-/// mid-show is a mistake rather than a direction. All of those take the in time,
-/// which is the one time they have always taken — so a show that never sets an out
-/// time runs exactly as it did.
-fn descending(from: &ParameterValue, to: &ParameterValue) -> bool {
-    use ParameterValue::*;
-    match (from, to) {
-        (Float(a), Float(b)) => b < a,
-        (Int(a), Int(b)) => b < a,
-        _ => false,
+/// The fade will run at its sequence's fader, so it starts from what is showing
+/// with that fader taken back out — `from × master` is then exactly where the light
+/// was. Only for the keys a master reaches; everything else starts where it is.
+/// The cue an HTP layer belongs to.
+fn owner_cue(layer: &HtpLayer) -> Option<Uuid> {
+    match (&layer.effect, &layer.fade) {
+        (Some(effect), _) => match effect.source {
+            EffectSource::Cue(cue) => Some(cue),
+            EffectSource::Programmer => None,
+        },
+        (None, Some(fade)) => (!fade.cue_id.is_nil()).then_some(fade.cue_id),
+        (None, None) => None,
     }
+}
+
+fn unmastered(view: &ShowView<'_>, key: &str, cue_id: Uuid, showing: ParameterValue) -> ParameterValue {
+    if FadeGroup::of_key(key) != FadeGroup::Intensity {
+        return showing;
+    }
+    match view.masters.of_cue(cue_id) {
+        Some(level) => showing.unscaled(level),
+        None => showing,
+    }
+}
+
+/// How long what a cue set takes to go when that cue ends — the sequence going
+/// back past it, or off: the cue's own capture for the key where it says an out
+/// time, then the cue's out time, then the show's *letting go* time.
+fn out_time(view: &ShowView<'_>, leaving: Option<&Cue>, at: &Key) -> u32 {
+    let Some(cue) = leaving else { return view.home_fade_ms };
+    let own = cue
+        .captures
+        .iter()
+        .find(|c| c.fixture_id == at.0 && parameter_key(&c.parameter_kind) == at.1)
+        .map_or(0, |c| c.fade_out_ms);
+    [own, cue.fade_out_ms].into_iter().find(|ms| *ms > 0).unwrap_or(view.home_fade_ms)
 }
 
 #[cfg(test)]

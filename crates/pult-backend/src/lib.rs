@@ -16,6 +16,7 @@ pub mod infra;
 pub mod logging;
 pub mod model;
 pub mod state;
+pub mod wing;
 
 use std::{net::SocketAddr, sync::Arc};
 
@@ -80,6 +81,9 @@ pub struct Running {
     /// Where a view is pushed at the browsers, and where one from a peer arrives.
     pub updates: crate::engine::UpdateBroadcast,
     pub serve: JoinHandle<Result<()>>,
+    /// This station's OpenHaunt device manager, for a test that has to tell it about a
+    /// node without mDNS — which is every test, on a machine that may not multicast.
+    pub devices: crate::infra::devices::DeviceHandle,
     /// MVR-xchange on this station, for a caller that wants to commit or apply
     /// without a browser to click in — which is what the tests want, the same way
     /// `sync` is here so a test can join a peer without going through discovery.
@@ -109,7 +113,7 @@ pub struct Running {
     pools: Vec<Arc<sqlx::SqlitePool>>,
     /// This station's mDNS browse daemon, which runs on a thread of its own and so
     /// outlives every task unless it is told not to.
-    devices_mdns: Option<mdns_sd::ServiceDaemon>,
+    devices_mdns: infra::devices::DeviceBrowser,
     /// For telling the session layer to take its service off the network.
     session: crate::infra::session::SessionHandle,
     /// For telling every open WebSocket the same, and why — see `AppState::stopping`.
@@ -137,6 +141,8 @@ pub enum ShowSwitch {
         /// hundred writes through an engine, and the engine that will hold this show
         /// does not exist until the station has started.
         demo: Option<demo::Demo>,
+        /// Walk an older show up to this build first: somebody was asked, and said so.
+        upgrade: bool,
     },
     Close,
     Restore {
@@ -177,6 +183,8 @@ pub struct ShowsHandle {
     tx: mpsc::Sender<ShowSwitch>,
     pub bundle: Option<Bundle>,
     pub shows_dir: Option<std::path::PathBuf>,
+    /// See `Config::waiting_to_upgrade`.
+    pub waiting_to_upgrade: Option<std::path::PathBuf>,
 }
 
 impl ShowsHandle {
@@ -185,7 +193,7 @@ impl ShowsHandle {
     /// the same shape `logging::detached` takes for a station with no log.
     pub fn detached() -> ShowsHandle {
         let (tx, _nobody) = mpsc::channel(1);
-        ShowsHandle { tx, bundle: None, shows_dir: None }
+        ShowsHandle { tx, bundle: None, shows_dir: None, waiting_to_upgrade: None }
     }
 
     /// Ask the console to do this next.
@@ -216,6 +224,29 @@ impl Running {
     /// the show" — so a page that did not press the button can draw the same
     /// switching screen as the one that did, rather than a console that stopped
     /// answering.
+    /// Stop this station the way `kill -9` or a pulled power cable does: nothing is
+    /// asked, nothing is flushed, nobody is told. Its sockets close — which is what the
+    /// operating system does for a killed process, and what a peer sees as the link
+    /// going — and every task it started stops where it stands.
+    ///
+    /// For the failover tests, which are about what the station that is *left* does.
+    /// `shutdown` is the opposite of the case being proved: it says goodbye.
+    #[doc(hidden)]
+    pub async fn kill(self) {
+        self.sync.disconnect_all().await;
+        self.serve.abort();
+        for task in self.tasks.iter().chain(self.asked_to_stop.iter()) {
+            task.abort();
+        }
+        let _ = self.serve.await;
+        for task in self.tasks.into_iter().chain(self.asked_to_stop) {
+            let _ = task.await;
+        }
+        // A thread rather than a task, so it would otherwise go on advertising a
+        // station that is no longer there.
+        self.devices_mdns.shutdown();
+    }
+
     /// Answer one station RPC, the way a browser's WebSocket does.
     ///
     /// Here so that a test can press a button rather than reimplement one. The caller
@@ -249,9 +280,7 @@ impl Running {
         })
         .await;
 
-        if let Some(mdns) = &self.devices_mdns {
-            let _ = mdns.shutdown();
-        }
+        self.devices_mdns.shutdown();
         self.serve.abort();
         for task in self.tasks.iter().chain(asked.iter()) {
             task.abort();
@@ -277,6 +306,17 @@ impl Running {
     }
 }
 
+/// How often a console waiting on an upgrade looks for a station that has made it.
+const LOOK_FOR_AN_UPGRADE_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// A show an upgrade would have to touch, as a console waits for it: where it is and
+/// which show it is. `None` where the file cannot say, which waits for nothing.
+async fn waiting_for(path: &std::path::Path) -> Option<(std::path::PathBuf, Vec<Uuid>)> {
+    let bundle = Bundle::open(path).ok()?;
+    let ids = showfile::upgrade::show_ids_of(&bundle.db_path()).await;
+    (!ids.is_empty()).then(|| (bundle.path().to_path_buf(), ids))
+}
+
 /// How long a station gets to stop tidily before it is stopped untidily.
 const STOPPING_WITHIN: std::time::Duration = std::time::Duration::from_secs(2);
 
@@ -293,13 +333,33 @@ const STOPPING_WITHIN: std::time::Duration = std::time::Duration::from_secs(2);
 pub struct Console {
     config: Config,
     running: Option<Running>,
+    /// The show this console could not open without an upgrade, and which show it is:
+    /// see [`Console::upgraded_elsewhere`].
+    waiting: Option<(std::path::PathBuf, Vec<Uuid>)>,
 }
 
 impl Console {
-    pub async fn start(config: Config) -> Result<Console> {
-        let running = start(config.clone()).await?;
+    pub async fn start(mut config: Config) -> Result<Console> {
+        let mut waiting = None;
+        let running = match start(config.clone()).await {
+            Ok(running) => running,
+            // A show this console was told to open by itself — a reboot, `--show` —
+            // that an upgrade would have to touch. Nobody is here to be asked, so it
+            // comes up with no show open: the welcome screen offers the upgrade, and
+            // the console waits for another station to have made it.
+            Err(e) if e.downcast_ref::<showfile::NeedsUpgrade>().is_some() => {
+                warn!("[shows] {e:#}");
+                let path = config.show.take().unwrap_or_default();
+                waiting = waiting_for(&path).await;
+                config.waiting_to_upgrade = waiting.as_ref().map(|(path, _)| path.clone());
+                start(config.clone()).await?
+            }
+            Err(e) => return Err(e),
+        };
+        config.upgrade = false;
+        config.waiting_to_upgrade = None;
         remember_this_show(&running);
-        Ok(Console { config, running: Some(running) })
+        Ok(Console { config, running: Some(running), waiting })
     }
 
     /// The show acts, for a caller that has no browser to take one from — a test,
@@ -320,9 +380,24 @@ impl Console {
         self.running.as_ref().map(|running| running.engine.clone())
     }
 
+    /// Join the station at a sync address, as `session.joinAt` does, for a binary told
+    /// to at start-up. Answers what the session manager said.
+    pub async fn join_at(&self, addr: SocketAddr) -> Result<(), String> {
+        let Some(running) = self.running.as_ref() else { return Err("no station".into()) };
+        running.session.join_at(addr).await
+    }
+
     /// The link to this console's peers, for the same kind of caller.
     pub fn sync(&self) -> Option<crate::infra::sync::SyncHandle> {
         self.running.as_ref().map(|running| running.sync.clone())
+    }
+
+    /// Where the running station's sync link listens, for a caller joining another
+    /// station to it.
+    pub fn sync_addr(&self) -> SocketAddr {
+        self.running.as_ref().map(|r| r.sync_addr).unwrap_or_else(|| {
+            SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 0))
+        })
     }
 
     pub fn http_addr(&self) -> SocketAddr {
@@ -334,8 +409,10 @@ impl Console {
     /// Run until the HTTP server stops, opening whatever shows it is asked for on
     /// the way.
     pub async fn serve(mut self) -> Result<()> {
+        let mut look = tokio::time::interval(LOOK_FOR_AN_UPGRADE_EVERY);
         loop {
             let asked = {
+                let waiting = self.waiting.is_some();
                 let Some(running) = self.running.as_mut() else { return Ok(()) };
                 tokio::select! {
                     served = &mut running.serve => return served?,
@@ -344,15 +421,68 @@ impl Console {
                         // Nothing can ask any more, which means the station is gone.
                         None => return Ok(()),
                     },
+                    _ = look.tick(), if waiting => match self.upgraded_elsewhere().await {
+                        Some(asked) => asked,
+                        None => continue,
+                    },
                 }
             };
             self.switch_to(asked).await?;
         }
     }
 
+    /// Whether the show this console is waiting on has been upgraded by another
+    /// station, and if so the act that opens it here.
+    ///
+    /// **One station's yes is the show's.** The user asked for it that way: the
+    /// question "upgrade this show?" is about the show, and asking it again at every
+    /// station in the rig is three dialogs for one decision, one of them on a Pi
+    /// nobody has a screen on. Two ways to know, and both mean a station *on this
+    /// build* runs the show: a session advertising it at this generation (an advert
+    /// from an older build says no generation, so a deploy half done upgrades
+    /// nothing), or the remembered leader's show arriving over a sync link — which
+    /// only links at all between stations of one protocol, and so of one generation.
+    async fn upgraded_elsewhere(&self) -> Option<ShowSwitch> {
+        let (path, show_ids) = self.waiting.clone()?;
+        let engine = &self.running.as_ref()?.engine;
+
+        use pult_schema::path::PathSegment;
+        let session = engine.get(vec![PathSegment::Key("session".into())]).await.ok();
+        let advertised = session
+            .and_then(|s| serde_json::from_value::<pult_schema::types::session::SessionState>(s).ok())
+            .and_then(|s| {
+                s.discovered.into_iter().find(|d| {
+                    show_ids.contains(&d.show_id) && d.generation == Some(showfile::upgrade::CURRENT)
+                })
+            });
+        let linked = engine
+            .get(vec![PathSegment::Key("show".into())])
+            .await
+            .ok()
+            .and_then(|show| serde_json::from_value::<Uuid>(show["id"].clone()).ok())
+            .is_some_and(|id| show_ids.contains(&id));
+        if advertised.is_none() && !linked {
+            return None;
+        }
+        info!(
+            "[shows] another station on this build runs {}: upgrading it here too",
+            path.display()
+        );
+        Some(ShowSwitch::Open {
+            path,
+            then_join: advertised.map(|d| d.session_id),
+            demo: None,
+            upgrade: true,
+        })
+    }
+
     async fn switch_to(&mut self, asked: ShowSwitch) -> Result<()> {
         let Some(running) = self.running.take() else { return Ok(()) };
         let was = self.config.show.clone();
+        // Whatever this act is, it answers what the console was waiting for — an
+        // upgrade made here, or a different show opened instead.
+        self.waiting = None;
+        self.config.waiting_to_upgrade = None;
 
         // The ports the OS actually gave out, pinned before the listener goes: a
         // console started with `--port 0` must not move to a different port every
@@ -365,8 +495,9 @@ impl Console {
 
         let mut then_join = None;
         match asked {
-            ShowSwitch::Open { path, then_join: join, demo } => {
+            ShowSwitch::Open { path, then_join: join, demo, upgrade } => {
                 self.config.show = Some(path);
+                self.config.upgrade = upgrade;
                 // Only for this start. A demo is seeded once into a show with no rig
                 // in it, and leaving the flag on would mean every later restart
                 // trying again — which the seeder itself refuses, but which would
@@ -404,6 +535,7 @@ impl Console {
 
         let starting = self.config.clone();
         self.config.demo = None;
+        self.config.upgrade = false;
         let running = match start(starting).await {
             Ok(running) => running,
             Err(e) => {
@@ -458,7 +590,11 @@ pub async fn start(config: Config) -> Result<Running> {
         None => None,
     };
     let pool = Arc::new(match &bundle {
-        Some(bundle) => showfile::open(&bundle.db_path()).await?,
+        Some(bundle) => {
+            let upgrade =
+                if config.upgrade { showfile::Upgrade::InPlace } else { showfile::Upgrade::No };
+            showfile::open_with(&bundle.db_path(), upgrade).await?
+        }
         None => showfile::open_in_memory().await?,
     });
     // Opened after `open` has migrated the file, and never used for reading.
@@ -485,7 +621,7 @@ pub async fn start(config: Config) -> Result<Running> {
         pool.clone(),
     );
     // With the machine rather than with the show: a folder is a thing somebody
-    // copies, and an id that travelled with it would make the second machine to open
+    // copies, and an id that traveled with it would make the second machine to open
     // the show a second claimant of the first one's outputs.
     let node_id = config
         .node_id
@@ -526,6 +662,22 @@ pub async fn start(config: Config) -> Result<Running> {
     });
     let listener = tokio::net::TcpListener::bind(SocketAddr::new(bind, config.port)).await?;
     let http_addr = listener.local_addr()?;
+    // And on loopback, when that is one cable rather than all of them: the desktop
+    // window opens `http://localhost`, and a console kept to `en0` answered nobody on
+    // this machine — the Mac Mini at the gig showed a blank window over a working
+    // station. Loopback reaches no network, so this offers nothing the setting meant to
+    // keep off a cable. Best effort: something else on that port is a warning.
+    let loopback = if bind.is_unspecified() || bind.is_loopback() {
+        None
+    } else {
+        match tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], http_addr.port()))).await {
+            Ok(listener) => Some(listener),
+            Err(e) => {
+                warn!("[http] could not also listen on localhost:{}: {e}", http_addr.port());
+                None
+            }
+        }
+    };
 
     // Every task this station starts, so it can be stopped again. Opening a show is
     // this station stopping and another one taking its place, and a `tokio::spawn`
@@ -541,6 +693,7 @@ pub async fn start(config: Config) -> Result<Running> {
         tx: switch_tx,
         bundle: bundle.clone(),
         shows_dir: shows_dir(&config),
+        waiting_to_upgrade: config.waiting_to_upgrade.clone(),
     };
 
     let log_watchers = crate::logging::Watchers::default();
@@ -573,6 +726,12 @@ pub async fn start(config: Config) -> Result<Running> {
     // owned here rather than by the engine: a page's row is written by a report and
     // removed by a disconnect, neither of which is a change to the show.
     let clients = crate::infra::clients::ClientRegistry::new(engine_handle.clone());
+    // The process's wing, where `main` installed one: this station runs it, and shows
+    // it to the page that claims it.
+    let wing = config
+        .wing
+        .clone()
+        .map(|handle| crate::infra::wing::WingStation::new(handle, engine_handle.clone()));
 
     let (mut sync_mgr, sync_handle, sync_addr) =
         SyncManager::bind(node_id, config.sync_port, peer_handle.clone(), config.log.clone())
@@ -598,6 +757,7 @@ pub async fn start(config: Config) -> Result<Running> {
     // adopts or commands any of them.
     let (device_mgr, device_handle, device_directory) =
         DeviceManager::new(node_id, engine_handle.clone(), config.openhaunt_broker_port);
+    let device_mgr = device_mgr.with_net(net.clone());
     tasks.push(tokio::spawn(device_mgr.run()));
     let devices_mdns = spawn_mdns_browser(device_handle.clone(), net.clone());
 
@@ -607,9 +767,12 @@ pub async fn start(config: Config) -> Result<Running> {
     let (output_mgr, output, frame_costs) = OutputManager::new(
         node_id,
         engine_handle.clone(),
-        Some((device_directory, device_handle.clone())),
+        Some((device_directory.clone(), device_handle.clone())),
         net.clone(),
     );
+    // The wing is run by this station rather than a page (`infra/wing_control/`), and
+    // the motors read the output's own patch.
+    let wing_output = output.clone();
     // The recordings this station has decoded, shared between the connectors and the
     // engine: one reads a track to put it on a wire, the other reads the same one to
     // work out what a stopping track was holding, and two caches would let them
@@ -649,6 +812,10 @@ pub async fn start(config: Config) -> Result<Running> {
         crate::infra::preferences::load().audio,
         Some(assets.clone()),
     );
+    // And a node's loudspeaker is somewhere a clip can go, reached through the same
+    // directory and the same broker the output side drives the nodes' ports through.
+    let audio_mgr = audio_mgr.with_nodes(device_directory, device_handle.clone());
+    let audio_cache = audio_mgr.cache();
     tasks.push(tokio::spawn(audio_mgr.run()));
     engine.set_audio(audio.clone());
 
@@ -688,11 +855,32 @@ pub async fn start(config: Config) -> Result<Running> {
     // it lands.
     if let Some(demo) = config.demo {
         let engine = engine_handle.clone();
+        let assets = assets.clone();
         tasks.push(tokio::spawn(async move {
-            if let Err(e) = demo::seed(&engine, demo).await {
+            if let Err(e) = demo::seed_with(&engine, Some(assets), Some(node_id), demo).await {
                 warn!("[demo] could not seed {}: {e:#}", demo.id());
             }
         }));
+    }
+
+    // The command line into a show that has no plugins at all, so the wing has
+    // something to type into in a show made at the venue. See `plugins::builtin`.
+    if bundle.is_some() {
+        let engine = engine_handle.clone();
+        let assets = assets.clone();
+        tasks.push(tokio::spawn(async move {
+            crate::infra::plugins::builtin::equip(&engine, &assets).await;
+        }));
+    }
+
+    // Every asset any peer holds, held here too: a spare that has to fetch a scare's
+    // sound from the leader the moment the leader dies has nothing to fetch it from.
+    if bundle.is_some() {
+        tasks.push(tokio::spawn(crate::infra::assets::mirror(
+            assets.clone(),
+            engine_handle.clone(),
+            node_id.0,
+        )));
     }
 
     // A snapshot on this disk that the show has forgotten gets its row put back —
@@ -704,6 +892,17 @@ pub async fn start(config: Config) -> Result<Running> {
         tasks.push(tokio::spawn(async move {
             showfile::versions::reconcile(&bundle, &engine).await;
         }));
+    }
+
+    // The show as it comes up: what was saved as its default state, applied by the
+    // station that leads it once it is clear nobody is handing a running show over.
+    if bundle.is_some() {
+        tasks.push(tokio::spawn(crate::infra::default_state::at_start(
+            engine_handle.clone(),
+            net.clone(),
+            node_id,
+            config.rejoin,
+        )));
     }
 
     // The console's own checkpoints. Only the leader takes them, for the reason only
@@ -739,7 +938,12 @@ pub async fn start(config: Config) -> Result<Running> {
             .or_else(|| shows_dir(&config))
             .unwrap_or_else(std::env::temp_dir),
         net.clone(),
-    );
+    )
+    // Every address this station's broker door is reachable at, so the broker list a
+    // leader hands its nodes can name each station on the network the nodes are on.
+    .with_broker(config.openhaunt_broker_port)
+    .with_wing(wing.clone())
+    .with_audio_cache(audio_cache);
     tasks.push(tokio::spawn(reporter.run()));
 
     // Only the leader prunes: two nodes deleting each other's rows on different
@@ -760,6 +964,9 @@ pub async fn start(config: Config) -> Result<Running> {
     // up. Not the leader's job and it could not be: a browser is on one station's
     // socket and no other station has ever heard of it.
     tasks.push(tokio::spawn(crate::infra::clients::sweep(clients.clone(), REPORT_INTERVAL * 5)));
+    if let Some(wing) = wing.clone() {
+        tasks.push(tokio::spawn(wing.run()));
+    }
 
     // The route a hosted MVR-xchange group is served on exists for the life of the
     // process and *answers* only while a manager has claimed it. Built here so both
@@ -771,9 +978,12 @@ pub async fn start(config: Config) -> Result<Running> {
     let (session_mgr, session_handle) = SessionManager::new(
         node_id,
         config.sync_port,
+        http_addr.port(),
+        bundle.as_ref().map(|b| b.seed_name().to_string()).unwrap_or_default(),
         engine_handle.clone(),
         sync_handle.clone(),
         net.clone(),
+        config.rejoin,
     );
     // MVR-xchange. Built here and not later because the sync manager has to be handed
     // its handle *before* it runs — a peer can arrive with a relayed ask on it at once.
@@ -824,6 +1034,7 @@ pub async fn start(config: Config) -> Result<Running> {
             // also why carrying the client registry here costs nothing: reporting
             // needs a caller, and this one never has any.
             caller: None,
+            acting_for: None,
             clients: Some(clients.clone()),
             node_id,
             // A plugin can ask what a wire is carrying the same way a browser can —
@@ -841,6 +1052,8 @@ pub async fn start(config: Config) -> Result<Running> {
             // RPC — and, having no browser, writes as the default user, which is
             // what the missing `caller` above already says about it.
             xchange: Some(xchange_handle.clone()),
+            // The wing's map is readable from anywhere; claiming it needs a page.
+            wing: wing.clone(),
     };
     let (plugin_mgr, plugin_handle) = PluginManager::new(
         plugin_handle_engine.clone(),
@@ -853,6 +1066,19 @@ pub async fn start(config: Config) -> Result<Running> {
         node_id,
     );
     tasks.push(tokio::spawn(plugin_mgr.run()));
+    // The whole wing is run by this station rather than a page
+    // (`infra/wing_control/`): an operator's, so its writes queue with a person's, and
+    // the command line through the plugins like the panel's.
+    if let (Some(station), Some(handle)) = (wing.clone(), config.wing.clone()) {
+        tasks.push(tokio::spawn(crate::infra::wing_control::run(
+            station,
+            handle,
+            operator_handle.clone(),
+            wing_output.clone(),
+            plugin_handle.clone(),
+            broadcast.clone(),
+        )));
+    }
     let plugin_handle_for_running = plugin_handle.clone();
     let sync_handle_for_running = sync_handle.clone();
     let session_handle_for_running = session_handle.clone();
@@ -862,7 +1088,7 @@ pub async fn start(config: Config) -> Result<Running> {
         assets: assets.clone(),
         sync: sync_handle,
         session: session_handle,
-        devices: device_handle,
+        devices: device_handle.clone(),
         plugins: plugin_handle,
         // Built even where nobody has a login: it costs a client with an empty cookie
         // jar, and asking it anything without one answers "set a login" rather than
@@ -882,6 +1108,7 @@ pub async fn start(config: Config) -> Result<Running> {
         http_port: http_addr.port(),
         xchange: xchange_handle.clone(),
         xchange_hosting: xchange_registry.clone(),
+        wing: wing.clone(),
     };
 
     // The log to the browsers: gathered for a moment, then pushed as one `Update`.
@@ -925,6 +1152,9 @@ pub async fn start(config: Config) -> Result<Running> {
 
     let app = Router::new()
         .route("/ws", get(ws_handler))
+        // A timeline's sound, for a page listening while somebody programs. Under `/ws`
+        // so the dev proxy carries it with nothing added; see `api/ws/monitor.rs`.
+        .route("/ws/monitor", get(crate::api::ws::monitor::monitor_handler))
         // A hosted MVR-xchange group, on the port that already serves the page — so
         // the address to hand somebody is the one they use to reach this console.
         // Refuses unless the exchange is actually hosting; see `xchange::ws`.
@@ -943,7 +1173,16 @@ pub async fn start(config: Config) -> Result<Running> {
     }
     info!("pult-backend listening on {http_addr}");
     let serve = tokio::spawn(async move {
-        axum::serve(listener, app).await?;
+        match loopback {
+            Some(loopback) => {
+                let local = app.clone();
+                tokio::try_join!(
+                    async { axum::serve(listener, app).await },
+                    async { axum::serve(loopback, local).await },
+                )?;
+            }
+            None => axum::serve(listener, app).await?,
+        }
         Ok(())
     });
 
@@ -963,6 +1202,7 @@ pub async fn start(config: Config) -> Result<Running> {
         updates: broadcast,
         serve,
         xchange: xchange_handle,
+        devices: device_handle,
         bundle,
         shows,
         stopping,

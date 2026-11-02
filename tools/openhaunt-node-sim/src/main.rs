@@ -6,7 +6,7 @@
 //! Then type at it: `in 3 1` closes contact 3, `in 3 0` opens it, `read 0 21.5`
 //! reports a sensor value.
 //!
-//! `--module` picks one of the catalogue presets; `--config` runs whatever a file
+//! `--module` picks one of the catalog presets; `--config` runs whatever a file
 //! says, which is how a node this crate has never heard of gets simulated. The
 //! other flags override either.
 
@@ -22,7 +22,8 @@ struct Args {
     /// `--module`, and the flags below override it in turn.
     #[arg(long, value_name = "PATH")]
     config: Option<std::path::PathBuf>,
-    /// dmx, input, led, relay, oled, contact, or env.
+    /// dmx, input, led, relay, oled, contact, env, or v0 (the V0 prototype: four relays,
+    /// two sensors and two pixel strips).
     #[arg(long, default_value = "input")]
     module: String,
     #[arg(long)]
@@ -37,6 +38,10 @@ struct Args {
     /// Toggle an input, or report a reading, every this many milliseconds.
     #[arg(long, value_name = "MS")]
     auto: Option<u64>,
+    /// Give the node a loudspeaker: a V0.2's line out and amplifier, a clip store and
+    /// an RTP port. It plays nothing, and keeps what it was sent.
+    #[arg(long)]
+    audio: bool,
     /// Write the config this run would use to a file and exit. A preset is the
     /// easiest thing to start editing from.
     #[arg(long, value_name = "PATH")]
@@ -132,6 +137,9 @@ fn resolve(args: &Args) -> Result<NodeConfig> {
     }
     if let Some(auto) = args.auto {
         config.auto_ms = Some(auto);
+    }
+    if args.audio && config.audio.is_none() {
+        config.audio = Some(openhaunt_node_sim::audio::default_description());
     }
     Ok(config)
 }

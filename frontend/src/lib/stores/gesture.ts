@@ -15,6 +15,7 @@
  */
 
 import { showClient } from './show.js';
+import { uuid } from '$lib/uuid.js';
 
 /**
  * How long a gesture stays open after the pointer comes up.
@@ -40,7 +41,7 @@ export function beginGesture(): void {
 	generation += 1;
 	if (closing) clearTimeout(closing);
 	closing = null;
-	current = crypto.randomUUID();
+	current = uuid();
 	showClient().duringGesture(current);
 }
 
@@ -74,7 +75,7 @@ export function nudging(): void {
  *
  * On the element that captures the pointer, so the gesture lasts exactly as long as
  * the drag does — including when the pointer leaves the element, which is most
- * drags, and when it is cancelled by a phone call arriving, which is the one people
+ * drags, and when it is canceled by a phone call arriving, which is the one people
  * forget.
  */
 export function asOneGesture(node: Element) {

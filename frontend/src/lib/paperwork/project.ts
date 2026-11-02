@@ -3,7 +3,7 @@
  *
  * This is what makes a drafting viewport a *drawing* rather than a screenshot: every
  * point goes through one orthographic projection whose only free parameter is the scale
- * denominator, so a metre in the rig is exactly `1000/denominator` millimetres on the
+ * denominator, so a meter in the rig is exactly `1000/denominator` millimeters on the
  * page, everywhere on the page. That sentence is the whole contract, and
  * {@link project.test.ts} asserts it directly rather than by looking at a picture.
  *
@@ -82,21 +82,21 @@ function dot(a: Vec3, b: Vec3): number {
 }
 
 /**
- * Millimetres on the page per metre in the rig.
+ * Millimeters on the page per meter in the rig.
  *
  * `1:50` is 20 mm/m. The one conversion in the feature, and every scaled figure — the
  * drawing, the scale bar, the size of a plan head — goes through it.
  */
-export function mmPerMetre(denominator: number): number {
+export function mmPerMeter(denominator: number): number {
 	return 1000 / Math.max(denominator, 1);
 }
 
-/** A viewport's camera: where it looks from, what it is centred on, and how big. */
+/** A viewport's camera: where it looks from, what it is centered on, and how big. */
 export interface Camera {
 	basis: Basis;
 	/** The world point that lands in the middle of the frame. */
-	centre: Vec3;
-	/** Millimetres on the page per metre in the rig. */
+	center: Vec3;
+	/** Millimeters on the page per meter in the rig. */
 	scale: number;
 	/** Where the frame is on the sheet. */
 	rect: RectMm;
@@ -104,9 +104,9 @@ export interface Camera {
 
 /** A world point, on the page. */
 export function toPage(p: Vec3, camera: Camera): Pt {
-	const dx = p.x - camera.centre.x;
-	const dy = p.y - camera.centre.y;
-	const dz = p.z - camera.centre.z;
+	const dx = p.x - camera.center.x;
+	const dy = p.y - camera.center.y;
+	const dz = p.z - camera.center.z;
 	const d = V(dx, dy, dz);
 	return {
 		x: camera.rect.x + camera.rect.w / 2 + dot(d, camera.basis.right) * camera.scale,
@@ -124,7 +124,7 @@ export function depthOf(p: Vec3, camera: Camera): number {
 /**
  * The denominator a free fit would come to, before it is snapped to a real scale.
  *
- * Given the extent the drawing has to cover, in metres across and up, and the frame it
+ * Given the extent the drawing has to cover, in meters across and up, and the frame it
  * has to cover it in. Whichever direction is tighter decides, which is what makes the
  * same viewport frame a five-fixture demo and a festival.
  */
@@ -144,9 +144,9 @@ export function fittedDenominator(
  * In the *camera's* axes rather than the world's, because that is what has to fit the
  * frame: a truss run at 30° to the stage is wider on a plan than its extent in X.
  */
-export function extentIn(points: Vec3[], basis: Basis): { across: number; up: number; centre: Vec3 } {
+export function extentIn(points: Vec3[], basis: Basis): { across: number; up: number; center: Vec3 } {
 	if (points.length === 0) {
-		return { across: 1, up: 1, centre: V(0, 0, 0) };
+		return { across: 1, up: 1, center: V(0, 0, 0) };
 	}
 	let minR = Infinity;
 	let maxR = -Infinity;
@@ -162,15 +162,15 @@ export function extentIn(points: Vec3[], basis: Basis): { across: number; up: nu
 	}
 	const midR = (minR + maxR) / 2;
 	const midU = (minU + maxU) / 2;
-	// Back into world space: the centre is the point that lands in the middle of the
+	// Back into world space: the center is the point that lands in the middle of the
 	// frame, and the two in-plane offsets are all that is known about it — the depth
 	// does not matter to an orthographic camera, so it is left at zero.
-	const centre = V(
+	const center = V(
 		basis.right.x * midR + basis.up.x * midU,
 		basis.right.y * midR + basis.up.y * midU,
 		basis.right.z * midR + basis.up.z * midU
 	);
-	return { across: maxR - minR, up: maxU - minU, centre };
+	return { across: maxR - minR, up: maxU - minU, center };
 }
 
 // ── Outlines ─────────────────────────────────────────────────────────────────

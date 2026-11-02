@@ -28,11 +28,11 @@
 		slotText,
 		type NetworkPrefs
 	} from '$lib/network.js';
-	import { editing } from '$lib/stores/editing.js';
+	import { canEdit } from '$lib/stores/showLock.js';
+	import Dialog from './Dialog.svelte';
 
 	const data = getDataContext();
 	const client = getClientContext();
-	const unlocked = editing('network');
 
 	let stations = $state<Station[]>([]);
 	/// The cabling, keyed by station id. Its own collection rather than fields on the
@@ -94,6 +94,14 @@
 	 * operator has cleared must become "said nothing" rather than keep what it had,
 	 * and a field-by-field merge cannot express that.
 	 */
+	/**
+	 * A cable change waiting for Save. A station preference is nobody's to undo — it
+	 * is not show data, so Ctrl-Z cannot reach it — and moving a service to another
+	 * cable cuts off whoever was reaching it over the old one. So it is asked, with
+	 * that said, rather than written by a select.
+	 */
+	let moving = $state<{ key: keyof NetworkPrefs; name: string; value: string } | null>(null);
+
 	async function set(key: keyof NetworkPrefs, value: string) {
 		trouble = null;
 		const next: NetworkPrefs = { ...(prefs ?? {}), [key]: value === '' ? null : value };
@@ -141,9 +149,9 @@
 				</p>
 			{/if}
 
-			<table>
+			<table class="services">
 				<thead>
-					<tr><th>Service</th><th>Cable</th><th>State</th></tr>
+					<tr><th>Service</th><th>Interface</th><th>State</th></tr>
 				</thead>
 				<tbody>
 					{#each NETWORK_SERVICES as service (service.key)}
@@ -163,10 +171,13 @@
 								<div class="what">{service.what}</div>
 							</td>
 							<td>
-								{#if isSelf && $unlocked && prefs}
+								{#if isSelf && $canEdit && prefs}
 									<select
 										value={prefs[service.key] ?? ''}
-										onchange={(e) => set(service.key, e.currentTarget.value)}
+										onchange={(e) => {
+											moving = { key: service.key, name: service.name, value: e.currentTarget.value };
+											e.currentTarget.value = prefs?.[service.key] ?? '';
+										}}
 									>
 										<option value="">Every interface</option>
 										<!--
@@ -306,12 +317,64 @@
 	{/if}
 </div>
 
+{#if moving}
+	<Dialog title="Move a service to another cable" onclose={() => (moving = null)}>
+		<p class="ask">
+			<b>{moving.name}</b> on this station will go out on
+			<b>{moving.value === '' ? 'every interface' : moving.value}</b>. Anything reaching it
+			over a cable it leaves — a peer, a tablet, a node — loses it until it finds it again,
+			and this cannot be undone with Ctrl-Z: it is this machine's setting, not the show's.
+		</p>
+		{#snippet footer()}
+			<button class="btn btn-ghost" onclick={() => (moving = null)}>Cancel</button>
+			<button
+				class="btn btn-primary"
+				onclick={() => {
+					const m = moving!;
+					moving = null;
+					void set(m.key, m.value);
+				}}>Move it</button
+			>
+		{/snippet}
+	</Dialog>
+{/if}
+
 <style>
+	.ask {
+		font-size: var(--font-sm);
+		line-height: 1.5;
+	}
 	.panel {
 		padding: 0.75rem;
 		overflow: auto;
 		height: 100%;
 		font-size: 0.85rem;
+		container-type: inline-size;
+	}
+	select {
+		max-width: 100%;
+	}
+	/* Narrow: a service is its name and what it is for, with the interface and the
+	   state on a line under it, since three columns leave the description one word
+	   wide. */
+	@container (max-width: 560px) {
+		.services thead {
+			display: none;
+		}
+		.services tr {
+			display: grid;
+			grid-template-columns: minmax(0, 1fr) auto;
+			column-gap: 0.5rem;
+			border-top: 1px solid rgba(128, 128, 128, 0.2);
+			padding: 0.35rem 0;
+		}
+		.services td {
+			border-top: none;
+			padding: 0.15rem 0;
+		}
+		.services td:first-child {
+			grid-column: 1 / -1;
+		}
 	}
 	section {
 		margin-bottom: 1.25rem;

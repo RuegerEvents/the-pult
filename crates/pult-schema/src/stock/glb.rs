@@ -14,7 +14,7 @@
 //! is a digest of these bytes, and the MVR export names its archive entry after the
 //! piece's own hash and would otherwise write two files for one truss.
 //!
-//! Every position and normal is rounded to a micrometre before it is written, so an
+//! Every position and normal is rounded to a micrometer before it is written, so an
 //! `f32` whose last bits differ between two builds of the same arithmetic cannot
 //! reach the buffer.
 
@@ -33,7 +33,7 @@ pub struct Mesh {
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
     pub indices: Vec<u32>,
-    /// The colour, roughness and metalness the piece is drawn in when nobody says
+    /// The color, roughness and metalness the piece is drawn in when nobody says
     /// otherwise. The browser puts its own shared materials on instead, so that a
     /// hundred truss sections cost one shader; this is for everybody else.
     pub material: Material,
@@ -41,14 +41,14 @@ pub struct Mesh {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Material {
-    pub colour: [f32; 3],
+    pub color: [f32; 3],
     pub roughness: f32,
     pub metalness: f32,
 }
 
 impl Default for Material {
     fn default() -> Self {
-        Material { colour: [0.6, 0.63, 0.65], roughness: 0.65, metalness: 0.85 }
+        Material { color: [0.6, 0.63, 0.65], roughness: 0.65, metalness: 0.85 }
     }
 }
 
@@ -116,7 +116,7 @@ impl Mesh {
             .unwrap_or(0);
         let mut helper = [0.0f32; 3];
         helper[least] = 1.0;
-        let across = normalise(cross(along, helper));
+        let across = normalize(cross(along, helper));
         let other = cross(along, across);
 
         let ring = |turn: usize| -> [f32; 3] {
@@ -126,7 +126,7 @@ impl Mesh {
         };
 
         // The side, as one quad per segment with its own vertices so the seam is not
-        // a shared-normal artefact.
+        // a shared-normal artifact.
         for turn in 0..segments {
             let a = ring(turn);
             let b = ring((turn + 1) % segments);
@@ -140,12 +140,12 @@ impl Mesh {
         }
 
         // And the two ends, as fans.
-        for (centre, normal, forward) in
+        for (center, normal, forward) in
             [(from, scale(along, -1.0), false), (to, along, true)]
         {
             let mut positions = Vec::with_capacity(segments);
             for turn in 0..segments {
-                positions.push(add(centre, scale(ring(turn), radius)));
+                positions.push(add(center, scale(ring(turn), radius)));
             }
             let mut indices = Vec::with_capacity((segments - 2) * 3);
             for triangle in 1..segments - 1 {
@@ -193,7 +193,7 @@ fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
 fn norm(a: [f32; 3]) -> f32 {
     (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt()
 }
-fn normalise(a: [f32; 3]) -> [f32; 3] {
+fn normalize(a: [f32; 3]) -> [f32; 3] {
     let length = norm(a);
     if length < 1e-9 {
         [1.0, 0.0, 0.0]
@@ -202,11 +202,11 @@ fn normalise(a: [f32; 3]) -> [f32; 3] {
     }
 }
 
-/// To the nearest micrometre.
+/// To the nearest micrometer.
 ///
-/// A truss is measured in millimetres and nobody is asking for more, and the rounding
+/// A truss is measured in millimeters and nobody is asking for more, and the rounding
 /// is what keeps two builds of the same arithmetic writing the same bytes.
-fn micrometre(value: f32) -> f32 {
+fn micrometer(value: f32) -> f32 {
     (value as f64 * 1e6).round() as f32 / 1e6
 }
 
@@ -216,13 +216,13 @@ pub fn write(mesh: &Mesh) -> Vec<u8> {
     let mut binary: Vec<u8> = Vec::with_capacity(mesh.positions.len() * 24 + mesh.indices.len() * 4);
     for point in &mesh.positions {
         for axis in point {
-            binary.extend_from_slice(&micrometre(*axis).to_le_bytes());
+            binary.extend_from_slice(&micrometer(*axis).to_le_bytes());
         }
     }
     let normals_at = binary.len();
     for normal in &mesh.normals {
         for axis in normal {
-            binary.extend_from_slice(&micrometre(*axis).to_le_bytes());
+            binary.extend_from_slice(&micrometer(*axis).to_le_bytes());
         }
     }
     let indices_at = binary.len();
@@ -236,11 +236,11 @@ pub fn write(mesh: &Mesh) -> Vec<u8> {
     }
 
     let (min, max) = mesh.bounds();
-    let rounded = |v: [f32; 3]| json!([micrometre(v[0]), micrometre(v[1]), micrometre(v[2])]);
+    let rounded = |v: [f32; 3]| json!([micrometer(v[0]), micrometer(v[1]), micrometer(v[2])]);
 
     let count = mesh.positions.len();
     let document = json!({
-        "asset": { "version": "2.0", "generator": "the-pult stock catalogue" },
+        "asset": { "version": "2.0", "generator": "the-pult stock catalog" },
         "scene": 0,
         "scenes": [{ "nodes": [0] }],
         "nodes": [{ "mesh": 0 }],
@@ -255,7 +255,7 @@ pub fn write(mesh: &Mesh) -> Vec<u8> {
         "materials": [{
             "pbrMetallicRoughness": {
                 "baseColorFactor": [
-                    mesh.material.colour[0], mesh.material.colour[1], mesh.material.colour[2], 1.0
+                    mesh.material.color[0], mesh.material.color[1], mesh.material.color[2], 1.0
                 ],
                 "metallicFactor": mesh.material.metalness,
                 "roughnessFactor": mesh.material.roughness

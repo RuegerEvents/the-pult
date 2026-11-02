@@ -28,6 +28,20 @@ pub struct Show {
     #[serde(default)]
     #[pult(lifecycle = SYNCED)]
     pub editing_cue: Option<Uuid>,
+    /// Blind: the programmer reaches no lamp. Playback runs the stage as though the
+    /// programmer were empty — its fades and effects are not held back under keys the
+    /// programmer has — while every screen goes on showing the programmer over it, so
+    /// a look is built where it can be seen and nobody in the room sees it. Store and
+    /// Update read the programmer as always. Switching it off puts what is in the
+    /// programmer on stage, the way every other desk does.
+    ///
+    /// One for the show, because there is one programmer: being blind is a fact about
+    /// whether the programmer reaches the output, not about who is looking. SYNCED so
+    /// every station and screen agree, and not PERSISTED so a show never opens blind
+    /// with a programmer nobody remembers filling.
+    #[serde(default)]
+    #[pult(lifecycle = SYNCED)]
+    pub blind: bool,
     /// How many of an operator's own changes stay reachable, for undo and for the
     /// history panel.
     ///
@@ -111,6 +125,44 @@ pub struct Show {
     #[serde(default)]
     #[pult(lifecycle = PERSISTED)]
     pub mvr_xchange: XchangeSettings,
+    /// What the show is doing when nobody has touched it: which sequences are on and
+    /// at which cue, at which master level, and which timelines run. `None` is nothing.
+    ///
+    /// Show data, because it is a fact about the show — the ambience that goes round
+    /// and the house lights that are on — and a showfile carried to another console
+    /// should come up the same way. Applied by the leader when a show opens with
+    /// nothing running (`infra/default_state.rs`), and by hand from the Show menu. The
+    /// programmer is never part of it: a held value is somebody at the desk.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    #[pult(lifecycle = PERSISTED)]
+    pub default_state: Option<DefaultState>,
+}
+
+/// The show as it is meant to come up. See [`Show::default_state`].
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DefaultState {
+    /// Every sequence that is on, or has a level other than full, as it was saved.
+    #[serde(default)]
+    pub sequences: Vec<DefaultSequence>,
+    /// The timelines that run, each from its beginning.
+    #[serde(default)]
+    pub timelines: Vec<Uuid>,
+    /// When it was saved, console unix ms.
+    #[serde(default)]
+    pub saved_at: u64,
+}
+
+/// One sequence in a [`DefaultState`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DefaultSequence {
+    pub sequence_id: Uuid,
+    /// The cue it is on, or `None` for off.
+    pub cue_id: Option<Uuid>,
+    /// Its master, or `None` for full.
+    pub master: Option<f32>,
 }
 
 /// What a title block says, beside the drawing's own name and scale.
@@ -179,6 +231,8 @@ impl FadeGroup {
     pub fn of_key(key: &str) -> Self {
         // Indexed kinds are `Gobo:1`, `ColorWheel:2`, `Named:Fog output` — the group
         // is decided by the name, never by which one of them it is.
+        // And a cell is the parameter it is a cell of: `ColorRgb@7` is a color.
+        let (key, _) = crate::types::fixture::split_cell(key);
         match key.split(':').next().unwrap_or(key) {
             "Intensity" => Self::Intensity,
             "Pan" | "Tilt" => Self::Position,
@@ -213,8 +267,8 @@ impl Default for FadeCurves {
     /// Which is the whole point of the field: a show that never opens this panel
     /// gets dimmers that behave exactly as they always have, and heads that ease
     /// into their marks. Every other group is left linear because none of them has
-    /// a shape an operator would recognise as wrong — a colour crossfading linearly
-    /// is what a colour crossfade looks like.
+    /// a shape an operator would recognize as wrong — a color crossfading linearly
+    /// is what a color crossfade looks like.
     fn default() -> Self {
         Self {
             intensity: Easing::Linear,
@@ -291,7 +345,7 @@ pub fn clamp_home_fade_ms(ms: u32) -> u32 {
     ms.min(HOME_FADE_MS_MAX)
 }
 
-/// A full house of haze, which is what a visualiser is for: at 1 every beam shows,
+/// A full house of haze, which is what a visualizer is for: at 1 every beam shows,
 /// at 0 the air is clear and a light lands on the floor without a ray to be seen on
 /// the way, and the numbers between are that much haze. A new show starts with the
 /// lot because a rig view that draws no beams is the more misleading picture of the

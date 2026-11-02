@@ -17,10 +17,7 @@ use core::{
 use pult_plugin_sdk::{
     self as sdk, data,
     host, output_line,
-    schema::{
-        parameter_key, Cue, EffectSpec, FollowMode, ParameterCapture, Preset, PresetValue,
-        Sequence,
-    },
+    schema::{parameter_key, Preset, PresetValue},
     surface, PultPlugin,
 };
 use serde_json::{json, Value};
@@ -99,10 +96,10 @@ impl CommandLine {
                 let text = core::help(&self.catalog, topic.as_deref());
                 Ok(lines_response(vec![output_line("info", text)]))
             }
-            Command::Select { ops, at } => self.select(ops, at, ctx),
+            Command::Select { ops, cells, at } => self.select(ops, cells, at, ctx),
             Command::Clear { also_selection } => self.clear(also_selection),
             Command::Intensity { level } => self.intensity(level, ctx),
-            Command::Home => self.home(&selection_of(ctx)),
+            Command::Home => self.home(&selection_of(ctx), &cells_of(ctx)),
             Command::EntityCommand { table, target, command, args } => {
                 self.entity_command(&table, target, &command, args)
             }
@@ -139,9 +136,14 @@ impl CommandLine {
     fn select(
         &self,
         ops: Vec<(SelOp, SelectTarget)>,
+        cells: Vec<core::Range>,
         at: Option<Then>,
         ctx: &Value,
     ) -> Result<surface::ExecResponse, String> {
+        // `. 1 thru 20` with nothing before it cuts what is already selected.
+        let cut_only = ops.is_empty();
+        let spans: Vec<Value> =
+            cells.iter().map(|r| json!({ "from": r.from, "to": r.to })).collect();
         // `group 3` on its own hands the browser the group's *question*, so what it
         // leaves selected is what recalling the group in the panel leaves: a
         // selection that goes on following the rig. Anything mixed — a group plus a
@@ -157,23 +159,24 @@ impl CommandLine {
             _ => None,
         };
 
-        let fixtures = collection("fixtures")?;
+        let fixtures = if cut_only { Vec::new() } else { collection("fixtures")? };
         let mut selected: Vec<String> = selection_of(ctx);
         let mut only_group: Option<String> = None;
         for (op, target) in ops {
             let ids: Vec<String> = match target {
                 SelectTarget::Fixtures(range) => {
-                    if range.to > fixtures.len() {
-                        return Err(format!(
-                            "there are {} fixtures; {} is past the end",
-                            fixtures.len(),
-                            range.to
-                        ));
+                    let found: Vec<String> = core::numbered(&fixture_numbers(&fixtures), range)
+                        .into_iter()
+                        .filter_map(|i| fixtures[i].get("id").and_then(Value::as_str).map(String::from))
+                        .collect();
+                    if found.is_empty() {
+                        return Err(if range.from == range.to {
+                            format!("no fixture is numbered {}", range.from)
+                        } else {
+                            format!("no fixture is numbered {} to {}", range.from, range.to)
+                        });
                     }
-                    fixtures[range.from - 1..range.to]
-                        .iter()
-                        .filter_map(|f| f.get("id").and_then(Value::as_str).map(String::from))
-                        .collect()
+                    found
                 }
                 SelectTarget::Group(ref target) => {
                     let (id, name, _) = self.group(target)?;
@@ -198,6 +201,7 @@ impl CommandLine {
             }
         }
         let count = selected.len();
+        let cut = said_cells(&cells);
         let mut text = match (count, live_query.is_some().then_some(only_group).flatten()) {
             (0, Some(name)) => format!("{name} is empty"),
             (0, None) => "nothing selected".to_string(),
@@ -206,6 +210,9 @@ impl CommandLine {
             (1, None) => "1 fixture selected".to_string(),
             (n, None) => format!("{n} fixtures selected"),
         };
+        if let Some(cut) = &cut {
+            text.push_str(&format!(", {cut}"));
+        }
         // The combined form: `fixture 1 thru 3 @ 80` sets the level on what it
         // just selected, not on whatever was selected before.
         match at {
@@ -213,11 +220,11 @@ impl CommandLine {
                 return Err("that selects nothing, so there is nothing to set".into());
             }
             Some(Then::At(level)) => {
-                self.apply_level(&selected, level)?;
+                self.apply_level(&selected, &spans, level)?;
                 text.push_str(&format!(", {}", said(level)));
             }
             Some(Then::Home) => {
-                self.send_home(&selected)?;
+                self.send_home(&selected, &spans)?;
                 text.push_str(", home");
             }
             Some(Then::Preset(target)) => {
@@ -227,9 +234,20 @@ impl CommandLine {
             None => {}
         }
         let mut response = lines_response(vec![output_line("result", text)]);
-        response.effects = Some(match live_query {
-            Some(query) => json!({ "selection": { "query": query } }),
-            None => json!({ "selection": { "fixtureIds": selected } }),
+        // A cut is part of the selection's question, so it travels as a query: the
+        // group's own with its cells replaced, or the ids with the cells beside them.
+        response.effects = Some(match (live_query, spans.is_empty()) {
+            (Some(query), true) => json!({ "selection": { "query": query } }),
+            (Some(mut query), false) => {
+                query["cells"] = Value::Array(spans);
+                json!({ "selection": { "query": query } })
+            }
+            (None, true) => json!({ "selection": { "fixtureIds": selected } }),
+            (None, false) => json!({ "selection": { "query": {
+                "clauses": [{ "combine": "Add", "term": { "kind": "Ids", "ids": selected } }],
+                "order": { "kind": "Manual", "order": [] },
+                "cells": spans,
+            } } }),
         });
         Ok(response)
     }
@@ -272,7 +290,7 @@ impl CommandLine {
         if selected.is_empty() {
             return Err("nothing is selected — `fixture 1 thru 5` first".into());
         }
-        self.apply_level(&selected, level)?;
+        self.apply_level(&selected, &cells_of(ctx), level)?;
         Ok(lines_response(vec![output_line(
             "result",
             format!(
@@ -290,11 +308,11 @@ impl CommandLine {
     /// a fixture has and where each of its parameters rests. This plugin is granted
     /// no access to fixture types and needs none: home is a destination it never has
     /// to know, which is the same trick `at +10` plays with a level.
-    fn home(&self, selected: &[String]) -> Result<surface::ExecResponse, String> {
+    fn home(&self, selected: &[String], cells: &[Value]) -> Result<surface::ExecResponse, String> {
         if selected.is_empty() {
             return Err("nothing is selected — `fixture 1 thru 5` first".into());
         }
-        self.send_home(selected)?;
+        self.send_home(selected, cells)?;
         Ok(lines_response(vec![output_line(
             "result",
             format!(
@@ -305,22 +323,40 @@ impl CommandLine {
         )]))
     }
 
-    fn send_home(&self, fixtures: &[String]) -> Result<(), String> {
-        for fixture_id in fixtures {
-            host::set(&["programmer_values", "__home"], &json!({ "fixtureId": fixture_id }))?;
+    /// Whole fixtures go home in one write each, and the station enumerates what they
+    /// have. Cut to cells, only those cells' own parameters go: a bar's master is the
+    /// whole bar's, and sending three of its cells home is not asking for it.
+    fn send_home(&self, fixtures: &[String], cells: &[Value]) -> Result<(), String> {
+        if cells.is_empty() {
+            for fixture_id in fixtures {
+                host::set(&["programmer_values", "__home"], &json!({ "fixtureId": fixture_id }))?;
+            }
+            return Ok(());
+        }
+        for kind in per_cell_kinds(fixtures)? {
+            for (fixture_id, kind) in targets(fixtures, cells, &kind)? {
+                if kind.get("Cell").is_none() {
+                    continue;
+                }
+                host::set(
+                    &["programmer_values", "__home"],
+                    &json!({ "fixtureId": fixture_id, "parameterKind": kind }),
+                )?;
+            }
         }
         Ok(())
     }
 
     /// Set the level, or move it — whichever the operator wrote.
-    fn apply_level(&self, fixtures: &[String], level: Level) -> Result<(), String> {
+    fn apply_level(&self, fixtures: &[String], cells: &[Value], level: Level) -> Result<(), String> {
+        let landed = targets(fixtures, cells, &json!("Intensity"))?;
         match level {
-            Level::To(percent) => self.hold_intensity(fixtures, percent),
-            Level::By(points) => self.nudge_intensity(fixtures, points),
+            Level::To(percent) => self.hold_intensity(&landed, percent),
+            Level::By(points) => self.nudge_intensity(&landed, points),
         }
     }
 
-    /// Move these fixtures' Intensity by so many percentage points.
+    /// Move these Intensities by so many percentage points.
     ///
     /// The station does the arithmetic, from what it is showing at the moment it
     /// applies the write. This plugin deliberately does not read a level and compute
@@ -328,13 +364,13 @@ impl CommandLine {
     /// number and write the same answer, and one of the two nudges would be lost.
     /// It also does not need the fixture to be in the programmer already — the
     /// station takes the key, starting from what playback has it at.
-    fn nudge_intensity(&self, fixtures: &[String], points: f64) -> Result<(), String> {
-        for fixture_id in fixtures {
+    fn nudge_intensity(&self, landed: &[(String, Value)], points: f64) -> Result<(), String> {
+        for (fixture_id, kind) in landed {
             host::set(
                 &["programmer_values", "__by"],
                 &json!({
                     "fixtureId": fixture_id,
-                    "parameterKind": "Intensity",
+                    "parameterKind": kind,
                     "by": points / 100.0,
                 }),
             )?;
@@ -342,25 +378,26 @@ impl CommandLine {
         Ok(())
     }
 
-    /// Put these fixtures' Intensity into the programmer at a percentage.
-    fn hold_intensity(&self, fixtures: &[String], percent: f64) -> Result<(), String> {
+    /// Put these Intensities into the programmer at a percentage.
+    fn hold_intensity(&self, landed: &[(String, Value)], percent: f64) -> Result<(), String> {
         let level = (percent / 100.0).clamp(0.0, 1.0);
         let value = json!({ "type": "Float", "value": level });
         let held: Vec<String> = collection("programmer_values")?
             .iter()
             .filter_map(|e| e.get("id").and_then(Value::as_str).map(String::from))
             .collect();
-        for fixture_id in fixtures {
+        for (fixture_id, kind) in landed {
+            let key = key_of(kind)?;
             // The id is derived, not minted — the same derivation the values
             // panel uses, so the two write the same row and converge.
-            let id = core::entry_id(fixture_id, "Intensity");
+            let id = core::entry_id(fixture_id, &key);
             if held.contains(&id) {
                 host::set(&["programmer_values", &id, "value"], &value)?;
             } else {
                 let entry = json!({
                     "id": id,
                     "fixture_id": fixture_id,
-                    "parameter_kind": "Intensity",
+                    "parameter_kind": kind,
                     "value": value,
                     "effect": null,
                     "locked": false,
@@ -470,7 +507,7 @@ impl CommandLine {
                     Target::Index(n) => format!("Preset {n}"),
                 };
                 let n = values.len();
-                data::presets().create(&Preset { id: uuid::Uuid::new_v4(), name: name.clone(), values })?;
+                data::presets().create(&Preset { id: uuid::Uuid::new_v4(), name: name.clone(), values, color: None, folder: None })?;
                 Ok(lines_response(vec![output_line(
                     "result",
                     format!("stored \"{name}\" — {n} values"),
@@ -563,41 +600,14 @@ impl CommandLine {
         Ok(lines_response(vec![output_line("result", format!("{name}: {field} = {value}"))]))
     }
 
-    /// The programmer into a cue: merge into an existing one, or make the next
-    /// one. The shape mirrors the store menu exactly — fades of zero on the
-    /// captures, the cue's own fade at half a second, effects with their
-    /// anchors dropped.
+    /// The programmer into a cue: merge into an existing one, or make the next one.
+    /// The station's Store (`programmer.store`), the one the Store dialog and the wing
+    /// run, so a cue stored from here is the same cue. The programmer is kept, as the
+    /// command line always has.
     fn store(&self, sequence: Target, cue: Target) -> Result<surface::ExecResponse, String> {
         let (sequence_id, sequence_name) = resolve("sequences", &sequence)?;
         let sequence_id = uuid(&sequence_id)?;
         let cue_ids = data::sequences().by_id(sequence_id).cue_ids().get()?;
-
-        let entries = data::programmer_values().get()?;
-        if entries.is_empty() {
-            return Err("the programmer is empty — nothing to store".into());
-        }
-        let captures: Vec<ParameterCapture> = entries
-            .into_iter()
-            .map(|entry| ParameterCapture {
-                fixture_id: entry.fixture_id,
-                parameter_kind: entry.parameter_kind,
-                value: entry.value,
-                fade_in_ms: 0,
-                fade_out_ms: 0,
-                delay_in_ms: 0,
-                // A stored effect drops its anchor: the cue's `went_at` is what it
-                // is measured from on every Go.
-                effect: entry.effect.map(|spec| EffectSpec { t0: None, ..spec }),
-                // `None`, not `Linear`. Nothing said, so the cue answers and the show
-                // answers for the cue — the same rule the store menu follows. Writing
-                // `Linear` here pinned every capture stored from the command line
-                // against a show that says otherwise.
-                easing: None,
-                // Reference first, literal beside it: a value recalled from a preset
-                // carries the preset into the cue.
-                preset: entry.preset,
-            })
-            .collect();
 
         // An existing cue is merged into; a number one past the end (or a new
         // name) makes the next cue.
@@ -611,151 +621,50 @@ impl CommandLine {
                 }).copied()
             }
         };
-
-        match existing {
-            Some(cue_id) => {
-                let old = data::cues().by_id(cue_id).get()?;
-                let merged = merge_captures(old.captures, captures);
-                data::cues().by_id(cue_id).captures().set(merged)?;
-                Ok(lines_response(vec![output_line(
-                    "result",
-                    format!("stored into \"{}\" of \"{sequence_name}\"", old.name),
-                )]))
-            }
-            None => {
-                if let Target::Index(n) = cue {
-                    if n != cue_ids.len() + 1 {
-                        return Err(format!(
-                            "\"{sequence_name}\" has {} cues — store into one of those, or {} for a new one",
-                            cue_ids.len(),
-                            cue_ids.len() + 1
-                        ));
-                    }
-                }
-                let name = match &cue {
-                    Target::Name(name) => name.clone(),
-                    Target::Index(n) => format!("Cue {n}"),
-                };
-                let cue_id = uuid::Uuid::new_v4();
-                data::cues().create(&Cue {
-                    id: cue_id,
-                    name: name.clone(),
-                    number: (cue_ids.len() + 1) as f64,
-                    captures,
-                    follow_mode: FollowMode::Manual,
-                    fade_in_ms: 500,
-                    fade_out_ms: 500,
-                    // The cue says nothing either, so the show's own curve per
-                    // parameter group answers.
-                    easing: None,
-                    is_active: false,
-                })?;
-                let mut ids = cue_ids;
-                ids.push(cue_id);
-                data::sequences().by_id(sequence_id).cue_ids().set(ids)?;
-                Ok(lines_response(vec![output_line(
-                    "result",
-                    format!("stored as \"{name}\" in \"{sequence_name}\""),
-                )]))
+        if let (None, Target::Index(n)) = (existing, &cue) {
+            if *n != cue_ids.len() + 1 {
+                return Err(format!(
+                    "\"{sequence_name}\" has {} cues — store into one of those, or {} for a new one",
+                    cue_ids.len(),
+                    cue_ids.len() + 1
+                ));
             }
         }
+        let mut args = json!({ "sequenceId": sequence_id, "keep": true });
+        match (existing, &cue) {
+            (Some(cue_id), _) => args["cueId"] = json!(cue_id),
+            (None, Target::Name(name)) => args["name"] = json!(name),
+            (None, Target::Index(_)) => {}
+        }
+        let stored = host::call("programmer.store", &args)?;
+        let name = stored["cue"]["name"].as_str().unwrap_or("the cue");
+        let text = if stored["created"].as_bool() == Some(true) {
+            format!("stored as \"{name}\" in \"{sequence_name}\"")
+        } else {
+            format!("stored into \"{name}\" of \"{sequence_name}\"")
+        };
+        Ok(lines_response(vec![output_line("result", text)]))
     }
 
     /// `update` — every held value into the cue that is driving it now.
     ///
-    /// The same act as the button in the top bar, and the same rule: a parameter being
-    /// driven by a cue says which cue, so there is no target to name. The keys nothing
-    /// is driving are reported rather than guessed at — a plugin cannot open the store
-    /// dialog, so it says how many are left and leaves them in the programmer.
-    ///
-    /// **Which cue is worked out from the live stacks, not from `live_fades`.** A key
-    /// the programmer holds is exactly the key playback stops publishing —
-    /// `emit_motion` skips every fade and effect under a held key — so at the moment
-    /// this needs an answer the row is gone. The answer is the latest capture of the
-    /// key over the tracked stack of each live sequence, which is what a Go would have
-    /// put there; where two sequences hold one, the one that went most recently wins,
-    /// because that is what `start_capture` did to the parameter. The browser's
-    /// `drivingCues` is the same rule.
+    /// The station's Update (`programmer.update`), the same act as the button in the
+    /// top bar and UPDATE on the wing: a parameter being driven by a cue says which
+    /// cue, so there is no target to name. The keys nothing is driving are reported
+    /// rather than guessed at — a plugin cannot open the store dialog, so it says how
+    /// many are left and leaves them in the programmer.
     fn update(&self) -> Result<surface::ExecResponse, String> {
-        let entries = data::programmer_values().get()?;
-        if entries.is_empty() {
-            return Err("the programmer is empty — nothing to update".into());
-        }
-        let cues = data::cues().get()?;
-        let sequences = data::sequences().get()?;
-
-        // key -> (cue, when that sequence went). Walked oldest first, so a sequence that
-        // went later simply overwrites.
-        let mut driving: Vec<(String, uuid::Uuid, u64)> = Vec::new();
-        let mut live: Vec<&Sequence> =
-            sequences.iter().filter(|s| s.active_cue_index.is_some()).collect();
-        live.sort_by_key(|s| s.went_at.unwrap_or(0));
-        for sequence in live {
-            let Some(active) = sequence.active_cue_index else { continue };
-            let when = sequence.went_at.unwrap_or(0);
-            for id in sequence.cue_ids.iter().take(active + 1) {
-                let Some(cue) = cues.iter().find(|c| c.id == *id) else { continue };
-                for capture in &cue.captures {
-                    let at = format!(
-                        "{}/{}",
-                        capture.fixture_id,
-                        parameter_key(&capture.parameter_kind)
-                    );
-                    match driving.iter_mut().find(|(k, _, _)| *k == at) {
-                        Some(row) if row.2 <= when => {
-                            row.1 = cue.id;
-                            row.2 = when;
-                        }
-                        Some(_) => {}
-                        None => driving.push((at, cue.id, when)),
-                    }
-                }
+        let answer = host::call("programmer.update", &json!({}))?;
+        let updated = answer["updated"].as_u64().unwrap_or(0);
+        let orphans = answer["orphans"].as_array().map_or(0, Vec::len);
+        let cues = if updated == 1 { "cue" } else { "cues" };
+        let text = match (&answer["edited"], updated, orphans) {
+            (edited, _, _) if !edited.is_null() => {
+                format!("updated \"{}\"", edited["name"].as_str().unwrap_or("the cue"))
             }
-        }
-
-        // Entry captures, grouped by the cue driving each.
-        let mut per_cue: Vec<(uuid::Uuid, Vec<ParameterCapture>)> = Vec::new();
-        let mut orphans = 0usize;
-        for entry in entries {
-            let at = format!("{}/{}", entry.fixture_id, parameter_key(&entry.parameter_kind));
-            let Some((_, cue_id, _)) = driving.iter().find(|(k, _, _)| *k == at) else {
-                orphans += 1;
-                continue;
-            };
-            let cue_id = *cue_id;
-            let capture = ParameterCapture {
-                fixture_id: entry.fixture_id,
-                parameter_kind: entry.parameter_kind,
-                value: entry.value,
-                fade_in_ms: 0,
-                fade_out_ms: 0,
-                delay_in_ms: 0,
-                effect: entry.effect.map(|spec| EffectSpec { t0: None, ..spec }),
-                easing: None,
-                preset: entry.preset,
-            };
-            match per_cue.iter_mut().find(|(id, _)| *id == cue_id) {
-                Some((_, list)) => list.push(capture),
-                None => per_cue.push((cue_id, vec![capture])),
-            }
-        }
-
-        for (cue_id, captures) in &per_cue {
-            let old = data::cues().by_id(*cue_id).get()?;
-            // Merge, and the timing an operator set on a capture is kept: the
-            // programmer carries values and never a fade time.
-            let merged = merge_kept(old.captures, captures.clone());
-            data::cues().by_id(*cue_id).captures().set(merged)?;
-        }
-
-        let updated = per_cue.len();
-        let text = match (updated, orphans) {
-            (0, _) => "nothing here is being driven by a cue".to_string(),
-            (n, 0) => format!("updated {n} {}", if n == 1 { "cue" } else { "cues" }),
-            (n, left) => format!(
-                "updated {n} {} — {left} left, which no cue is driving",
-                if n == 1 { "cue" } else { "cues" }
-            ),
+            (_, 0, _) => "nothing here is being driven by a cue".to_string(),
+            (_, n, 0) => format!("updated {n} {cues}"),
+            (_, n, left) => format!("updated {n} {cues} — {left} left, which no cue is driving"),
         };
         Ok(lines_response(vec![output_line("result", text)]))
     }
@@ -789,8 +698,16 @@ impl CommandLine {
                 }
                 Expectation::EntityRef { table } => {
                     let entries = collection(&table).unwrap_or_default();
+                    // A fixture is typed by its own number; everything else by its place.
+                    let numbers = (table == "fixtures").then(|| fixture_numbers(&entries));
                     for (i, entry) in entries.iter().enumerate() {
-                        let number = (i + 1).to_string();
+                        let number = match &numbers {
+                            Some(numbers) => match numbers[i] {
+                                Some(n) => n.to_string(),
+                                None => continue,
+                            },
+                            None => (i + 1).to_string(),
+                        };
                         let name = entry
                             .get("name")
                             .and_then(Value::as_str)
@@ -877,43 +794,6 @@ fn cue_id_in(sequence_id: &str, index: usize) -> Result<Value, String> {
     Ok(ids[index - 1].clone())
 }
 
-/// Merge new captures over old, one slot per fixture and parameter — the store
-/// menu's merge mode.
-fn merge_captures(
-    existing: Vec<ParameterCapture>,
-    stored: Vec<ParameterCapture>,
-) -> Vec<ParameterCapture> {
-    let key = |c: &ParameterCapture| format!("{}/{:?}", c.fixture_id, c.parameter_kind);
-    let taken: Vec<String> = stored.iter().map(&key).collect();
-    existing.into_iter().filter(|c| !taken.contains(&key(c))).chain(stored).collect()
-}
-
-/// The same merge, but a capture the cue already had keeps its own timing.
-///
-/// Which is what makes Update safe to press: the programmer holds values and never a
-/// fade time, a delay or a curve, so a merge that wrote zeroes would throw away, every
-/// time, timing an operator set in a control that is not on this screen. The browser's
-/// `storeCaptures` has said this since effects landed; this is the same rule.
-fn merge_kept(
-    existing: Vec<ParameterCapture>,
-    stored: Vec<ParameterCapture>,
-) -> Vec<ParameterCapture> {
-    let key = |c: &ParameterCapture| format!("{}/{:?}", c.fixture_id, c.parameter_kind);
-    let kept: Vec<ParameterCapture> = stored
-        .into_iter()
-        .map(|mut capture| {
-            if let Some(before) = existing.iter().find(|c| key(c) == key(&capture)) {
-                capture.fade_in_ms = before.fade_in_ms;
-                capture.fade_out_ms = before.fade_out_ms;
-                capture.delay_in_ms = before.delay_in_ms;
-                capture.easing = before.easing;
-            }
-            capture
-        })
-        .collect();
-    merge_captures(existing, kept)
-}
-
 /// A uuid the show already gave out, back as one.
 ///
 /// `resolve` answers what the station spelled, and the typed accessors take the
@@ -922,11 +802,93 @@ fn uuid(id: &str) -> Result<uuid::Uuid, String> {
     uuid::Uuid::parse_str(id).map_err(|e| format!("{id} is not an id: {e}"))
 }
 
+/// Each fixture's number, in patch order — `None` for one nobody numbered.
+fn fixture_numbers(fixtures: &[Value]) -> Vec<Option<u32>> {
+    fixtures
+        .iter()
+        .map(|f| f.get("fixture_number").and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok()))
+        .collect()
+}
+
 fn selection_of(ctx: &Value) -> Vec<String> {
     ctx.get("selection")
         .and_then(Value::as_array)
         .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
         .unwrap_or_default()
+}
+
+/// The cells the browser's selection is cut to: `[{ from, to }]`, or none.
+fn cells_of(ctx: &Value) -> Vec<Value> {
+    ctx.get("cells").and_then(Value::as_array).cloned().unwrap_or_default()
+}
+
+/// Where a value of `kind` lands over these fixtures and cells, as `(fixture, kind)`.
+/// The station's rule (`selection.targets`), never worked out here: the Programmer
+/// asks the same rule in the browser, and a third copy would be the one that drifts.
+fn targets(fixtures: &[String], cells: &[Value], kind: &Value) -> Result<Vec<(String, Value)>, String> {
+    if fixtures.is_empty() {
+        return Ok(Vec::new());
+    }
+    let answer = host::call(
+        "selection.targets",
+        &json!({ "fixtureIds": fixtures, "cells": cells, "parameterKind": kind }),
+    )?;
+    let rows = answer.as_array().cloned().unwrap_or_default();
+    Ok(rows
+        .into_iter()
+        .filter_map(|row| {
+            let fixture = row.get("fixtureId")?.as_str()?.to_string();
+            let kind = row.get("parameterKind")?.clone();
+            Some((fixture, kind))
+        })
+        .collect())
+}
+
+/// Every per-cell output parameter the types of these fixtures declare, once each.
+fn per_cell_kinds(fixtures: &[String]) -> Result<Vec<Value>, String> {
+    let rig = collection("fixtures")?;
+    let types = collection("fixture_types")?;
+    let mut kinds: Vec<Value> = Vec::new();
+    for fixture in rig.iter().filter(|f| {
+        f.get("id").and_then(Value::as_str).is_some_and(|id| fixtures.iter().any(|s| s == id))
+    }) {
+        let Some(type_id) = fixture.get("fixture_type_id").and_then(Value::as_str) else { continue };
+        let Some(fixture_type) =
+            types.iter().find(|t| t.get("id").and_then(Value::as_str) == Some(type_id))
+        else {
+            continue;
+        };
+        for p in fixture_type.get("parameters").and_then(Value::as_array).into_iter().flatten() {
+            let per_cell = p.get("per_cell").and_then(Value::as_bool).unwrap_or(false);
+            let output = p.get("direction").and_then(Value::as_str).unwrap_or("Output") == "Output";
+            if let Some(kind) = p.get("kind").filter(|_| per_cell && output) {
+                if !kinds.contains(kind) {
+                    kinds.push(kind.clone());
+                }
+            }
+        }
+    }
+    Ok(kinds)
+}
+
+/// The key a kind is held under: `Intensity`, `ColorRgb@7`.
+fn key_of(kind: &Value) -> Result<String, String> {
+    let kind: sdk::schema::ParameterKind =
+        serde_json::from_value(kind.clone()).map_err(|e| format!("the station named a kind this cannot read: {e}"))?;
+    Ok(parameter_key(&kind))
+}
+
+/// How a cut is said back: `cells 1–20`, `cells 5, 9`, `cells 20–1`.
+fn said_cells(cells: &[core::Range]) -> Option<String> {
+    if cells.is_empty() {
+        return None;
+    }
+    let parts: Vec<String> = cells
+        .iter()
+        .map(|r| if r.from == r.to { r.from.to_string() } else { format!("{}–{}", r.from, r.to) })
+        .collect();
+    let word = if cells.len() == 1 && cells[0].from == cells[0].to { "cell" } else { "cells" };
+    Some(format!("{word} {}", parts.join(", ")))
 }
 
 fn singular(table: &str) -> &str {

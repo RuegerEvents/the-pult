@@ -74,7 +74,7 @@ fn the_containers_are_the_ones_the_corpus_names() {
 
 /// Spot the messages the boot turns on, by the note the corpus carries.
 #[test]
-fn the_boot_messages_are_recognised() {
+fn the_boot_messages_are_recognized() {
     let c = corpus();
     let find = |needle: &str| {
         c.frames

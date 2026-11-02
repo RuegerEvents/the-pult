@@ -10,6 +10,7 @@
 import type { Cue, Sequence } from './generated/index.js';
 import { parameterKey } from './patch.js';
 import type { DataRoot } from './ws/data.js';
+import { uuid } from '$lib/uuid.js';
 
 export type NewCue = {
 	name: string;
@@ -24,6 +25,21 @@ export type NewCue = {
 	/** The cue it goes after, for an insert. */
 	after?: string;
 };
+
+/**
+ * The number a cue made by `createCue` will get: behind `after`, between it and the
+ * next, or the next whole number at the end. One function so the Store dialog can
+ * name a cue by the number it is about to have.
+ */
+export function newCueNumber(sequence: Sequence, cues: Cue[], after?: string | null): number {
+	const order = orderedCues(sequence, cues);
+	const at = after ? order.findIndex((c) => c.id === after) : -1;
+	return at >= 0 ? insertNumber(order[at].number, order[at + 1]?.number) : order.length + 1;
+}
+
+/** "Cue 4", "Cue 3.5": the name a new cue gets when nobody types one. */
+export const defaultCueName = (number: number): string =>
+	`Cue ${Number.isInteger(number) ? number : Number(number.toFixed(3))}`;
 
 /**
  * Add a cue to a sequence, and hand back what was made.
@@ -51,9 +67,9 @@ export async function createCue(
 	const at = after ? order.findIndex((c) => c.id === after) : -1;
 
 	const cue: Cue = {
-		id: crypto.randomUUID(),
+		id: uuid(),
 		name,
-		number: number ?? (at >= 0 ? insertNumber(order[at].number, order[at + 1]?.number) : order.length + 1),
+		number: number ?? newCueNumber(sequence, cues, after),
 		captures,
 		follow_mode: followMode,
 		fade_in_ms: fadeInMs,
@@ -70,13 +86,13 @@ export async function createCue(
 }
 
 /**
- * Half a second, which is the fade an unfamiliar console should give you.
+ * No fade: a cue made without being asked for one snaps, in and out.
  *
- * Long enough that a Go is not a jump, short enough that it does not feel like the
- * desk hesitating. Every cue made without being asked gets this, and every one of
- * them can be changed afterwards.
+ * It was half a second, and at HHG that half second was what every cue had to be
+ * edited away from — a look is set where it is set, and a fade is a decision someone
+ * makes. Zero in and zero out. Every cue can be given one afterwards.
  */
-export const DEFAULT_FADE_MS = 500;
+export const DEFAULT_FADE_MS = 0;
 
 /** A sequence's cues, in the order the sequence lists them. */
 export function orderedCues(sequence: Sequence, cues: Cue[]): Cue[] {
@@ -119,7 +135,7 @@ export function reorderCueIds(ids: string[], from: number, to: number): string[]
  *
  * The browser's copy of `pult_schema::types::cue::tracked_through`, and it is here
  * for the reason `selection.ts` and `scene.ts` are: a cue clicked in a list has to
- * colour a sheet in the same frame, and a round trip inside that is a sheet that
+ * color a sheet in the same frame, and a round trip inside that is a sheet that
  * flickers. The two are held together by `testdata/tracking.json`, which this file's
  * test and `crates/pult-schema/tests/tracking_corpus.rs` both read.
  *
@@ -153,108 +169,4 @@ export function trackedThrough(
 export function cueIdsThrough(sequence: Sequence, cueId: string): string[] {
 	const at = sequence.cue_ids.indexOf(cueId);
 	return at < 0 ? [] : sequence.cue_ids.slice(0, at + 1);
-}
-
-/**
- * What the *next* cue has to say so that a store into this one does not track forward.
- *
- * Storing into cue 3 in a tracking playback changes cue 3 and, silently, every cue
- * after it that does not capture the same key — which is right when a designer is
- * changing the look and wrong when they are fixing one moment. Every other desk calls
- * the second one *cue only*, and this is it: for each key the store changes, if the
- * next cue does not capture that key itself, the value it was **tracking** before the
- * store is written into it, so the change stops at this cue's edge.
- *
- * Three things fall out of the rule and are worth stating.
- *
- * The compensating capture carries the value and nothing else — no fade time, no
- * delay, no curve. Those are copied from nowhere on purpose: the value is being put
- * into a different cue, and it should move the way *that* cue moves.
- *
- * A key nothing was tracking before needs no compensation. There was nothing to
- * preserve, so the next cue goes on saying nothing about it and whatever is beneath
- * shows through, exactly as it did.
- *
- * And the last cue of a sequence has no next, so cue only does nothing there — which
- * is not a special case but the same rule with nothing to write into.
- */
-export function cueOnlyCompensation(
-	next: Cue,
-	changed: string[],
-	before: Map<string, Cue['captures'][number]>
-): Cue['captures'] | null {
-	const already = new Set(
-		next.captures.map((c) => `${c.fixture_id}/${parameterKey(c.parameter_kind)}`)
-	);
-	const added: Cue['captures'] = [];
-	for (const key of changed) {
-		if (already.has(key)) continue;
-		const tracked = before.get(key);
-		if (!tracked) continue;
-		added.push({
-			fixture_id: tracked.fixture_id,
-			parameter_kind: tracked.parameter_kind,
-			value: tracked.value,
-			// A stored effect drops its anchor, the same rule `storeCaptures` follows:
-			// the cue's own `went_at` is what it is measured from on every Go.
-			effect: tracked.effect ? { ...tracked.effect, t0: null } : null,
-			// The reference comes with it: a compensating value that dropped the palette
-			// would be the one cue in the show whose "warm" stopped following warm.
-			preset: tracked.preset ?? null,
-			fade_in_ms: 0,
-			fade_out_ms: 0,
-			delay_in_ms: 0,
-			easing: null
-		});
-		already.add(key);
-	}
-	return added.length === 0 ? null : [...next.captures, ...added];
-}
-
-/**
- * Which cue is driving each parameter, for Update.
- *
- * **Not read off `live_fades`**, and that is the correction worth writing down: a key
- * the programmer holds is exactly the key playback stops publishing. `emit_motion`
- * skips every fade and effect under a held key, deliberately — the programmer wins and
- * a description nobody would evaluate is noise on the link — so at the moment Update
- * needs to know which cue a nudged value belongs to, `live_fades[key].cue_id` is gone.
- *
- * So the question is asked the way the console asks it everywhere else: **the latest
- * capture of the key over the tracked stack of each live sequence**, which is what a Go
- * would have put there and is `trackedThrough` again rather than a second rule.
- *
- * Where two live sequences both capture a key, the one that **went most recently**
- * wins, because that is what playback did to the parameter: `start_capture` takes the
- * key off whatever had it. A sequence that has never gone is treated as oldest.
- *
- * Keys nothing answers for are simply absent — those are the ones Update hands to the
- * Store dialog rather than guessing at.
- */
-export function drivingCues(
-	sequences: Sequence[],
-	byId: (id: string) => Cue | undefined,
-	keys: Set<string>
-): Map<string, string> {
-	const out = new Map<string, string>();
-	const wentAt = new Map<string, number>();
-	const live = [...sequences]
-		.filter((s) => s.active_cue_index !== null)
-		.sort((a, b) => (a.went_at ?? 0) - (b.went_at ?? 0));
-
-	for (const sequence of live) {
-		const through = sequence.cue_ids.slice(0, (sequence.active_cue_index ?? 0) + 1);
-		for (const { cue, capture } of trackedThrough(through, byId)) {
-			const at = `${capture.fixture_id}/${parameterKey(capture.parameter_kind)}`;
-			if (!keys.has(at)) continue;
-			const when = sequence.went_at ?? 0;
-			// Ascending order above means a later sequence simply overwrites, and the
-			// stamp is kept so an equal one does not flap.
-			if ((wentAt.get(at) ?? -1) <= when) {
-				out.set(at, cue.id);
-				wentAt.set(at, when);
-			}
-		}
-	}
-	return out;
 }

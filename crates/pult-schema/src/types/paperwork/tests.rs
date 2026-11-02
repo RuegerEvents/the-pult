@@ -40,9 +40,13 @@ fn a_fixture(n: u128, name: &str, type_id: u128, parent: Option<u128>) -> Fixtur
         fixture_number: Some(n as u32),
         unit_number: None,
         sensed_values: HashMap::new(),
+        sensed_at: Default::default(),
         live_effects: HashMap::new(),
         live_fades: HashMap::new(),
+        live_htp: Default::default(),
         home_values: HashMap::new(),
+        parameter_labels: Default::default(),
+        agreed_names: None,
     }
 }
 
@@ -57,7 +61,7 @@ fn an_object(n: u128, name: &str, kind: SceneObjectKind, parent: Option<u128>) -
         class: None,
         geometry: Vec::new(),
         symbol: None,
-        catalogue: None,
+        catalog: None,
         properties: serde_json::Value::Null,
         locked: false,
         weight_kg: None,
@@ -152,16 +156,16 @@ fn a_total_with_no_figures_at_all_is_a_dash_and_never_a_zero() {
 }
 
 #[test]
-fn a_catalogue_weight_says_it_is_nominal_and_an_entered_one_does_not() {
+fn a_catalog_weight_says_it_is_nominal_and_an_entered_one_does_not() {
     let mut held = a_small_rig();
-    // The bar is two metres of F34 out of the console's own catalogue, unweighed.
+    // The bar is two meters of F34 out of the console's own catalog, unweighed.
     held.objects[1].weight_kg = None;
-    held.objects[1].catalogue = Some("f34-2m".into());
+    held.objects[1].catalog = Some("f34-2m".into());
     let nominal = table(&request(TableKind::Loading), &held.rig());
     assert!(nominal.totals.weight_nominal);
     assert!(nominal.totals.weight_label().ends_with("nominal"), "{:?}", nominal.totals);
     assert!(
-        nominal.notes.iter().any(|n| n.contains("catalogue figures")),
+        nominal.notes.iter().any(|n| n.contains("catalog figures")),
         "the reader is told what nominal means: {:?}",
         nominal.notes
     );
@@ -174,9 +178,9 @@ fn a_catalogue_weight_says_it_is_nominal_and_an_entered_one_does_not() {
 }
 
 #[test]
-fn an_objects_own_weight_beats_its_catalogue_figure() {
+fn an_objects_own_weight_beats_its_catalog_figure() {
     let mut held = a_small_rig();
-    held.objects[1].catalogue = Some("f34-2m".into());
+    held.objects[1].catalog = Some("f34-2m".into());
     held.objects[1].weight_kg = Some(9.0);
     let table = table(&request(TableKind::Loading), &held.rig());
     assert_eq!(table.totals.weight_kg, 49.0, "40 kg of lantern and the 9 kg somebody weighed");
@@ -188,7 +192,7 @@ fn an_objects_own_weight_beats_its_catalogue_figure() {
 fn a_loading_group_carries_the_truss_as_well_as_the_lights() {
     let mut held = a_small_rig();
     held.objects[1].weight_kg = None;
-    held.objects[1].catalogue = Some("f34-2m".into());
+    held.objects[1].catalog = Some("f34-2m".into());
     let table = table(&request(TableKind::Loading), &held.rig());
 
     let group = table.groups.iter().find(|g| g.name == "Front truss").expect("the group");
@@ -307,7 +311,7 @@ fn a_fixture_with_two_breaks_prints_both() {
 
 #[test]
 fn a_node_fixture_prints_its_node_and_never_a_universe_it_has_not_got() {
-    let address = FixtureAddress::OpenHaunt { serial: "4d5e6f".into(), universe: None };
+    let address = FixtureAddress::node("4d5e6f", None);
     assert_eq!(address_of(&address), "node 4d5e6f");
 }
 

@@ -32,7 +32,28 @@ use pult_schema::{
     },
 };
 
+/// Preferences of this binary's own, naming devices no machine has.
+///
+/// Without this a station started here reads the real `preferences.toml` and opens the
+/// machine's real default input to chase timecode — and a microphone at another rate
+/// resets the decoder between every buffer the test pushes, which is how the chase test
+/// failed run alone on a laptop and passed in the full suite. Named rather than left
+/// out, because told nothing is the system default. Once per process: an env var is.
+fn hermetic_preferences() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let path = std::env::temp_dir().join(format!("pult-audio-prefs-{}.toml", uuid::Uuid::new_v4()));
+        std::fs::write(
+            &path,
+            "[audio]\ninput = \"no input device in tests\"\noutput = \"no output device in tests\"\n",
+        )
+        .expect("a preferences file");
+        std::env::set_var("PULT_PREFERENCES", &path);
+    });
+}
+
 async fn a_station() -> Running {
+    hermetic_preferences();
     let show = std::env::temp_dir().join(format!("pult-audio-{}.pult", uuid::Uuid::new_v4()));
     pult_backend::start(Config {
         port: 0,
@@ -79,23 +100,27 @@ where
 
 fn a_timeline(source: TimelineSource, events: Vec<TimelineEvent>) -> Timeline {
     Timeline {
+        folder: None,
         id: uuid::Uuid::new_v4(),
         name: "Act 1".into(),
-        audio: None,
-        peaks: None,
+        clips: Vec::new(),
         detected: None,
         source,
         grid: Vec::new(),
         markers: Vec::new(),
         events,
         tracks: Vec::new(),
+        flashes: None,
+        pending: None,
         speed_master: None,
         node_id: None,
+        end: None,
         running: false,
         anchor_ms: 0,
         position_at_anchor_ms: 0,
         rate: 1.0,
         recording: None,
+        armed_by: None,
     }
 }
 
@@ -116,12 +141,14 @@ async fn a_sequence(station: &Running) -> uuid::Uuid {
     let second = a_cue(2.0, "Cue 2");
     create(station, "cues", serde_json::to_value(&first).unwrap()).await;
     create(station, "cues", serde_json::to_value(&second).unwrap()).await;
-    let sequence = Sequence {
+    let sequence = Sequence { merge: None, wrap: None,
+        folder: None,
         id: uuid::Uuid::new_v4(),
         name: "Act".into(),
         cue_ids: vec![first.id, second.id],
         active_cue_index: None,
         went_at: None,
+        master: None,
     };
     create(station, "sequences", serde_json::to_value(&sequence).unwrap()).await;
     sequence.id

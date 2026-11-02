@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Pick from '$lib/components/objects/Pick.svelte';
 	/**
 	 * The store menu.
 	 *
@@ -17,13 +18,13 @@
 
 	import { untrack } from 'svelte';
 
-	import type { Cue, Easing, ParameterCapture, Sequence } from '$lib/generated/index.js';
-	import { createCue, cueIdsThrough, cueOnlyCompensation, DEFAULT_FADE_MS, trackedThrough } from '$lib/cues.js';
+	import type { Cue, Easing, ParameterKind, Sequence, StoreOnto } from '$lib/generated/index.js';
+	import { defaultCueName, newCueNumber, DEFAULT_FADE_MS } from '$lib/cues.js';
 	import { CURVE_LABELS, CURVES, curveForKey } from '$lib/fade.js';
-	import { displayLabel, formatValue, parameterKey } from '$lib/patch.js';
-	import { clear, entries, storeInto, storePreset, updatePreset } from '$lib/stores/programmer.js';
-	import { beginGesture, endGesture } from '$lib/stores/gesture.js';
-	import { collection, show, showData } from '$lib/stores/show.js';
+	import { formatValue, parameterKey, parameterName } from '$lib/patch.js';
+	import { clear, entries, store as storeProgrammer, storePreset, updatePreset } from '$lib/stores/programmer.js';
+	import { storeDialogs, wingStoreTarget } from '$lib/stores/wing.js';
+	import { collection, show } from '$lib/stores/show.js';
 	import { addToast } from '$lib/toasts.js';
 	import { focusOnMount } from '$lib/actions.js';
 	import Dialog from '$lib/components/Dialog.svelte';
@@ -35,8 +36,20 @@
 		 * keys no cue is driving — which is the one case where a subset is the answer
 		 * rather than a guess.
 		 */
-		preselect = null
-	}: { onclose: () => void; preselect?: string[] | null } = $props();
+		preselect = null,
+		/**
+		 * The playback STORE was pressed onto on the wing: the dialog opens on its
+		 * sequence, or on a new one that the playback is then bound to.
+		 */
+		onto: ontoAsked = null
+	}: { onclose: () => void; preselect?: string[] | null; onto?: StoreOnto | null } = $props();
+
+	/**
+	 * The playback this is going onto: what STORE was pressed onto, or a playback key
+	 * pressed on the wing while the dialog is open — MA's Store onto an executor, from
+	 * whichever end it was started.
+	 */
+	let onto = $state<StoreOnto | null>(untrack(() => ontoAsked));
 
 	const fixtures = collection('fixtures');
 	const sequences = collection('sequences');
@@ -61,7 +74,43 @@
 		}
 	};
 
-	let sequenceId = $state<string | null>(remembered(SEQUENCE_KEY));
+	let sequenceId = $state<string | null>(
+		untrack(() => (onto ? (onto.sequence_id ?? '__new') : remembered(SEQUENCE_KEY)))
+	);
+
+	// The wing is told this dialog is open, so its playback keys say where to store
+	// rather than doing what they do; and when one is pressed, this is where.
+	$effect(() => {
+		storeDialogs.update((n) => n + 1);
+		return () => storeDialogs.update((n) => n - 1);
+	});
+	$effect(() => {
+		const asked = $wingStoreTarget;
+		if (!asked) return;
+		wingStoreTarget.set(null);
+		untrack(() => {
+			onto = asked;
+			sequenceId = asked.sequence_id ?? NEW_SEQUENCE;
+			cueId = null;
+			after = undefined;
+			const s = asked.sequence_id ? $sequences.find((q) => q.id === asked.sequence_id) : undefined;
+			if (s && s.cue_ids.length === 1) {
+				target = 'existing';
+				cueId = s.cue_ids[0];
+			} else {
+				target = 'new';
+			}
+		});
+	});
+	/**
+	 * A sequence made by this store, for a show that has none or a cue that belongs in
+	 * a new one. Made in the same gesture as the cue, so one Ctrl-Z takes both back —
+	 * there used to be no way to store a first cue at all without leaving for the
+	 * Sequences panel.
+	 */
+	const NEW_SEQUENCE = '__new';
+	let sequenceName = $state(untrack(() => `Sequence ${$sequences.length + 1}`));
+	const creatingSequence = $derived(sequenceId === NEW_SEQUENCE || $sequences.length === 0);
 	/**
 	 * A cue, or a preset.
 	 *
@@ -70,11 +119,24 @@
 	 * keeping, and "this is a look I will want again" is a decision made at exactly
 	 * that moment.
 	 */
-	let target = $state<'new' | 'existing' | 'preset'>('new');
+	/**
+	 * Onto a playback with exactly one cue, Store means that cue, merged: a playback
+	 * with one cue is usually a look being built up. With more, it means a new cue.
+	 */
+	const ontoOnlyCue = untrack(() => {
+		const s = onto?.sequence_id ? $sequences.find((q) => q.id === onto?.sequence_id) : undefined;
+		return s && s.cue_ids.length === 1 ? s.cue_ids[0] : null;
+	});
+	let target = $state<'new' | 'existing' | 'preset'>(ontoOnlyCue ? 'existing' : 'new');
 	let presetTarget = $state<string | null>(null);
 	let presetName = $state('');
-	let cueId = $state<string | null>(null);
-	let name = $state('');
+	let cueId = $state<string | null>(ontoOnlyCue);
+	/**
+	 * The cue's name: what was typed, or "Cue <n>" for the number it is about to get,
+	 * which follows the *After* choice until somebody types. Prefilled and selected,
+	 * so Enter stores it as it is and typing replaces it.
+	 */
+	let typedName = $state<string | null>(null);
 	let mode = $state<'merge' | 'replace'>('merge');
 	/**
 	 * Track or cue only.
@@ -82,7 +144,7 @@
 	 * Track is preselected because tracking is what this playback does and what a
 	 * designer means most of the time: a look built in cue 3 should still be there in
 	 * cue 4. Cue only is the answer when one moment is being fixed rather than the
-	 * look being changed — see `cueOnlyCompensation`.
+	 * look being changed — see `cue_only_compensation` in `infra/storing.rs`.
 	 */
 	let tracking = $state<'track' | 'cueOnly'>(
 		remembered(TRACKING_KEY) === 'cueOnly' ? 'cueOnly' : 'track'
@@ -107,7 +169,9 @@
 	);
 
 	const sequence = $derived(
-		$sequences.find((s) => s.id === sequenceId) ?? ($sequences[0] as Sequence | undefined) ?? null
+		creatingSequence
+			? null
+			: ($sequences.find((s) => s.id === sequenceId) ?? ($sequences[0] as Sequence | undefined) ?? null)
 	);
 	const cuesInSequence = $derived(
 		sequence ? sequence.cue_ids.map((id) => $cues.find((c) => c.id === id)).filter((c): c is Cue => !!c) : []
@@ -122,6 +186,12 @@
 	);
 	let after = $state<string | null | undefined>(undefined);
 	const insertAfter = $derived(after === undefined ? afterActive : after);
+	const name = $derived(
+		typedName ??
+			(sequence ? defaultCueName(newCueNumber(sequence, $cues, insertAfter)) : defaultCueName(1))
+	);
+	const labelOf = (fixtureId: string, kind: ParameterKind) =>
+		parameterName($fixtures.find((f) => f.id === fixtureId), kind);
 	const nameOf = (fixtureId: string) =>
 		$fixtures.find((f) => f.id === fixtureId)?.name ?? fixtureId.slice(0, 6);
 
@@ -129,14 +199,16 @@
 		include.size > 0 &&
 			(target === 'preset'
 				? presetTarget !== null || presetName.trim().length > 0
-				: !!sequence && (target === 'new' ? name.trim().length > 0 : cue !== null))
+				: target === 'new'
+					? (!!sequence || sequenceName.trim().length > 0) && name.trim().length > 0
+					: !!sequence && cue !== null)
 	);
 
 	/**
 	 * Per-capture timing, held here until Store.
 	 *
 	 * Zero means "use the cue's", which is what `Playback::start_cue` already does
-	 * with `fade_in_ms`, so leaving every row alone gives exactly the behaviour the
+	 * with `fade_in_ms`, so leaving every row alone gives exactly the behavior the
 	 * console had before there was anywhere to type these.
 	 */
 	type Timing = { fade: number; delay: number; easing: Easing | null };
@@ -181,33 +253,6 @@
 	}
 
 	/**
-	 * The cue a compensating value would go into, and what it is tracking now.
-	 *
-	 * Read *before* the store, because cue only preserves what the next cue was
-	 * showing — which is a fact about the show as it stands and not about the show the
-	 * store is about to make.
-	 */
-	function nextCueAndTracked(
-		storedInto: string
-	): { next: Cue; before: Map<string, ParameterCapture> } | null {
-		if (!sequence) return null;
-		const at = sequence.cue_ids.indexOf(storedInto);
-		const nextId = at >= 0 ? sequence.cue_ids[at + 1] : undefined;
-		if (!nextId) return null;
-		const next = $cues.find((c) => c.id === nextId);
-		if (!next) return null;
-		const byId = new Map($cues.map((c) => [c.id, c]));
-		const before = new Map<string, ParameterCapture>();
-		for (const entry of trackedThrough(cueIdsThrough(sequence, storedInto), (id) => byId.get(id))) {
-			before.set(
-				`${entry.capture.fixture_id}/${parameterKey(entry.capture.parameter_kind)}`,
-				entry.capture
-			);
-		}
-		return { next, before };
-	}
-
-	/**
 	 * The other kind of store: a look somebody will want again.
 	 *
 	 * No cue-only, no timing, no target sequence — a preset is values and a name, and
@@ -229,335 +274,321 @@
 		}
 	}
 
-	/** Which parameters this store actually changes, as `"fixture/key"`. */
-	const changedKeys = () =>
-		$entries
-			.filter((entry) => include.has(entry.id))
-			.map((entry) => `${entry.fixture_id}/${parameterKey(entry.parameter_kind)}`);
-
+	/**
+	 * Store into a cue. The station's act (`programmer.store`), the same one STORE on
+	 * the wing runs, so the two cannot disagree about where a cue goes, what cue only
+	 * writes or what one Ctrl-Z takes back. A sequence made here is made in it too.
+	 */
 	async function store() {
 		if (storing) return;
 		if (target === 'preset') return storeAsPreset();
-		if (!sequence) return;
+		if (!sequence && !(creatingSequence && target === 'new')) return;
 		storing = true;
-		remember(SEQUENCE_KEY, sequence.id);
 		remember(TRACKING_KEY, tracking);
-		// One gesture over the cue being stored into *and* the compensation in the one
-		// after it: cue only is a single act, and it is one Ctrl-Z.
-		beginGesture();
 		try {
-			const changed = changedKeys();
-			const compensation = tracking === 'cueOnly';
-			// Taken before anything is written, because it is what the next cue was
-			// tracking rather than what it will be.
-			const ahead = compensation
-				? nextCueAndTracked(target === 'new' ? (insertAfter ?? '') : (cueId ?? ''))
-				: null;
-
-			if (target === 'new') {
-				await createCue(showData(), sequence, $cues, {
-					name: name.trim(),
-					fadeInMs: cueFadeIn,
-					fadeOutMs: cueFadeOut,
-					easing: cueEasing,
-					after: insertAfter ?? undefined,
-					followMode:
-						followMode === 'Manual' ? 'Manual' : { FollowAfter: { delay_ms: followDelay } },
-					captures: $entries
-						.filter((entry) => include.has(entry.id))
-						.map((entry) => {
-							const t = timingFor(entry.id);
-							return {
-								fixture_id: entry.fixture_id,
-								parameter_kind: entry.parameter_kind,
-								value: entry.value,
-								// A stored effect drops its anchor: the cue's `went_at` is
-								// what it is measured from on every Go.
-								effect: entry.effect ? { ...entry.effect, t0: null } : null,
-								// The palette this value came from, if it came from one. The
-								// literal beside it is what plays if the preset is deleted.
-								preset: entry.preset ?? null,
-								// `null` is not "linear": it is this capture saying nothing, so
-								// the cue answers, and the show answers for the cue.
-								easing: t.easing,
-								fade_in_ms: t.fade,
-								fade_out_ms: 0,
-								delay_in_ms: t.delay
-							};
-						})
-				});
-			} else if (cue) {
-				await storeInto(cue, mode, include);
-			}
-
-			if (ahead) {
-				const compensated = cueOnlyCompensation(ahead.next, changed, ahead.before);
-				if (compensated) await showData().cues.byId(ahead.next.id).captures.set(compensated);
-			}
-			if (!keep) await clear({ keepLocked: true });
+			const stored = await storeProgrammer({
+				include: [...include],
+				...(sequence ? { sequenceId: sequence.id } : { newSequence: sequenceName.trim() }),
+				...(target === 'new'
+					? {
+							name: name.trim(),
+							after: insertAfter ?? null,
+							fadeInMs: cueFadeIn,
+							fadeOutMs: cueFadeOut,
+							easing: cueEasing,
+							followMode: followMode === 'Manual' ? 'Manual' : { FollowAfter: { delay_ms: followDelay } }
+						}
+					: { cueId: cueId ?? undefined, replace: mode === 'replace' }),
+				// Only the rows somebody typed into: the rest keep what the cue had.
+				timing: Object.fromEntries(
+					Object.entries(timing).map(([id, t]) => [id, { fadeMs: t.fade, delayMs: t.delay, easing: t.easing }])
+				),
+				cueOnly: tracking === 'cueOnly',
+				keep,
+				onto
+			});
+			remember(SEQUENCE_KEY, stored.sequenceId);
 			onclose();
 		} catch (e) {
 			addToast(e instanceof Error ? e.message : 'that would not store');
 		} finally {
-			endGesture();
 			storing = false;
 		}
 	}
 </script>
 
-<Dialog title="Store" {onclose}>
+<Dialog title="Store" size="large" bleed {onclose}>
 	{#snippet footer()}
 		<button class="ghost" onclick={onclose}>Cancel</button>
 		<button class="primary" disabled={!canStore || storing} onclick={store}>
-			{storing ? 'Storing…' : 'Store'}
+			{storing ? 'Storing…' : target === 'preset' ? 'Store preset' : target === 'existing' ? 'Store into cue' : 'Store cue'}
 		</button>
 	{/snippet}
 
-		{#if $entries.length === 0}
-			<p class="empty">The programmer is empty, so there is nothing to store.</p>
-		{:else}
-			<div class="list">
-				<table>
-					<thead>
-						<tr>
-							<th></th><th>Fixture</th><th>Parameter</th><th>Value</th>
-							<th title="Zero uses the cue's own fade">Fade</th>
-							<th>Delay</th>
-							<th>Curve</th>
-						</tr>
-					</thead>
-					<tbody>
-						{#each $entries as entry (entry.id)}
-							<tr class:off={!include.has(entry.id)}>
-								<td>
-									<input
-										type="checkbox"
-										checked={include.has(entry.id)}
-										aria-label="Store {nameOf(entry.fixture_id)} {displayLabel(entry.parameter_kind)}"
-										onchange={(e) => tick(entry.id, e.currentTarget.checked)}
-									/>
-								</td>
-								<td>{nameOf(entry.fixture_id)}</td>
-								<td>{displayLabel(entry.parameter_kind)}</td>
-								<td class="mono">
-									{#if entry.effect}
-										<!-- What is stored is the shape, not the value under it. -->
-										<span class="chip-effect">
-											{'Steps' in entry.effect.curve
-												? `${entry.effect.curve.Steps.length} steps`
-												: entry.effect.curve.Shape.toLowerCase()}
-										</span>
-									{:else}
-										{formatValue(entry.value)}
-									{/if}
-								</td>
-								<td>
-									<input
-										class="num"
-										type="number"
-										min="0"
-										step="100"
-										placeholder="cue"
-										value={timingFor(entry.id).fade || ''}
-										aria-label="Fade for {displayLabel(entry.parameter_kind)}"
-										onchange={(e) => setTiming(entry.id, { fade: Number(e.currentTarget.value) || 0 })}
-									/>
-								</td>
-								<td>
-									<input
-										class="num"
-										type="number"
-										min="0"
-										step="100"
-										placeholder="0"
-										value={timingFor(entry.id).delay || ''}
-										aria-label="Delay for {displayLabel(entry.parameter_kind)}"
-										onchange={(e) => setTiming(entry.id, { delay: Number(e.currentTarget.value) || 0 })}
-									/>
-								</td>
-								<td>
-									<select
-										value={timingFor(entry.id).easing ?? ''}
-										aria-label="Curve for {displayLabel(entry.parameter_kind)}"
-										onchange={(e) =>
-											setTiming(entry.id, {
-												easing: (e.currentTarget.value || null) as Easing | null
-											})}
-									>
-										<!-- Named rather than left as "inherited": an operator
-										     deciding whether to override wants to see what they
-										     would be overriding. -->
-										<option value="">{inheritedFrom(entry.parameter_kind)}</option>
-										{#each CURVES as curve (curve)}
-											<option value={curve}>{CURVE_LABELS[curve]}</option>
-										{/each}
-									</select>
-								</td>
+	{#if $entries.length === 0}
+		<p class="empty">The programmer is empty, so there is nothing to store.</p>
+	{:else}
+		<div class="store">
+			<!-- What: every value the programmer holds, each one ticked or not, with the
+			     timing it would take. -->
+			<section class="what">
+				<h3>What <span class="dim">{include.size} of {$entries.length}</span></h3>
+				<div class="list">
+					<table>
+						<thead>
+							<tr>
+								<th></th><th>Fixture</th><th>Parameter</th><th>Value</th>
+								{#if target !== 'preset'}
+									<th title="Empty uses the cue's own fade">Fade</th>
+									<th>Delay</th>
+									<th>Curve</th>
+								{/if}
 							</tr>
-						{/each}
-					</tbody>
-				</table>
-			</div>
+						</thead>
+						<tbody>
+							{#each $entries as entry (entry.id)}
+								<tr class:off={!include.has(entry.id)}>
+									<td>
+										<input
+											type="checkbox"
+											checked={include.has(entry.id)}
+											aria-label="Store {nameOf(entry.fixture_id)} {labelOf(entry.fixture_id, entry.parameter_kind)}"
+											onchange={(e) => tick(entry.id, e.currentTarget.checked)}
+										/>
+									</td>
+									<td>{nameOf(entry.fixture_id)}</td>
+									<td>{labelOf(entry.fixture_id, entry.parameter_kind)}</td>
+									<td class="mono">
+										{#if entry.effect}
+											<!-- What is stored is the shape, not the value under it. -->
+											<span class="chip-effect">
+												{'Steps' in entry.effect.curve
+													? `${entry.effect.curve.Steps.length} steps`
+													: entry.effect.curve.Shape.toLowerCase()}
+											</span>
+										{:else}
+											{formatValue(entry.value)}
+										{/if}
+									</td>
+									{#if target !== 'preset'}
+										<td>
+											<input
+												class="num"
+												type="number"
+												min="0"
+												step="100"
+												placeholder="cue"
+												value={timingFor(entry.id).fade || ''}
+												aria-label="Fade for {labelOf(entry.fixture_id, entry.parameter_kind)}"
+												onchange={(e) => setTiming(entry.id, { fade: Number(e.currentTarget.value) || 0 })}
+											/>
+										</td>
+										<td>
+											<input
+												class="num"
+												type="number"
+												min="0"
+												step="100"
+												placeholder="0"
+												value={timingFor(entry.id).delay || ''}
+												aria-label="Delay for {labelOf(entry.fixture_id, entry.parameter_kind)}"
+												onchange={(e) => setTiming(entry.id, { delay: Number(e.currentTarget.value) || 0 })}
+											/>
+										</td>
+										<td>
+											<select
+												value={timingFor(entry.id).easing ?? ''}
+												aria-label="Curve for {labelOf(entry.fixture_id, entry.parameter_kind)}"
+												onchange={(e) =>
+													setTiming(entry.id, {
+														easing: (e.currentTarget.value || null) as Easing | null
+													})}
+											>
+												<!-- Named rather than left as "inherited": an operator
+												     deciding whether to override wants to see what they
+												     would be overriding. -->
+												<option value="">{inheritedFrom(entry.parameter_kind)}</option>
+												{#each CURVES as curve (curve)}
+													<option value={curve}>{CURVE_LABELS[curve]}</option>
+												{/each}
+											</select>
+										</td>
+									{/if}
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				</div>
+			</section>
 
-			<div class="target">
-				<div class="choice">
-					<label><input type="radio" value="new" bind:group={target} /> Cue</label>
-					<label><input type="radio" value="preset" bind:group={target} /> Preset</label>
+			<!-- Where: a cue, new or existing, in a sequence — or a preset. -->
+			<section class="where">
+				<div class="seg" role="radiogroup" aria-label="Store as">
+					<button role="radio" aria-checked={target !== 'preset'} class:on={target !== 'preset'} onclick={() => target !== 'preset' || (target = 'new')}>Cue</button>
+					<button role="radio" aria-checked={target === 'preset'} class:on={target === 'preset'} onclick={() => (target = 'preset')}>Preset</button>
 				</div>
 
 				{#if target === 'preset'}
 					<label class="field">
-						Into
-						<select
-							value={presetTarget ?? ''}
-							onchange={(e) => (presetTarget = e.currentTarget.value || null)}
-						>
-							<option value="">a new preset…</option>
-							{#each $presets as p (p.id)}
-								<option value={p.id}>{p.name}</option>
-							{/each}
-						</select>
+						<span>Into</span>
+						<Pick rows={$presets} value={presetTarget} none="A new preset…" onpick={(id) => (presetTarget = id)} />
 					</label>
 					{#if presetTarget === null}
-						<input class="text" placeholder="Preset name…" bind:value={presetName} />
+						<label class="field">
+							<span>Name</span>
+							<input class="text" placeholder="Preset name…" bind:value={presetName} use:focusOnMount />
+						</label>
 					{:else}
 						<p class="note">
-							Merged into it — everything it already says about other parameters is
-							kept, and every cue referencing it follows at once.
+							Merged into it: everything it already says about other parameters is kept, and every
+							cue that uses it follows at once.
 						</p>
 					{/if}
-					<label class="check">
-						<input type="checkbox" bind:checked={keep} />
-						Keep the programmer after storing
-					</label>
 				{:else}
-				<label class="field">
-					Sequence
-					<select
-						value={sequence?.id ?? ''}
-						onchange={(e) => {
-							sequenceId = e.currentTarget.value;
-							cueId = null;
-						}}
-					>
-						{#each $sequences as s (s.id)}
-							<option value={s.id}>{s.name}</option>
-						{/each}
-					</select>
-				</label>
-
-				<div class="choice">
-					<label>
-						<input type="radio" value="new" bind:group={target} />
-						New cue
-					</label>
-					<label>
-						<input type="radio" value="existing" bind:group={target} disabled={cuesInSequence.length === 0} />
-						Existing cue
-					</label>
-				</div>
-
-				{#if target === 'new'}
-					<input
-						class="text"
-						placeholder="Cue name…"
-						bind:value={name}
-						use:focusOnMount
-						onkeydown={(e) => e.key === 'Enter' && canStore && store()}
-					/>
-					<!-- Where it goes. Preselected after the cue that is up, which is where
-					     somebody programming a show in order means. -->
 					<label class="field">
-						After
-						<select
-							value={insertAfter ?? ''}
-							onchange={(e) => (after = e.currentTarget.value || null)}
-						>
-							<option value="">the end of the list</option>
-							{#each cuesInSequence as c (c.id)}
-								<option value={c.id}>
-									{c.number.toFixed(1)} · {c.name}{c.id === afterActive ? ' (up now)' : ''}
-								</option>
-							{/each}
-						</select>
+						<span>Sequence</span>
+						<Pick
+							rows={$sequences}
+							value={creatingSequence ? NEW_SEQUENCE : (sequence?.id ?? null)}
+							extras={[{ id: NEW_SEQUENCE, label: '+ New sequence…' }]}
+							onpick={(id) => {
+								sequenceId = id;
+								cueId = null;
+								if (sequenceId === NEW_SEQUENCE) target = 'new';
+							}}
+						/>
 					</label>
-					<!-- The cue's own timing, which every capture above falls back to. -->
-					<div class="timing">
+					{#if creatingSequence}
 						<label class="field">
-							Fade in
-							<input class="num" type="number" min="0" step="100" bind:value={cueFadeIn} />
-							<span class="unit">ms</span>
+							<span>Called</span>
+							<input class="text" bind:value={sequenceName} placeholder="Sequence name…" />
 						</label>
+					{/if}
+					{#if onto && onto.sequence_id === null}
+						<p class="note">
+							The wing's {onto.control.kind === 'Fader' ? 'fader' : 'key'} gets the sequence this is stored into,
+							on page {onto.page}.
+						</p>
+					{/if}
+
+					<div class="seg" role="radiogroup" aria-label="Which cue">
+						<button role="radio" aria-checked={target === 'new'} class:on={target === 'new'} onclick={() => (target = 'new')}>New cue</button>
+						<button
+							role="radio"
+							aria-checked={target === 'existing'}
+							class:on={target === 'existing'}
+							disabled={cuesInSequence.length === 0}
+							title={cuesInSequence.length === 0 ? 'This sequence has no cues yet' : undefined}
+							onclick={() => (target = 'existing')}>Existing cue</button
+						>
+					</div>
+
+					{#if target === 'new'}
 						<label class="field">
-							Fade out
-							<input class="num" type="number" min="0" step="100" bind:value={cueFadeOut} />
-							<span class="unit">ms</span>
+							<span>Name</span>
+							<input
+								class="text"
+								placeholder="Cue name…"
+								value={name}
+								oninput={(e) => (typedName = e.currentTarget.value)}
+								use:focusOnMount
+								onfocus={(e) => e.currentTarget.select()}
+								onkeydown={(e) => e.key === 'Enter' && canStore && store()}
+							/>
 						</label>
+						<!-- Where it goes. Preselected after the cue that is up, which is where
+						     somebody programming a show in order means. -->
 						<label class="field">
-							Curve
-							<select bind:value={cueEasing}>
-								<!-- The show's own answer, which is different per parameter —
-								     so this one says where it comes from rather than naming a
-								     curve the intensities in this cue would not take. -->
-								<option value={null}>The show's</option>
-								{#each CURVES as curve (curve)}
-									<option value={curve}>{CURVE_LABELS[curve]}</option>
-								{/each}
-							</select>
+							<span>After</span>
+							<Pick
+								rows={cuesInSequence}
+								value={insertAfter ?? null}
+								none="The end of the list"
+								label={(c) => `${c.number.toFixed(1)} · ${c.name}`}
+								hint={(c) => (c.id === afterActive ? 'up now' : '')}
+								onpick={(id) => (after = id)}
+							/>
 						</label>
-						<label class="field">
-							Follow
-							<select bind:value={followMode}>
-								<option value="Manual">On Go</option>
-								<option value="FollowAfter">Automatically</option>
-							</select>
-						</label>
-						{#if followMode !== 'Manual'}
+						<!-- The cue's own timing, which every value on the left falls back to. -->
+						<fieldset class="timing">
+							<legend>Timing</legend>
 							<label class="field">
-								after
-								<input class="num" type="number" min="0" step="100" bind:value={followDelay} />
+								<span>Fade in</span>
+								<input class="num" type="number" min="0" step="100" bind:value={cueFadeIn} />
 								<span class="unit">ms</span>
 							</label>
-						{/if}
-					</div>
-				{:else}
-					<select bind:value={cueId}>
-						<option value={null}>Choose a cue…</option>
-						{#each cuesInSequence as c (c.id)}
-							<option value={c.id}>{c.number.toFixed(1)} · {c.name}</option>
-						{/each}
-					</select>
-					<div class="choice">
-						<label><input type="radio" value="merge" bind:group={mode} /> Merge</label>
-						<label><input type="radio" value="replace" bind:group={mode} /> Replace</label>
+							<label class="field" title="How long what this cue sets takes to go when the cue ends — going back past it, or Off">
+								<span>Fade out</span>
+								<input class="num" type="number" min="0" step="100" bind:value={cueFadeOut} />
+								<span class="unit">ms</span>
+							</label>
+							<label class="field">
+								<span>Curve</span>
+								<select bind:value={cueEasing}>
+									<!-- The show's own answer, which is different per parameter —
+									     so this one says where it comes from rather than naming a
+									     curve the intensities in this cue would not take. -->
+									<option value={null}>The show's</option>
+									{#each CURVES as curve (curve)}
+										<option value={curve}>{CURVE_LABELS[curve]}</option>
+									{/each}
+								</select>
+							</label>
+							<label class="field">
+								<span>Follow</span>
+								<select bind:value={followMode}>
+									<option value="Manual">On Go</option>
+									<option value="FollowAfter">Automatically</option>
+								</select>
+							</label>
+							{#if followMode !== 'Manual'}
+								<label class="field">
+									<span>after</span>
+									<input class="num" type="number" min="0" step="100" bind:value={followDelay} />
+									<span class="unit">ms</span>
+								</label>
+							{/if}
+						</fieldset>
+					{:else}
+						<label class="field">
+							<span>Cue</span>
+							<Pick
+								rows={cuesInSequence}
+								value={cueId}
+								placeholder="Choose a cue…"
+								label={(c) => `${c.number.toFixed(1)} · ${c.name}`}
+								onpick={(id) => (cueId = id)}
+							/>
+						</label>
+						<div class="seg" role="radiogroup" aria-label="Merge or replace">
+							<button role="radio" aria-checked={mode === 'merge'} class:on={mode === 'merge'} onclick={() => (mode = 'merge')}>Merge</button>
+							<button role="radio" aria-checked={mode === 'replace'} class:on={mode === 'replace'} onclick={() => (mode = 'replace')}>Replace</button>
+						</div>
+						<p class="note">
+							{mode === 'merge' ? 'Everything else the cue says is kept.' : 'The cue will say only what is ticked.'}
+						</p>
+					{/if}
+
+					<!-- Track or cue only, which is the difference between changing the look
+					     and fixing one moment of it. -->
+					<div class="seg" role="radiogroup" aria-label="Track or cue only">
+						<button role="radio" aria-checked={tracking === 'track'} class:on={tracking === 'track'} onclick={() => (tracking = 'track')}>Track</button>
+						<button role="radio" aria-checked={tracking === 'cueOnly'} class:on={tracking === 'cueOnly'} onclick={() => (tracking = 'cueOnly')}>Cue only</button>
 					</div>
 					<p class="note">
-						{mode === 'merge'
-							? 'Everything else the cue says is kept.'
-							: 'The cue will say only what is ticked above.'}
+						{tracking === 'track'
+							? 'The change carries forward until a later cue says otherwise.'
+							: 'The next cue is given what it is showing now, so the change stops here.'}
 					</p>
 				{/if}
-
-				<!-- Track or cue only, which is the difference between changing the look
-				     and fixing one moment of it. -->
-				<div class="choice">
-					<label><input type="radio" value="track" bind:group={tracking} /> Track</label>
-					<label><input type="radio" value="cueOnly" bind:group={tracking} /> Cue only</label>
-				</div>
-				<p class="note">
-					{tracking === 'track'
-						? 'The change carries forward until a later cue says otherwise.'
-						: 'The next cue is given what it is showing now, so the change stops here.'}
-				</p>
 
 				<label class="check">
 					<input type="checkbox" bind:checked={keep} />
 					Keep the programmer after storing
 				</label>
-				{/if}
-			</div>
-		{/if}
-
+			</section>
+		</div>
+	{/if}
 </Dialog>
 
 <style>
@@ -568,10 +599,62 @@
 		font-style: italic;
 	}
 
+	/* What on the left, where on the right: the list is what grows, and the choices
+	   about where it goes are a fixed column beside it. */
+	/* A fixed height, with each column scrolling inside it: switching between a cue
+	   and a preset changes how much is on the right, and a dialog centered on the
+	   screen that grew and shrank with it jumped under the pointer. */
+	.store {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) 340px;
+		height: min(620px, calc(100dvh - 180px));
+		min-height: 0;
+	}
+	@media (max-width: 860px) {
+		.store {
+			grid-template-columns: minmax(0, 1fr);
+			height: auto;
+		}
+	}
+	h3 {
+		margin: 0 0 8px;
+		font-size: var(--font-xs);
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+		color: var(--text-dim);
+	}
+	h3 .dim {
+		color: var(--text-faint);
+		font-weight: 400;
+		text-transform: none;
+		letter-spacing: 0;
+		margin-left: 6px;
+	}
+	.what {
+		display: flex;
+		flex-direction: column;
+		padding: 14px;
+		min-width: 0;
+		min-height: 0;
+		border-right: 1px solid var(--line);
+	}
+	.where {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+		padding: 14px;
+		min-height: 0;
+		overflow-y: auto;
+		background: color-mix(in srgb, var(--bg-sunken) 40%, transparent);
+	}
+
 	.list {
+		flex: 1;
+		min-height: 0;
 		overflow: auto;
-		max-height: 40vh;
-		border-bottom: 1px solid var(--line);
+		border: 1px solid var(--line);
+		border-radius: var(--radius);
 	}
 	table {
 		width: 100%;
@@ -581,15 +664,17 @@
 	th {
 		position: sticky;
 		top: 0;
+		z-index: 1;
 		background: var(--bg-panel);
 		text-align: left;
 		font-weight: 500;
+		font-size: var(--font-xs);
 		color: var(--text-dim);
-		padding: 6px 10px;
+		padding: 6px 8px;
 		border-bottom: 1px solid var(--line);
 	}
 	td {
-		padding: 4px 10px;
+		padding: 4px 8px;
 		border-bottom: 1px solid #ffffff08;
 	}
 	tr.off td {
@@ -599,55 +684,102 @@
 		font-family: monospace;
 	}
 
-	.target {
+	/* A label beside what it sets, every one the same width, so the column reads down. */
+	.field {
+		display: grid;
+		grid-template-columns: 72px minmax(0, 1fr) auto;
+		align-items: center;
+		gap: 8px;
+		color: var(--text-dim);
+		font-size: var(--font-sm);
+	}
+	.field > :nth-child(2):last-child {
+		grid-column: 2 / -1;
+	}
+
+	/* Either/or, as one control: the choice is visible without opening anything. */
+	.seg {
+		display: flex;
+		border: 1px solid var(--line-strong);
+		border-radius: 6px;
+		overflow: hidden;
+	}
+	.seg button {
+		flex: 1;
+		padding: 7px 10px;
+		border: none;
+		border-right: 1px solid var(--line-strong);
+		background: none;
+		color: var(--text-dim);
+		font: inherit;
+		font-size: var(--font-sm);
+		cursor: pointer;
+	}
+	.seg button:last-child {
+		border-right: none;
+	}
+	.seg button:hover:not(:disabled) {
+		background: var(--bg-hover);
+		color: var(--text-bright);
+	}
+	.seg button.on {
+		background: color-mix(in srgb, var(--accent) 22%, transparent);
+		color: var(--text-bright);
+	}
+	.seg button:disabled {
+		color: var(--text-faint);
+		cursor: default;
+	}
+
+	.timing {
 		display: flex;
 		flex-direction: column;
 		gap: 8px;
-		padding: 12px 14px;
+		margin: 0;
+		padding: 10px 12px 12px;
+		border: 1px solid var(--line);
+		border-radius: var(--radius);
 	}
-	.field {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		color: var(--text-dim);
-		font-size: var(--font-sm);
+	legend {
+		padding: 0 4px;
+		font-size: var(--font-xs);
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+		color: var(--text-faint);
 	}
-	.choice {
-		display: flex;
-		gap: 14px;
-		color: var(--text);
-		font-size: var(--font-sm);
-	}
-	.choice label,
+
 	.check {
 		display: flex;
 		align-items: center;
-		gap: 5px;
+		gap: 6px;
+		color: var(--text-dim);
+		font-size: var(--font-sm);
 		cursor: pointer;
-	}
-	.check {
-		color: var(--text-dim);
-		font-size: var(--font-sm);
+		margin-top: auto;
 	}
 	.note {
+		margin: -4px 0 0;
 		color: var(--text-faint);
 		font-size: var(--font-xs);
 	}
 
-	select,
 	.text {
+		width: 100%;
+		min-height: 28px;
 		background: var(--bg-sunken);
-		border: 1px solid var(--line-strong);
+		border: 1px solid var(--line-input);
 		border-radius: var(--radius);
 		color: var(--text);
 		font: inherit;
 		font-size: var(--font-sm);
-		padding: 4px 6px;
+		padding: 0 8px;
 	}
-	select:focus,
 	.text:focus {
 		outline: none;
 		border-color: var(--accent);
+	}
+	.field select {
+		width: 100%;
 	}
 
 	.ghost {
@@ -655,7 +787,7 @@
 		border: 1px solid var(--line-strong);
 		border-radius: var(--radius);
 		color: #bbb;
-		padding: 4px 12px;
+		padding: 5px 14px;
 		font: inherit;
 		font-size: var(--font-sm);
 		cursor: pointer;
@@ -664,15 +796,15 @@
 		border-color: var(--line-input);
 		color: var(--text-bright);
 	}
-
 	.primary {
 		background: var(--accent-solid);
 		border: none;
 		border-radius: var(--radius);
 		color: #fff;
-		padding: 5px 14px;
+		padding: 6px 16px;
 		font: inherit;
 		font-size: var(--font-sm);
+		font-weight: 500;
 		cursor: pointer;
 	}
 	.primary:disabled {
@@ -680,27 +812,19 @@
 		color: var(--text-faint);
 		cursor: not-allowed;
 	}
-	.timing {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 6px 14px;
-		font-size: 12px;
-		color: var(--text-dim);
-	}
-	.timing .field {
-		display: flex;
-		align-items: center;
-		gap: 5px;
-	}
 	.num {
-		width: 5rem;
+		width: 5.5rem;
+		min-height: 26px;
 		background: var(--bg-sunken);
 		border: 1px solid var(--line-strong);
 		border-radius: var(--radius);
 		color: var(--text);
 		font: inherit;
 		font-size: 12px;
-		padding: 3px 6px;
+		padding: 0 6px;
+	}
+	td .num {
+		width: 4.5rem;
 	}
 	.unit {
 		color: var(--text-faint);

@@ -39,45 +39,22 @@ struct Args {
     /// Where the panel is served.
     #[arg(long, default_value_t = 7800)]
     port: u16,
+    /// Send the wing no fader block at all: a test of whether the motors are free when
+    /// the host says nothing about them.
+    #[arg(long)]
+    no_fader_frames: bool,
     /// Draw the panel without opening the wing, for working on the page.
     #[arg(long)]
     no_device: bool,
 }
 
-/// Every grandMA3 that has ever been installed here, newest first.
-fn ma3_installs() -> Vec<PathBuf> {
-    let base = match std::env::var("HOME") {
-        Ok(h) => PathBuf::from(h).join("MALightingTechnology"),
-        Err(_) => return Vec::new(),
-    };
-    let mut found: Vec<PathBuf> = std::fs::read_dir(&base)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("gma3_") && n != "gma3_library")
-        })
-        .collect();
-    // Version-ish names sort usefully as strings; newest last, so reverse.
-    found.sort();
-    found.reverse();
-    found
-}
-
 fn find(relative: &str, what: &str) -> Result<PathBuf> {
-    for install in ma3_installs() {
-        let p = install.join("shared/resource").join(relative);
-        if p.exists() {
-            return Ok(p);
-        }
-    }
-    Err(anyhow!(
-        "could not find {what} in any grandMA3 under ~/MALightingTechnology. \
-         Pass it explicitly."
-    ))
+    pult_wing::usb::find_in_ma3(relative).ok_or_else(|| {
+        anyhow!(
+            "could not find {what} in any grandMA3 under ~/MALightingTechnology. \
+             Pass it explicitly."
+        )
+    })
 }
 
 fn load_map(arg: Option<PathBuf>, module: &str) -> Result<WingMap> {
@@ -126,8 +103,7 @@ async fn main() -> Result<()> {
             Some(p) => p,
             None => find("software/command_wing_app.bin", "command_wing_app.bin")?,
         };
-        let image = std::fs::read(&image_path)
-            .with_context(|| format!("reading {}", image_path.display()))?;
+        let image = pult_wing::usb::read_image(&image_path)?;
         tracing::info!(path = %image_path.display(), bytes = image.len(), "wing application");
 
         let w = wing::spawn(image)?;
@@ -145,6 +121,10 @@ async fn main() -> Result<()> {
                 }
             })
             .context("report bridge")?;
+        if args.no_fader_frames {
+            w.out.lock().unwrap().silent_faders = true;
+            tracing::info!("sending the wing no fader frames at all");
+        }
         (w.out, w.input)
     };
 

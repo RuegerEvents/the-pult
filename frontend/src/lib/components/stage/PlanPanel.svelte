@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Pick from '$lib/components/objects/Pick.svelte';
 	/**
 	 * The ground plan: where the rig is, and — in program mode — what it is doing.
 	 *
@@ -8,16 +9,18 @@
 	 */
 
 	import { getClientContext, getDataContext } from '$lib/ws/context.js';
+	import BlindBadge from '$lib/components/programmer/BlindBadge.svelte';
 	import { addToast } from '$lib/toasts.js';
 	import { calibrationScale, fixturePoint, originForPixel } from '$lib/stage.js';
 	import { at } from '$lib/scene.js';
 	import { collection } from '$lib/stores/show.js';
-	import { editing } from '$lib/stores/editing.js';
+	import { canEdit } from '$lib/stores/showLock.js';
 	import { shownPlanId } from '$lib/stores/stage.js';
 	import { selection } from '$lib/stores/selection.js';
 	import StagePlanView from './StagePlanView.svelte';
 	import { guessScale, uploadPlan } from './upload.js';
 	import MvrButtons from './MvrButtons.svelte';
+	import { uuid } from '$lib/uuid.js';
 
 	const data = getDataContext();
 	const client = getClientContext();
@@ -26,13 +29,12 @@
 	// Program and Move stay live: placing and aiming a light is what the panel is
 	// for. The lock covers the plan itself — its scale, its origin, its angle, and
 	// whether it is there at all.
-	const unlocked = editing('plan');
 	const fixtures = collection('fixtures');
 	const types = collection('fixture_types');
 
 	let mode = $state<'move' | 'program' | 'scale' | 'origin'>('program');
 	let uploading = $state(false);
-	/// Held between the two clicks of a measurement, then asked about in metres.
+	/// Held between the two clicks of a measurement, then asked about in meters.
 	let measured = $state<{ pixels: number } | null>(null);
 	let realLength = $state('');
 	let view = $state<StagePlanView | null>(null);
@@ -68,19 +70,19 @@
 				await data.stage_plans.byId(plan.id).name.set(file.name);
 			} else {
 				await data.stage_plans.create({
-					id: crypto.randomUUID(),
+					id: uuid(),
 					name: file.name,
 					asset: uploaded.sha256,
 					width_px: uploaded.width_px,
 					height_px: uploaded.height_px,
-					// Centred on the origin, so the plan arrives around the show rather
+					// Centered on the origin, so the plan arrives around the show rather
 					// than off in a corner of it.
 					origin: {
 						x: (-uploaded.width_px * guessScale(uploaded.width_px)) / 2,
 						y: 0,
 						z: (-uploaded.height_px * guessScale(uploaded.width_px)) / 2
 					},
-					metres_per_pixel: guessScale(uploaded.width_px),
+					meters_per_pixel: guessScale(uploaded.width_px),
 					rotation_deg: 0,
 					opacity: 0.55,
 					visible: true
@@ -108,7 +110,7 @@
 			addToast('Two points that far apart cannot be that distance.', 'warning');
 			return;
 		}
-		await data.stage_plans.byId(plan.id).metres_per_pixel.set(scale);
+		await data.stage_plans.byId(plan.id).meters_per_pixel.set(scale);
 		measured = null;
 		mode = 'move';
 		view?.fit();
@@ -139,6 +141,7 @@
 </script>
 
 <div class="stage">
+	<BlindBadge />
 	<nav class="bar">
 		<div class="switch">
 			<button class:on={mode === 'program'} onclick={() => (mode = 'program')}>Program</button>
@@ -146,18 +149,10 @@
 		</div>
 
 		{#if $plans.length > 1}
-			<select
-				class="ghost"
-				value={plan?.id ?? ''}
-				onchange={(e) => shownPlanId.set(e.currentTarget.value)}
-			>
-				{#each $plans as p (p.id)}
-					<option value={p.id}>{p.name}</option>
-				{/each}
-			</select>
+			<Pick class="ghost" rows={$plans} value={plan?.id ?? null} onpick={(id) => id && shownPlanId.set(id)} />
 		{/if}
 
-		{#if $unlocked}
+		{#if $canEdit}
 			<label class="ghost file">
 				{uploading ? 'Uploading…' : plan ? 'Replace plan' : 'Upload plan'}
 				<input type="file" accept="image/png,image/jpeg,image/webp,application/pdf" onchange={choose} />
@@ -177,7 +172,7 @@
 			{/if}
 		{/if}
 
-		{#if plan && $unlocked}
+		{#if plan && $canEdit}
 			<button
 				class="ghost"
 				class:on={mode === 'scale'}
@@ -246,11 +241,11 @@
 					class="text-input narrow"
 					type="number"
 					step="0.1"
-					placeholder="metres"
+					placeholder="meters"
 					bind:value={realLength}
 					onkeydown={(e) => e.key === 'Enter' && applyScale()}
 				/>
-				metres apart.
+				meters apart.
 				<button class="primary" onclick={applyScale}>Set</button>
 				<button class="ghost" onclick={() => (measured = null)}>Start again</button>
 			{:else}

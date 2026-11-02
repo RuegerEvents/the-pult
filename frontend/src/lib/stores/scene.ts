@@ -100,8 +100,8 @@ export const gizmoMode = writable<'translate' | 'rotate' | 'scale'>('translate')
  * Where a multiple selection turns and scales about.
  *
  * **Operator-placed**, which is the whole point: rotating four trusses about their
- * own average centre is almost never the move, and rotating them about the corner
- * where they meet almost always is. It starts at the selection's centre so there is
+ * own average center is almost never the move, and rotating them about the corner
+ * where they meet almost always is. It starts at the selection's center so there is
  * always something to grab, snaps to the grid, and is forgotten the moment the
  * selection changes — a pivot that outlived the thing it was set for would be a
  * handle in the middle of nowhere.

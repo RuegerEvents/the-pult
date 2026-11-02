@@ -20,27 +20,31 @@
 	 * with.
 	 */
 
+	import { actAt } from '$lib/ws/clock.js';
 	import type { Cue, Sequence } from '$lib/generated/index.js';
 	import { focusOnMount } from '$lib/actions.js';
 	import { createCue, orderedCues, reorderCueIds } from '$lib/cues.js';
 	import { CURVE_LABELS, CURVES } from '$lib/fade.js';
 	import { collection } from '$lib/stores/show.js';
-	import { cueInView, focusedCueSheet, viewCue } from '$lib/stores/cues.js';
-	import { editing } from '$lib/stores/editing.js';
+	import { cueInView, focusedCueSheet, sequenceInView, viewCue } from '$lib/stores/cues.js';
+	import { canEdit } from '$lib/stores/showLock.js';
 	import { beginEdit, editingCue } from '$lib/stores/programmer.js';
+	import { selectSubject } from '$lib/objects.js';
+	import { revealPanel } from '$lib/stores/workspace.js';
 	import { getDataContext } from '$lib/ws/context.js';
+	import { OBJECT_MIME, readDropped } from '$lib/objects.js';
+	import { presetIntoCue } from '$lib/programmer.js';
+	import { addToast } from '$lib/toasts.js';
 
 	const data = getDataContext();
-	const unlocked = editing('cues');
 	const sequences = collection('sequences');
 	const cues = collection('cues');
 	/** How many of a cue's captures are references, for the Caps column. */
 	const referencing = (cue: Cue) => cue.captures.filter((c) => c.preset).length;
 
 	/** Which sequence's cues are on screen. Falls back to the first the show has. */
-	let chosen = $state<string | null>(null);
 	const sequence = $derived(
-		$sequences.find((s) => s.id === chosen) ?? ($sequences[0] as Sequence | undefined) ?? null
+		$sequences.find((s) => s.id === $sequenceInView) ?? ($sequences[0] as Sequence | undefined) ?? null
 	);
 	const rows = $derived(sequence ? orderedCues(sequence, $cues) : []);
 	const activeIndex = $derived(sequence?.active_cue_index ?? null);
@@ -51,6 +55,22 @@
 	let newName = $state('');
 	let insertAfter = $state<string | null>(null);
 	let dragFrom = $state<number | null>(null);
+
+	const presets = collection('presets');
+
+	/**
+	 * A card dropped on a row: a preset assigns its look to that cue, by reference, as
+	 * one write (`presetIntoCue`). Other kinds say nothing to a cue yet.
+	 */
+	async function dropObject(event: DragEvent, cue: Cue) {
+		const ref = readDropped(event);
+		if (!ref || !$canEdit) return;
+		if (ref.kind !== 'preset') return addToast('Only a preset can be dropped onto a cue');
+		const preset = $presets.find((p) => p.id === ref.id);
+		if (!preset) return;
+		await data.cues.byId(cue.id).captures.set(presetIntoCue(cue.captures, preset));
+		addToast(`“${preset.name}” is in cue ${cue.number.toFixed(1)}`, 'success');
+	}
 	let dragOver = $state<number | null>(null);
 
 	// ── Running it ──────────────────────────────────────────────────────────────
@@ -58,10 +78,10 @@
 	// The time goes with the command, the way it does everywhere else: a Go that
 	// carries when it happened anchors the cue's fades at one millisecond on every
 	// station rather than at whenever each of them got the message.
-	const go = () => sequence && data.sequences.byId(sequence.id).goNext({ at: Date.now() });
+	const go = () => sequence && data.sequences.byId(sequence.id).goNext({ at: actAt() });
 	const goToCue = (cueId: string) =>
-		sequence && data.sequences.byId(sequence.id).goToCue({ cueId, at: Date.now() });
-	const off = () => sequence && data.sequences.byId(sequence.id).off({ at: Date.now() });
+		sequence && data.sequences.byId(sequence.id).goToCue({ cueId, at: actAt() });
+	const off = () => sequence && data.sequences.byId(sequence.id).off({ at: actAt() });
 
 	/**
 	 * Back: the cue before the one that is up.
@@ -156,7 +176,7 @@
 	<header>
 		<div class="tabs">
 			{#each $sequences as s (s.id)}
-				<button class="tab" class:on={s.id === sequence?.id} onclick={() => (chosen = s.id)}>
+				<button class="tab" class:on={s.id === sequence?.id} onclick={() => sequenceInView.set(s.id)}>
 					{s.name}
 					{#if s.active_cue_index !== null}<span class="dot">●</span>{/if}
 				</button>
@@ -181,8 +201,8 @@
 					<tr>
 						<th class="num">Cue</th>
 						<th>Name</th>
-						<th class="ms" title="What this cue's captures take on the way up">In</th>
-						<th class="ms" title="And on the way down. Empty means the in time.">Out</th>
+						<th class="ms" title="How long this cue takes to come in: everything it sets, up or down">In</th>
+						<th class="ms" title="How long what this cue set takes to go when the cue ends — going back past it, or Off. Empty is the show's letting-go time.">Out</th>
 						<th>Curve</th>
 						<th>Follow</th>
 						<th class="count" title="Parameters this cue captures">Caps</th>
@@ -195,10 +215,14 @@
 							class:active={activeIndex === index}
 							class:shown={$cueInView === cue.id}
 							class:editing={$editingCue === cue.id}
-							class:drop-here={dragOver === index && dragFrom !== null && dragFrom !== index}
-							draggable={$unlocked}
+							class:drop-here={dragOver === index &&
+								((dragFrom !== null && dragFrom !== index) || dragFrom === null)}
+							draggable={$canEdit}
 							ondragstart={() => (dragFrom = index)}
 							ondragover={(e) => {
+								// A row being moved, or a preset card from the pools.
+								const card = e.dataTransfer?.types.includes(OBJECT_MIME);
+								if (dragFrom === null && !(card && $canEdit)) return;
 								e.preventDefault();
 								dragOver = index;
 							}}
@@ -207,7 +231,9 @@
 							}}
 							ondrop={(e) => {
 								e.preventDefault();
-								if (dragFrom !== null) drop(dragFrom, index);
+								if (dragFrom !== null) return drop(dragFrom, index);
+								dragOver = null;
+								void dropObject(e, cue);
 							}}
 							ondragend={() => {
 								dragFrom = null;
@@ -226,7 +252,7 @@
 								</button>
 							</td>
 							<td class="name">
-								{#if renaming === cue.id && $unlocked}
+								{#if renaming === cue.id && $canEdit}
 									<form
 										onsubmit={(e) => {
 											e.preventDefault();
@@ -248,7 +274,7 @@
 									<button
 										class="row"
 										ondblclick={() => {
-											if (!$unlocked) return;
+											if (!$canEdit) return;
 											renaming = cue.id;
 											draft = cue.name;
 										}}
@@ -259,7 +285,7 @@
 								{/if}
 							</td>
 							<td class="ms">
-								{#if $unlocked}
+								{#if $canEdit}
 									<input
 										class="num-in"
 										type="number"
@@ -274,7 +300,7 @@
 								{/if}
 							</td>
 							<td class="ms">
-								{#if $unlocked}
+								{#if $canEdit}
 									<input
 										class="num-in"
 										type="number"
@@ -291,7 +317,7 @@
 								{/if}
 							</td>
 							<td>
-								{#if $unlocked}
+								{#if $canEdit}
 									<select
 										value={cue.easing ?? ''}
 										aria-label="Curve for cue {cue.number.toFixed(1)}"
@@ -310,7 +336,7 @@
 								{/if}
 							</td>
 							<td class="follow">
-								{#if $unlocked}
+								{#if $canEdit}
 									<select
 										value={cue.follow_mode === 'Manual' ? 'Manual' : 'FollowAfter'}
 										aria-label="Follow for cue {cue.number.toFixed(1)}"
@@ -346,7 +372,16 @@
 								{/if}
 							</td>
 							<td class="count">
-								{cue.captures.length}
+								<!-- The count opens the cue's values in the Inspector, where one is
+								     taken out of the cue without loading it into the programmer. -->
+								<button
+									class="caps"
+									title="Show this cue's values in the Inspector"
+									onclick={() => {
+										selectSubject({ kind: 'cue', id: cue.id });
+										revealPanel('inspector');
+									}}>{cue.captures.length}</button
+								>
 								<!-- How many of them are references rather than numbers, which is
 								     what says at a glance that editing a palette will move this
 								     cue. A capture whose preset is gone still counts: it is still
@@ -366,7 +401,7 @@
 									title="Load this cue into the programmer to change it"
 									onclick={() => beginEdit(cue, sequence)}>Edit</button
 								>
-								{#if $unlocked}
+								{#if $canEdit}
 									<button
 										class="icon"
 										title="Insert a cue after this one"
@@ -391,7 +426,7 @@
 		</div>
 	{/if}
 
-	{#if $unlocked && sequence}
+	{#if $canEdit && sequence}
 		<footer>
 			{#if adding}
 				<form
@@ -437,6 +472,15 @@
 </div>
 
 <style>
+	.caps {
+		background: none;
+		border: none;
+		color: inherit;
+		font: inherit;
+		cursor: pointer;
+		padding: 0 2px;
+		text-decoration: underline dotted;
+	}
 	.sheet {
 		display: flex;
 		flex-direction: column;

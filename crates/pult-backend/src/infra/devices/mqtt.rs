@@ -5,6 +5,7 @@
 //! - `openhaunt/<serial>/status`      — retained `online`/`offline`, `offline` as LWT
 //! - `openhaunt/<serial>/input/<n>`   — an edge or a reading, with the node's timestamp
 //! - `openhaunt/<serial>/health`      — uptime, temperature, PoE class, errors
+//! - `openhaunt/<serial>/net`         — retained, every address it is on, preferred first
 //! - `openhaunt/<serial>/output/<n>/set` — what the console publishes
 //!
 //! Parsing is pure and separate from the connection, because a malformed payload
@@ -13,14 +14,17 @@
 
 use std::time::Duration;
 
-use pult_schema::types::{devices::DeviceHealth, fixture::ParameterValue};
+use pult_schema::types::{
+    devices::{DeviceHealth, NodeAddress, NodeAudioStatus},
+    fixture::ParameterValue,
+};
 use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 /// Everything the console subscribes to, as one wildcard per shape.
 const SUBSCRIPTIONS: &[&str] =
-    &["openhaunt/+/status", "openhaunt/+/input/+", "openhaunt/+/health"];
+    &["openhaunt/+/status", "openhaunt/+/input/+", "openhaunt/+/health", "openhaunt/+/audio/status", "openhaunt/+/net"];
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum MqttEvent {
@@ -31,6 +35,15 @@ pub enum MqttEvent {
     /// moment the console got round to reading the socket.
     Input { serial: String, port: u8, value: ParameterValue, node_ts: Option<u64> },
     Health { serial: String, health: DeviceHealth },
+    /// What a node's loudspeaker is doing, once a second while it is doing anything.
+    AudioStatus { serial: String, status: NodeAudioStatus },
+    /// Not MQTT: a node's `GET /api/v1/status`, asked by the driving station every few
+    /// seconds, coming back through the same channel so the manager's loop never waits
+    /// on a node's HTTP.
+    Vitals { serial: String, status: serde_json::Value },
+    /// Every address a node is on, the path it prefers first. Said again whenever a
+    /// path comes or goes, which is sooner than mDNS says so.
+    Net { serial: String, addresses: Vec<NodeAddress> },
 }
 
 // ── Parsing ───────────────────────────────────────────────────────────────────
@@ -63,6 +76,23 @@ pub fn parse(topic: &str, payload: &[u8]) -> Option<MqttEvent> {
         ("health", None) => {
             let body: serde_json::Value = serde_json::from_slice(payload).ok()?;
             Some(MqttEvent::Health { serial, health: health(&body) })
+        }
+        ("net", None) => {
+            let body: serde_json::Value = serde_json::from_slice(payload).ok()?;
+            let addresses = body["addresses"]
+                .as_array()?
+                .iter()
+                .filter_map(|a| {
+                    let ip = a["ip"].as_str().filter(|ip| ip.parse::<std::net::IpAddr>().is_ok())?;
+                    Some(NodeAddress { transport: a["transport"].as_str().unwrap_or_default().to_string(), ip: ip.to_string() })
+                })
+                .collect();
+            Some(MqttEvent::Net { serial, addresses })
+        }
+        ("audio", Some("status")) => {
+            let mut status: NodeAudioStatus = serde_json::from_slice(payload).ok()?;
+            status.reported_at = Some(chrono::Utc::now());
+            Some(MqttEvent::AudioStatus { serial, status })
         }
         _ => None,
     }
@@ -108,6 +138,12 @@ pub fn effect_topic(serial: &str, port: u8) -> String {
     format!("openhaunt/{serial}/output/{port}/effect")
 }
 
+/// The topic a node's loudspeaker listens on for one verb: `play`, `stop`, `gain`,
+/// `output`, `stream`.
+pub fn audio_topic(serial: &str, verb: &str) -> String {
+    format!("openhaunt/{serial}/audio/{verb}")
+}
+
 /// Where the console publishes what time it thinks it is.
 ///
 /// One topic for every node rather than one per node, and deliberately not under a
@@ -115,6 +151,18 @@ pub fn effect_topic(serial: &str, port: u8) -> String {
 /// about when a cycle started. Retained, so a node that joins between ticks has an
 /// answer immediately rather than after up to a second of rendering against nothing.
 pub const CLOCK_TOPIC: &str = "openhaunt/clock";
+
+/// Where the leader publishes its broker list, retained (doc 15).
+///
+/// One topic for every node, like the clock: a node that walked to this broker by its
+/// list after a failover is told the new order the moment it subscribes, whether or
+/// not anybody here has ever seen it over mDNS.
+pub const BROKERS_TOPIC: &str = "openhaunt/brokers";
+
+/// What the leader publishes on [`BROKERS_TOPIC`]: `host:port`s, leader first.
+pub fn brokers_payload(brokers: &[String]) -> Vec<u8> {
+    serde_json::json!({ "brokers": brokers }).to_string().into_bytes()
+}
 
 /// What the console publishes on [`CLOCK_TOPIC`].
 ///
@@ -132,7 +180,8 @@ pub fn clock_payload(now_ms: u64, seq: u64) -> Vec<u8> {
 /// The broker is normally this process's own, over loopback, but nothing here
 /// assumes that: the same code reaches an external broker if one is ever named.
 pub struct MqttLink {
-    client: AsyncClient,
+    /// What is to be published, in the order it was asked for. See [`MqttLink::publish`].
+    outbox: mpsc::UnboundedSender<(String, Vec<u8>, bool)>,
     stop: tokio::sync::oneshot::Sender<()>,
 }
 
@@ -148,10 +197,13 @@ impl MqttLink {
         let (stop, mut stopped) = tokio::sync::oneshot::channel();
 
         tokio::spawn(async move {
-            for topic in SUBSCRIPTIONS {
-                if let Err(e) = subscriber.subscribe(*topic, QoS::AtLeastOnce).await {
-                    warn!("[devices] cannot subscribe to {topic}: {e}");
-                }
+            // One SUBSCRIBE for every shape, so the broker grants them together: a
+            // node seen online (its retained status arrived) is a node whose input
+            // edges are already being listened for. Four packets left a window in
+            // which a status had landed and an edge was dropped on the floor.
+            let filters = SUBSCRIPTIONS.iter().map(|t| rumqttc::SubscribeFilter::new(t.to_string(), QoS::AtLeastOnce));
+            if let Err(e) = subscriber.subscribe_many(filters).await {
+                warn!("[devices] cannot subscribe: {e}");
             }
             loop {
                 let event = tokio::select! {
@@ -177,7 +229,16 @@ impl MqttLink {
             }
         });
 
-        MqttLink { client, stop }
+        let (outbox, mut queued) = mpsc::unbounded_channel::<(String, Vec<u8>, bool)>();
+        tokio::spawn(async move {
+            while let Some((topic, payload, retain)) = queued.recv().await {
+                if let Err(e) = client.publish(&topic, QoS::AtLeastOnce, retain, payload).await {
+                    debug!("[devices] publish to {topic}: {e}");
+                }
+            }
+        });
+
+        MqttLink { outbox, stop }
     }
 
     /// Publish to a node. Fire and forget: a device that is not answering must not
@@ -187,13 +248,14 @@ impl MqttLink {
     /// broker hands a node the moment it subscribes, which is the difference between a
     /// node that can place a cycle as soon as it connects and one that renders against
     /// a guess until the next tick comes round.
+    ///
+    /// **In order.** This was a task spawned per message, and two tasks on a runtime
+    /// with several workers reach the client in whichever order they are scheduled: a
+    /// stream's `stop` overtook its successor's `start`, and since a `stop` names no
+    /// session the node stopped the new one. One queue, drained by one task, keeps the
+    /// order every caller already assumes, a relay's on and off included.
     pub fn publish(&self, topic: String, payload: Vec<u8>, retain: bool) {
-        let client = self.client.clone();
-        tokio::spawn(async move {
-            if let Err(e) = client.publish(&topic, QoS::AtLeastOnce, retain, payload).await {
-                debug!("[devices] publish to {topic}: {e}");
-            }
-        });
+        let _ = self.outbox.send((topic, payload, retain));
     }
 
     pub fn stop(self) {
@@ -223,6 +285,30 @@ mod tests {
             parse("openhaunt/1a2b3c/status", b"offline"),
             Some(MqttEvent::Status { serial: "1a2b3c".into(), online: false }),
         );
+    }
+
+    #[test]
+    fn a_net_message_lists_the_paths_preferred_first() {
+        let event = parse(
+            "openhaunt/f674a578/net",
+            br#"{"addresses":[{"transport":"ethernet","ip":"192.168.43.138"},{"transport":"wifi","ip":"192.168.43.134"}]}"#,
+        );
+        let address = |transport: &str, ip: &str| NodeAddress { transport: transport.into(), ip: ip.into() };
+        assert_eq!(
+            event,
+            Some(MqttEvent::Net {
+                serial: "f674a578".into(),
+                addresses: vec![address("ethernet", "192.168.43.138"), address("wifi", "192.168.43.134")],
+            }),
+        );
+        // An address that is not one is left out rather than streamed to.
+        let Some(MqttEvent::Net { addresses, .. }) =
+            parse("openhaunt/n1/net", br#"{"addresses":[{"transport":"wifi","ip":"nonsense"}]}"#)
+        else {
+            panic!("expected a net event");
+        };
+        assert!(addresses.is_empty());
+        assert_eq!(parse("openhaunt/n1/net", b"{}"), None);
     }
 
     #[test]

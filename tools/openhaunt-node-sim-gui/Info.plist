@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Merged by Tauri into the bundle's own Info.plist. Without these macOS gives the app
+  no Local Network access and never asks: multicast is refused with "No route to host",
+  so mDNS finds no peer, no OpenHaunt node and no MVR-xchange group, and multicast sACN
+  never leaves. The service type is the one a node advertises.
+-->
+<plist version="1.0">
+<dict>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>The simulated node announces itself to consoles on the network and receives sACN from them, as a real OpenHaunt node does.</string>
+  <key>NSBonjourServices</key>
+  <array>
+    <string>_openhaunt._tcp</string>
+  </array>
+</dict>
+</plist>

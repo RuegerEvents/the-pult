@@ -2,7 +2,7 @@
 	/**
 	 * One show, as something to press.
 	 *
-	 * A show that is not where it was is still a card — greyed, and saying so. It is
+	 * A show that is not where it was is still a card — grayed, and saying so. It is
 	 * exactly the row somebody is looking for when the stick is in the other bag, and
 	 * a list that hid it would be one nobody could rely on.
 	 */
@@ -30,7 +30,8 @@
 	title={show.path}
 >
 	<span class="name">{show.name}</span>
-	<span class="what" class:warn={show.missing || show.madeByAnotherBuild || show.problem}>
+	<span class="what" class:warn={show.missing || show.madeByAnotherBuild || show.problem}
+		class:asks={show.upgradable && !show.problem}>
 		{describe(show)}
 	</span>
 	<span class="where">{where}</span>
@@ -76,6 +77,10 @@
 	}
 	.what.warn {
 		color: var(--live);
+	}
+	/* Not a fault: a question the card will ask when it is pressed. */
+	.what.asks {
+		color: var(--accent);
 	}
 	.where {
 		font-family: monospace;

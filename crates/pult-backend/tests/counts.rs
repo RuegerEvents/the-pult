@@ -8,7 +8,7 @@
 //!
 //! What *can* be a gate is a figure that does not flap. These three are counts —
 //! machine-independent, the same on a laptop and on a runner — and each one guards a
-//! property that used to be found in a theatre rather than in CI:
+//! property that used to be found in a theater rather than in CI:
 //!
 //! - **A running show pushes nothing at a browser.** Nothing stores what a parameter
 //!   is doing, so a fade in progress is not a change to the show. If this ever counts
@@ -223,106 +223,155 @@ async fn one_gesture_is_one_row_however_many_writes_it_took() {
     );
 }
 
-/// A cue-only store and an Update across three cues are each **one Ctrl-Z**.
+/// A cue-only store and an Update across three cues are each **one Ctrl-Z**, programmer
+/// included.
 ///
 /// Both are one act and both are several writes to *different* rows: a cue-only store
-/// writes the cue and the compensation in the one after it, and an Update writes every
-/// cue driving a key the operator has hold of. The oplog folds repeats of one path
-/// inside a gesture into one row and cannot fold writes to different rows — so what is
-/// asserted here is the thing that actually matters: every write carries the same
-/// gesture, and one undo takes all of them back.
+/// writes the cue and the compensation in the one after it, an Update writes every cue
+/// driving a key the operator has hold of, and both clear the programmer. The oplog
+/// folds repeats of one path inside a gesture into one row and cannot fold writes to
+/// different rows — so what is asserted is the thing that matters: every write carries
+/// one gesture, and one undo takes all of them back.
 ///
-/// The writes are made the way the browser makes them rather than by the browser,
-/// because the property under test belongs to the engine: that a gesture holds across a
-/// burst spanning several rows, which is exactly what `stores/gesture.ts` relies on.
+/// Through `infra/storing.rs` itself, which is what the top bar, the Store dialog and
+/// the wing all call: there is no second way in to test.
 #[tokio::test]
 async fn a_store_and_an_update_are_each_one_undo() {
+    use pult_backend::infra::storing;
+
     let station = a_station().await;
     let fixtures = a_rig(&station, 3).await;
     let who = Uuid::new_v4();
 
-    let cue = |number: f64| {
-        serde_json::json!({
-            "id": Uuid::new_v4(),
-            "name": format!("Cue {number}"),
-            "number": number,
-            "captures": [],
-            "follow_mode": "Manual",
-            "fade_in_ms": 0,
-            "fade_out_ms": 0,
-            "easing": null,
-            "is_active": false,
-        })
-    };
-    let cues: Vec<serde_json::Value> = (1..=3).map(|n| cue(n as f64)).collect();
-    for row in &cues {
-        create(&station, "cues", row.clone()).await;
+    // Three sequences of one cue each, each holding one dimmer at full, all running.
+    let mut cue_ids = Vec::new();
+    for fixture in &fixtures {
+        let cue = a_cue(1.0, vec![capture(*fixture, 1.0)]);
+        cue_ids.push(id_of(&cue));
+        create(&station, "cues", cue.clone()).await;
+        let sequence = Uuid::new_v4();
+        create(&station, "sequences", a_sequence(sequence, vec![id_of(&cue)])).await;
+        act(&station, field("sequences", sequence, "goNext"), serde_json::json!({ "at": 1 })).await;
+    }
+    for fixture in &fixtures {
+        program(&station, *fixture, 0.5).await;
     }
 
-    let capture = |fixture: Uuid, level: f32| {
-        serde_json::json!({
-            "fixture_id": fixture,
-            "parameter_kind": "Intensity",
-            "value": { "type": "Float", "value": level },
-            "fade_in_ms": 0,
-            "fade_out_ms": 0,
-            "delay_in_ms": 0,
-            "effect": null,
-            "easing": null,
-            "preset": null,
-        })
-    };
+    let updated = storing::update(&station.engine, who).await.expect("the update writes");
+    assert_eq!((updated.updated, updated.orphans.len()), (3, 0));
+    assert_eq!(held(&station).await, 0, "every value found its cue, so the programmer is clear");
+    assert_eq!(acts_by(&station, who).await, 1, "an Update across three cues was more than one act");
 
-    let ids: Vec<Uuid> =
-        cues.iter().map(|row| serde_json::from_value(row["id"].clone()).unwrap()).collect();
-    let gesture = Uuid::new_v4();
-    for (index, id) in ids.iter().enumerate() {
-        station
-            .engine
-            .set_as(
-                who,
-                Some(gesture),
-                vec![
-                    PathSegment::Key("cues".into()),
-                    PathSegment::Id(*id),
-                    PathSegment::Key("captures".into()),
-                ],
-                Lifecycle::Persisted,
-                serde_json::json!([capture(fixtures[index], 0.5)]),
-            )
-            .await
-            .expect("the store writes");
-    }
-
-    let history = station.engine.history(50).await;
-    let gestures: std::collections::HashSet<_> =
-        history.iter().filter_map(|entry| entry.gesture).collect();
-    assert_eq!(
-        gestures.len(),
-        1,
-        "a store across three cues was {} acts. Cue only and Update are each one, and \
-         an operator taking one back must not have to guess how many presses it takes.",
-        gestures.len()
-    );
-
-    // And one undo puts all three back, which is what "one Ctrl-Z" actually means.
     station.engine.undo(who, false).await;
-    for id in &ids {
-        let captures = station
-            .engine
-            .get(vec![
-                PathSegment::Key("cues".into()),
-                PathSegment::Id(*id),
-                PathSegment::Key("captures".into()),
-            ])
-            .await
-            .expect("the cue is readable");
-        assert_eq!(
-            captures.as_array().map(Vec::len),
-            Some(0),
-            "one undo left a cue still holding what the store put in it"
-        );
+    for id in &cue_ids {
+        assert_eq!(level_in(&station, *id).await, Some(1.0), "one undo left a cue holding what Update put in it");
     }
+    assert_eq!(held(&station).await, 3, "and the programmer comes back with it");
+
+    // Cue only: storing into the first of two cues gives the second what it was tracking.
+    let first = a_cue(1.0, vec![capture(fixtures[0], 1.0)]);
+    let second = a_cue(2.0, vec![]);
+    create(&station, "cues", first.clone()).await;
+    create(&station, "cues", second.clone()).await;
+    let sequence = Uuid::new_v4();
+    create(&station, "sequences", a_sequence(sequence, vec![id_of(&first), id_of(&second)])).await;
+
+    let store = storing::StoreRequest {
+        sequence_id: Some(sequence),
+        cue_id: Some(id_of(&first)),
+        include: Some(vec![entry_of(fixtures[0])]),
+        cue_only: true,
+        ..Default::default()
+    };
+    let who = Uuid::new_v4();
+    storing::store(&station.engine, who, store).await.expect("the store writes");
+    assert_eq!(level_in(&station, id_of(&first)).await, Some(0.5));
+    assert_eq!(level_in(&station, id_of(&second)).await, Some(1.0), "cue only kept the next cue where it was");
+    assert_eq!(acts_by(&station, who).await, 1, "a cue-only store was more than one act");
+
+    station.engine.undo(who, false).await;
+    assert_eq!(level_in(&station, id_of(&first)).await, Some(1.0));
+    assert_eq!(level_in(&station, id_of(&second)).await, None, "one undo took the compensation back too");
+}
+
+fn a_cue(number: f64, captures: Vec<serde_json::Value>) -> serde_json::Value {
+    serde_json::json!({
+        "id": Uuid::new_v4(),
+        "name": format!("Cue {number}"),
+        "number": number,
+        "captures": captures,
+        "follow_mode": "Manual",
+        "fade_in_ms": 0,
+        "fade_out_ms": 0,
+        "easing": null,
+        "is_active": false,
+    })
+}
+
+fn a_sequence(id: Uuid, cue_ids: Vec<Uuid>) -> serde_json::Value {
+    serde_json::json!({ "id": id, "name": "Act", "cue_ids": cue_ids, "active_cue_index": null, "went_at": null, "master": null })
+}
+
+fn capture(fixture: Uuid, level: f32) -> serde_json::Value {
+    serde_json::json!({
+        "fixture_id": fixture,
+        "parameter_kind": "Intensity",
+        "value": { "type": "Float", "value": level },
+        "fade_in_ms": 0,
+        "fade_out_ms": 0,
+        "delay_in_ms": 0,
+        "effect": null,
+        "easing": null,
+        "preset": null,
+    })
+}
+
+fn id_of(row: &serde_json::Value) -> Uuid {
+    serde_json::from_value(row["id"].clone()).unwrap()
+}
+
+fn field(table: &str, id: Uuid, name: &str) -> Vec<PathSegment> {
+    vec![PathSegment::Key(table.into()), PathSegment::Id(id), PathSegment::Key(name.into())]
+}
+
+async fn act(station: &Running, path: Vec<PathSegment>, value: serde_json::Value) {
+    let lifecycle = pult_schema::registry::path_lifecycle(&path);
+    station.engine.set(path, lifecycle, value).await.expect("the write lands");
+}
+
+/// The programmer entry for a fixture's intensity, by the id the page would give it.
+fn entry_of(fixture: Uuid) -> Uuid {
+    Uuid::from_u128(fixture.as_u128() ^ 1)
+}
+
+async fn program(station: &Running, fixture: Uuid, level: f32) {
+    let row = serde_json::json!({
+        "id": entry_of(fixture),
+        "fixture_id": fixture,
+        "parameter_kind": "Intensity",
+        "value": { "type": "Float", "value": level },
+        "effect": null,
+        "preset": null,
+        "locked": false,
+    });
+    act(station, vec![PathSegment::Key("programmer_values".into()), PathSegment::Key("__create".into())], row).await;
+}
+
+async fn held(station: &Running) -> usize {
+    let rows = station.engine.get(vec![PathSegment::Key("programmer_values".into())]).await.expect("readable");
+    rows.as_array().map_or(0, Vec::len)
+}
+
+/// How many acts this user has in the history.
+async fn acts_by(station: &Running, who: Uuid) -> usize {
+    let history = station.engine.history(200).await;
+    history.iter().filter(|e| e.user_id == Some(who)).filter_map(|e| e.gesture).collect::<std::collections::HashSet<_>>().len()
+}
+
+/// The intensity a cue captures for its first capture, or `None` for a cue with none.
+async fn level_in(station: &Running, cue: Uuid) -> Option<f32> {
+    let captures = station.engine.get(field("cues", cue, "captures")).await.expect("the cue is readable");
+    captures.as_array()?.first().map(|c| c["value"]["value"].as_f64().unwrap() as f32)
 }
 
 /// The same, for the thing an operator drags far more often than a light: a truss.
@@ -360,7 +409,7 @@ async fn a_dragged_truss_is_one_row() {
                 "class": null,
                 "geometry": [],
                 "symbol": null,
-                "catalogue": "f34-3m",
+                "catalog": "f34-3m",
                 "properties": {},
                 "locked": false
             }),
@@ -475,6 +524,74 @@ async fn a_dragged_sheet_block_is_one_row() {
     );
 }
 
+/// Dragging a clip and the event above it together on a timeline's lanes rewrites two
+/// columns per animation frame, `clips` and `events`, because each is one column of the
+/// timeline row. The oplog folds the sixty writes of each column into one row and keeps
+/// the two columns apart, so the gate is the one `a_store_and_an_update_are_each_one_undo`
+/// uses: one row per column, both carrying the gesture, and **one undo puts both back** —
+/// a group drag that undid half of itself would leave the Go off its sound.
+#[tokio::test]
+async fn dragging_a_clip_and_an_event_together_is_one_row() {
+    let station = a_station().await;
+    let who = Uuid::new_v4();
+    let gesture = Uuid::new_v4();
+    let timeline = Uuid::new_v4();
+    let clip = Uuid::new_v4();
+    let event = Uuid::new_v4();
+    let sequence = Uuid::new_v4();
+    let zone = Uuid::new_v4();
+
+    station
+        .engine
+        .set(
+            vec![PathSegment::Key("timelines".into()), PathSegment::Key("__create".into())],
+            Lifecycle::Persisted,
+            serde_json::json!({
+                "id": timeline, "name": "Area 2 scare", "clips": [], "detected": null,
+                "source": "Internal", "grid": [], "markers": [], "events": [], "tracks": [],
+                "speed_master": null, "node_id": null, "end": null, "running": false,
+                "anchor_ms": 0, "position_at_anchor_ms": 0, "rate": 1.0, "recording": null
+            }),
+        )
+        .await
+        .expect("the timeline is made");
+
+    let column = |field: &str| {
+        vec![PathSegment::Key("timelines".into()), PathSegment::Id(timeline), PathSegment::Key(field.into())]
+    };
+    for step in 0..60u64 {
+        let clips = serde_json::json!([{
+            "id": clip, "name": "Skeleton laugh", "asset": "00", "peaks": null,
+            "start_ms": 300 + step * 10, "offset_ms": 0, "length_ms": null, "gain_db": 0.0,
+            "fade_in_ms": 0, "fade_out_ms": 0, "repeats": 1,
+            "destination": { "Zone": { "zone": zone } }
+        }]);
+        let events = serde_json::json!([{
+            "id": event, "at_ms": step * 10, "action": { "GoNext": { "sequence_id": sequence } }
+        }]);
+        station.engine.set_as(who, Some(gesture), column("clips"), Lifecycle::Persisted, clips).await.expect("the clip moves");
+        station.engine.set_as(who, Some(gesture), column("events"), Lifecycle::Persisted, events).await.expect("the event moves");
+    }
+
+    let history = station.engine.history(200).await;
+    let mine = history.iter().filter(|entry| entry.gesture == Some(gesture)).count();
+    assert_eq!(
+        mine, 2,
+        "sixty frames of two columns became {mine} rows; the oplog should fold each column's \
+         repeats into one"
+    );
+
+    station.engine.undo(who, false).await;
+    for (field, empty) in [("clips", "the clip"), ("events", "the event")] {
+        let now = station.engine.get(column(field)).await.expect("the timeline is readable");
+        assert_eq!(
+            now.as_array().map(Vec::len),
+            Some(0),
+            "one undo left {empty} where the drag put it: a group drag is one Ctrl-Z"
+        );
+    }
+}
+
 #[tokio::test]
 async fn a_settled_rig_changes_no_universes() {
     let station = a_station().await;
@@ -549,4 +666,210 @@ async fn a_settled_rig_changes_no_universes() {
          universe image can differ from the one before it: if this is above zero the DMX \
          dedup has stopped working and every idle show is flooding its network."
     );
+}
+
+/// A maze running all night writes **no** History rows.
+///
+/// Every PIR edge is a sensed value, every edge a flow counts is a variable write, and
+/// a night is thousands of each. All of it is unattributed — the oplog keeps it for a
+/// peer catching up and prunes it by age — so none of it is a row in the History panel
+/// or something for Ctrl-Z. If this counts above zero, an operator's own edits are
+/// being pushed out of their undo by people walking through a maze.
+#[tokio::test]
+async fn a_pir_counting_into_a_variable_writes_no_history() {
+    use pult_schema::types::{
+        flow::{Flow, FlowEdge, FlowNode, FlowNodeKind, TriggerAction, TriggerCondition, TriggerSource},
+        Variable, VariableKind, VariableOp,
+    };
+
+    let station = a_station().await;
+    let pir = a_rig(&station, 1).await[0];
+    let inside = Uuid::new_v4();
+    create(
+        &station,
+        "variables",
+        serde_json::to_value(Variable {
+            folder: None,
+            id: inside,
+            name: "Area 1 inside".into(),
+            kind: VariableKind::Number,
+            initial: 0.0,
+            min: Some(0.0),
+            max: None,
+            value: None,
+        })
+        .unwrap(),
+    )
+    .await;
+
+    let flow = Uuid::new_v4();
+    create(&station, "flows", serde_json::json!(Flow { folder: None, id: flow, name: "Count in".into(), enabled: true })).await;
+    let node = |kind: FlowNodeKind| FlowNode {
+        name: None,
+        due_at: None,
+        disabled: None,
+        id: Uuid::new_v4(),
+        flow_id: flow,
+        kind,
+        x: 0.0,
+        y: 0.0,
+        active: false,
+        last_fired_at: None,
+        pulsed_at: None,
+    };
+    let source = node(FlowNodeKind::Source(TriggerSource::Parameter {
+        fixture_id: pir,
+        parameter: ParameterKind::Contact(0),
+    }));
+    let edge = node(FlowNodeKind::Condition(TriggerCondition::RisingEdge));
+    let count = node(FlowNodeKind::Action(TriggerAction::SetVariable {
+        variable_id: inside,
+        op: VariableOp::Add(1.0),
+    }));
+    for (from, to) in [(&source, &edge), (&edge, &count)] {
+        create(
+            &station,
+            "flow_edges",
+            serde_json::to_value(FlowEdge {
+                id: Uuid::new_v4(),
+                flow_id: flow,
+                from_node: from.id,
+                from_port: 0,
+                to_node: to.id,
+                to_port: 0,
+            })
+            .unwrap(),
+        )
+        .await;
+    }
+    for n in [&source, &edge, &count] {
+        create(&station, "flow_nodes", serde_json::to_value(n).unwrap()).await;
+    }
+
+    let value = || async {
+        station
+            .engine
+            .get(vec![
+                PathSegment::Key("variables".into()),
+                PathSegment::Id(inside),
+                PathSegment::Key("value".into()),
+            ])
+            .await
+            .ok()
+            .and_then(|v| v.as_f64())
+    };
+    for walked in 1..=5 {
+        for closed in [true, false] {
+            station
+                .engine
+                .set_sensed_value(pir, "Contact:0".into(), serde_json::json!({ "type": "Bool", "value": closed }))
+                .await
+                .expect("the PIR reports");
+        }
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while value().await != Some(walked as f64) {
+            assert!(tokio::time::Instant::now() < deadline, "group {walked} was never counted");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+    // A phone resetting it is the same kind of write.
+    station.engine.set_variable(inside, VariableOp::Reset).await.expect("a reset lands");
+
+    let rows = station.engine.history(50).await.len();
+    assert_eq!(
+        rows, 0,
+        "five groups through a PIR and a reset became {rows} History rows. None of that is \
+         anybody's edit, and every row of it pushes an operator's own work out of Ctrl-Z."
+    );
+}
+
+/// A new show's effect pool is there, and nobody put it there: seeding it is not an
+/// operator's act, so the first Ctrl-Z on a fresh show reaches the operator's own first
+/// change rather than taking "Fire" out of the pool.
+#[tokio::test]
+async fn a_new_show_has_its_effect_pool_and_no_history_for_it() {
+    let station = a_station().await;
+    let pool = station
+        .engine
+        .get(vec![PathSegment::Key("effect_templates".into())])
+        .await
+        .expect("the pool");
+    let count = match &pool {
+        serde_json::Value::Object(rows) => rows.len(),
+        serde_json::Value::Array(rows) => rows.len(),
+        _ => 0,
+    };
+    assert_eq!(count, 9, "the Halloween templates are seeded: {pool}");
+
+    let history = station.engine.history(100).await;
+    let seeded = history
+        .iter()
+        .filter(|op| op.path.first() == Some(&PathSegment::Key("effect_templates".into())))
+        .count();
+    assert_eq!(seeded, 0, "seeding the pool wrote {seeded} rows into the history");
+}
+
+/// Applying a template across a selection is a write per fixture per layer, to as
+/// many programmer rows, and it is one act: the Effects panel opens a gesture round all
+/// of them. As with a store across three cues, the oplog cannot fold writes to
+/// different rows, so what is asserted is what one Ctrl-Z means: one gesture, and one
+/// undo takes every fixture's effect back.
+#[tokio::test]
+async fn applying_an_effect_to_a_selection_is_one_undo() {
+    let station = a_station().await;
+    let fixtures = a_rig(&station, 12).await;
+    let who = Uuid::new_v4();
+    let gesture = Uuid::new_v4();
+
+    for (i, fixture) in fixtures.iter().enumerate() {
+        station
+            .engine
+            .set_as(
+                who,
+                Some(gesture),
+                vec![PathSegment::Key("programmer_values".into()), PathSegment::Key("__create".into())],
+                Lifecycle::Synced,
+                serde_json::json!({
+                    "id": Uuid::new_v4(),
+                    "fixture_id": fixture,
+                    "parameter_kind": "Intensity",
+                    "value": { "type": "Float", "value": 0.0 },
+                    "effect": {
+                        "effect_id": Uuid::nil(),
+                        "curve": { "Shape": "Flicker" },
+                        "rate": { "Hz": 3.0 },
+                        "low": { "type": "Float", "value": 0.35 },
+                        "high": { "type": "Float", "value": 1.0 },
+                        "width": 0.5,
+                        "direction": "Forward",
+                        "phase": i as f32 / 12.0,
+                        "spread": { "Random": { "seed": 1 } },
+                        "t0": 1000,
+                        "template": Uuid::nil()
+                    },
+                    "preset": null,
+                    "locked": false
+                }),
+            )
+            .await
+            .expect("the programmer takes the effect");
+    }
+
+    let history = station.engine.history(100).await;
+    let gestures: std::collections::HashSet<_> =
+        history.iter().filter_map(|entry| entry.gesture).collect();
+    assert_eq!(gestures.len(), 1, "applying one effect to twelve fixtures was {} acts", gestures.len());
+
+    station.engine.undo(who, false).await;
+    let held = station
+        .engine
+        .get(vec![PathSegment::Key("programmer_values".into())])
+        .await
+        .expect("the programmer");
+    let left = match &held {
+        serde_json::Value::Object(rows) => rows.len(),
+        serde_json::Value::Array(rows) => rows.len(),
+        _ => 0,
+    };
+    assert_eq!(left, 0, "one undo left {left} fixtures still running the effect");
 }

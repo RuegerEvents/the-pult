@@ -19,6 +19,8 @@ use uuid::Uuid;
 
 use crate::state::AppState;
 
+pub mod monitor;
+
 // ── Subscription registry ─────────────────────────────────────────────────────
 
 type SessionId = Uuid;
@@ -128,21 +130,22 @@ impl SubscriptionRegistry {
         }
     }
 
-    pub fn broadcast_update(
-        &self,
-        path: &pult_schema::path::Path,
-        value: serde_json::Value,
-    ) {
+    /// Hand one update to one session, if it is subscribed to the path.
+    ///
+    /// **One session, never all of them.** Every socket has its own task reading the
+    /// update broadcast, so the broadcast already reaches every session once; a task
+    /// that then fanned the update out to every subscriber delivered it once per
+    /// *open socket*. With three pages open every update arrived three times — harmless
+    /// for a value written again, and wrong for an event: one press of a wing key was
+    /// three presses, which turned LEARN on and straight back off.
+    pub fn deliver(&self, id: SessionId, path: &pult_schema::path::Path, value: serde_json::Value) {
         let inner = self.0.lock().unwrap();
-        for (session_id, patterns) in &inner.subscriptions {
-            if patterns.iter().any(|p| p.matches(path)) {
-                if let Some(tx) = inner.sessions.get(session_id) {
-                    let _ = tx.send(ServerMessage::Update {
-                        path: path.clone(),
-                        value: value.clone(),
-                    });
-                }
-            }
+        let subscribed = inner.subscriptions.get(&id).is_some_and(|patterns| patterns.iter().any(|p| p.matches(path)));
+        if !subscribed {
+            return;
+        }
+        if let Some(tx) = inner.sessions.get(&id) {
+            let _ = tx.send(ServerMessage::Update { path: path.clone(), value });
         }
     }
 }
@@ -215,7 +218,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     let broadcast_task = tokio::spawn(async move {
         let mut stream = broadcast.subscribe_all();
         while let Some((path, value)) = stream.next().await {
-            registry.broadcast_update(&path, value);
+            registry.deliver(session_id, &path, value);
         }
     });
 
@@ -266,12 +269,29 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     // page, so a page that has gone leaves none — the sweep in `infra::clients` is
     // only for the other way of going quiet, which is not hanging up.
     state.clients.forget(session_id).await;
+    // And the stations on the network, if this page was the one looking: nobody left
+    // looking is nobody to browse for.
+    state.session.watch_nearby(session_id, false).await;
+    // And the wing, if this page was driving it: a wing acting for a page that has
+    // gone is a desk nobody is behind.
+    if let Some(wing) = &state.wing {
+        wing.forget(session_id).await;
+    }
     // And whatever it was watching leave the console. Same rule as the raised log:
     // recomputed from who is here, so a tab that closes stops a connector drawing
     // for it — here, or on the peer that was drawing on its behalf.
     for ((node_id, output_id), ask) in state.viewers.forget(session_id) {
         if node_id != state.node_id {
             state.sync.watch_peer_output(node_id, output_id, ask).await;
+        }
+    }
+    // And whatever it was forcing on an output: a light must never stay at full
+    // because the tablet that put it there lost its signal.
+    for ((node_id, output_id), test) in state.viewers.tests.forget(session_id) {
+        if node_id == crate::infra::connectors::channel_tests::ANYWHERE {
+            state.sync.test_every_peer_output(output_id, test).await;
+        } else if node_id != state.node_id {
+            state.sync.test_peer_output(node_id, output_id, test).await;
         }
     }
     // Give the send task a moment to write its close frame before it is taken down.
@@ -411,10 +431,12 @@ async fn handle_client_message(
                     sync: Some(state.sync.clone()),
                     // Which browser is asking, so a watch can end when it does.
                     caller: Some(session_id),
+                    acting_for: None,
                     clients: Some(state.clients.clone()),
                     ws_registry: Some(state.ws_registry.clone()),
                     shows: state.shows.clone(),
                     xchange: Some(state.xchange.clone()),
+                    wing: state.wing.clone(),
                 };
                 crate::api::rpcs::dispatch(&method, args, &deps).await
                     .map(|v| ServerMessage::CallResult { request_id: request_id.clone(), result: Some(v), error: None })
@@ -474,6 +496,35 @@ fn infer_lifecycle(path: &pult_schema::path::Path) -> pult_schema::lifecycle::Li
 
 #[cfg(test)]
 mod tests {
+
+    /// Every socket reads the broadcast for itself, so each subscriber gets each update
+    /// once however many sockets are open — the way `handle_socket`'s forwarding task
+    /// runs, one per connection.
+    #[test]
+    fn an_update_reaches_each_subscriber_once_however_many_sockets_are_open() {
+        let registry = SubscriptionRegistry::default();
+        let sessions: Vec<_> = (0..3)
+            .map(|_| {
+                let id = Uuid::new_v4();
+                let (tx, rx) = mpsc::unbounded_channel();
+                registry.add_session(id, tx);
+                (id, rx)
+            })
+            .collect();
+        // Two subscribe, one does not.
+        for (id, _) in &sessions[..2] {
+            registry.subscribe(*id, PathPattern::new("wing_asks"));
+        }
+        let path = vec![pult_schema::path::PathSegment::Key("wing_asks".into())];
+        for (id, _) in &sessions {
+            registry.deliver(*id, &path, serde_json::json!([{ "kind": "key", "index": 3, "down": true }]));
+        }
+        let counts: Vec<usize> = sessions
+            .into_iter()
+            .map(|(_, mut rx)| std::iter::from_fn(|| rx.try_recv().ok()).count())
+            .collect();
+        assert_eq!(counts, vec![1, 1, 0]);
+    }
     use super::*;
     use pult_schema::types::user::User;
 

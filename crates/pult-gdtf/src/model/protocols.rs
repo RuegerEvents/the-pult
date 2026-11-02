@@ -1,6 +1,6 @@
 //! `<Protocols>`: how something other than plain DMX addresses this fixture.
 //!
-//! Nothing downstream reads these yet. They are modelled so that a round trip does
+//! Nothing downstream reads these yet. They are modeled so that a round trip does
 //! not silently drop a manufacturer's RDM personality table, which is the sort of
 //! loss that only shows up on somebody else's console.
 

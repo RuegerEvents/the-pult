@@ -34,7 +34,12 @@ struct Args {
     /// meaningful working directory to find a show in.
     #[arg(long, value_name = "BUNDLE")]
     show: Option<std::path::PathBuf>,
-    /// Put one of the demo shows in, if the show has no rig yet: haunt, theatre,
+    /// With no `--show`: open the show this console had open last, if it still exists,
+    /// and the welcome screen otherwise. For a console started at login, which should
+    /// come back on what it was running rather than on a path fixed at install time.
+    #[arg(long)]
+    last_show: bool,
+    /// Put one of the demo shows in, if the show has no rig yet: haunt, theater,
     /// club or festival.
     #[arg(long, value_name = "ID")]
     demo: Option<pult_backend::demo::Demo>,
@@ -43,6 +48,9 @@ struct Args {
     /// Use this station id instead of the one this machine has recorded.
     #[arg(long, value_name = "UUID")]
     node_id: Option<uuid::Uuid>,
+    /// Leave a grandMA3 command wing alone, for another program to have it.
+    #[arg(long)]
+    no_wing: bool,
 }
 
 fn main() {
@@ -54,6 +62,9 @@ fn main() {
         .expect("the log could not be set up");
 
     let args = Args::parse();
+    // Once for the process, like the log: a show switch restarts the station and must
+    // not reboot the wing.
+    let wing = (!args.no_wing).then(pult_backend::wing::install);
 
     tauri::Builder::default()
         .setup(move |app| {
@@ -64,12 +75,22 @@ fn main() {
                 .title("the-pult")
                 .inner_size(1440.0, 900.0)
                 .min_inner_size(900.0, 600.0)
+                // Run on every page the window loads, the station's own included: the
+                // page then knows it is the desktop app's and not a browser on the
+                // network, and leaves itself out of the System panel's browsers.
+                .initialization_script("window.__PULT_DESKTOP__ = true;")
+                // A file dragged in from the Finder is the page's, as it is in a browser:
+                // the timeline takes a sound that way. Left on, Tauri catches every drop
+                // from the OS for events of its own and the page's `drop` never sees the
+                // file — nothing happened, with nothing said.
+                .disable_drag_drop_handler()
                 .build()?;
 
             let args = args.clone();
             let log = log.clone();
+            let wing = wing.clone();
             tauri::async_runtime::spawn(async move {
-                match start(&args, log).await {
+                match start(&args, log, wing).await {
                     Ok(url) => open(&window, &url),
                     Err(e) => fail(&window, &e.to_string()),
                 }
@@ -81,7 +102,11 @@ fn main() {
 }
 
 /// Bring a station up and say where it ended up listening.
-async fn start(args: &Args, log: LogHandle) -> anyhow::Result<String> {
+async fn start(
+    args: &Args,
+    log: LogHandle,
+    wing: Option<pult_backend::wing::WingHandle>,
+) -> anyhow::Result<String> {
     let console = pult_backend::Console::start(Config {
         // Nothing said, so the station's own `[network] http` preference decides and
         // then every interface — which is what the desktop app has always done, and
@@ -89,11 +114,16 @@ async fn start(args: &Args, log: LogHandle) -> anyhow::Result<String> {
         bind: None,
         port: free_or_any(args.port).await,
         sync_port: free_or_any(args.sync_port).await,
-        show: args.show.clone(),
+        show: args.show.clone().or_else(|| {
+            args.last_show.then(pult_backend::infra::showfile::recent::last_existing).flatten()
+        }),
         demo: args.demo,
         openhaunt_broker_port: args.openhaunt_broker_port,
         node_id: args.node_id,
+        // Back into the session this station last joined, after a restart.
+        rejoin: true,
         log: Some(log),
+        wing,
         ..Config::default()
     })
     .await?;

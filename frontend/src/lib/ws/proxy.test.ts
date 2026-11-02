@@ -128,7 +128,7 @@ describe('subscribeDeep', () => {
 		expect((seen.at(-1) as unknown[]).length).toBe(1);
 	});
 
-	// Anything unrecognised has to be slow rather than wrong.
+	// Anything unrecognized has to be slow rather than wrong.
 	it('re-reads when the update is for an entity it has never seen', async () => {
 		const fake = fakeClient(fixtures());
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any

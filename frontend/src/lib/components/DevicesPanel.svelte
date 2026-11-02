@@ -3,15 +3,21 @@
 	import { getClientContext } from '$lib/ws/context.js';
 	import { addToast } from '$lib/toasts.js';
 	import { select, selected, toggle } from '$lib/stores/selection.js';
-	import { editing } from '$lib/stores/editing.js';
+	import { canEdit } from '$lib/stores/showLock.js';
 	import OutputGaps from './OutputGaps.svelte';
-	import type { DevicesState, DiscoveredDevice } from '$lib/generated/index.js';
+	import StripPatch from './StripPatch.svelte';
+	import Dialog from './Dialog.svelte';
+	import AdoptDialog from './AdoptDialog.svelte';
+	import NameConflictsDialog from './NameConflictsDialog.svelte';
+	import { portRows, tooLong, withLabel, type PortRow } from '$lib/nodeNames.js';
+	import { bytesText } from '$lib/destination.js';
+	import { collection, showData } from '$lib/stores/show.js';
+	import type { DevicesState, DiscoveredDevice, Fixture, FixtureType } from '$lib/generated/index.js';
 
 	const client = getClientContext();
 
 	// Find and Select stay live: neither changes the show. Adopt patches a fixture
 	// and Forget unpatches one, which is what the lock is for.
-	const unlocked = editing('devices');
 
 	let devices = $state<DevicesState>({ discovered: {}, broker_addr: null, active: false });
 	let busy = $state<string | null>(null);
@@ -46,6 +52,57 @@
 	}
 
 	const listed = $derived(Object.values(devices.discovered) as DiscoveredDevice[]);
+	const fixtures = collection('fixtures');
+	const types = collection('fixture_types');
+
+	/** The node an Adopt was pressed on, while its dialog is open. */
+	let adopting = $state<DiscoveredDevice | null>(null);
+	/** The node whose differing names are being settled. */
+	let settling = $state<DiscoveredDevice | null>(null);
+	/** Nodes the show is patched to and that are not here: what an adoption may replace. */
+	const gone = $derived(listed.filter((d) => !!d.adopted_fixture_id && !d.online));
+	const differing = $derived(listed.filter((d) => d.name_conflicts?.length > 0));
+
+	/**
+	 * Name a port: its parameter's label on the fixture, which the station passes on to
+	 * the node — now, or when it is next up. One Ctrl-Z.
+	 */
+	function label(row: PortRow, value: string) {
+		if (!row.fixture || !row.key || value.trim() === row.label) return;
+		if (tooLong(value)) addToast('A node keeps 31 bytes of a name; the rest is cut off on the node');
+		void showData().fixtures.byId(row.fixture.id).parameter_labels.set(withLabel(row.fixture, row.key, value));
+	}
+
+	/// The node's own fixture, where its address says whether its stream goes down
+	/// every path it is on.
+	function ownFixture(device: DiscoveredDevice): Fixture | undefined {
+		return ($fixtures as Fixture[]).find((f) => f.id === device.adopted_fixture_id);
+	}
+
+	/** Rename a node: its own fixture, which the station passes on to the node. One Ctrl-Z. */
+	function rename(device: DiscoveredDevice, value: string) {
+		const fixture = ownFixture(device);
+		const name = value.trim();
+		if (!fixture || !name || name === fixture.name) return;
+		if (tooLong(name)) addToast('A node keeps 31 bytes of its name; the rest is cut off on the node');
+		void showData().fixtures.byId(fixture.id).name.set(name);
+	}
+
+	function redundant(fixture: Fixture | undefined): boolean {
+		return !!fixture && 'OpenHaunt' in fixture.address && fixture.address.OpenHaunt.redundant_stream === true;
+	}
+
+	/// One value, and Ctrl-Z takes it back, so it is edited where it is shown.
+	async function setRedundant(device: DiscoveredDevice, fixture: Fixture, on: boolean) {
+		if (!('OpenHaunt' in fixture.address)) return;
+		try {
+			await showData()
+				.fixtures.byId(fixture.id)
+				.address.set({ OpenHaunt: { ...fixture.address.OpenHaunt, redundant_stream: on } });
+		} catch (e) {
+			addToast(`${device.name}: ${e}`);
+		}
+	}
 
 	/// What a node said its terminals are — "8 inputs · 1 output" — or nothing,
 	/// for a node that has not described itself.
@@ -79,6 +136,26 @@
 		}
 	}
 
+	/**
+	 * Forget asks first, and says what goes with it: every fixture patched to the node
+	 * — its heads, a strip with all its cells — is deleted, and cues that set them have
+	 * nothing left to set. Ctrl-Z puts the fixtures back; the node is adopted again by
+	 * Adopt.
+	 */
+	let forgetting = $state<DiscoveredDevice | null>(null);
+	/**
+	 * Taken as an argument and held before the dialog closes: `device` in the dialog is
+	 * read off `forgetting`, and clearing that first handed `act` nothing — which is why
+	 * Forget did nothing at all.
+	 */
+	function forget(device: DiscoveredDevice) {
+		const held = { ...device };
+		forgetting = null;
+		void act('forget', held);
+	}
+	const goingWith = (device: DiscoveredDevice): Fixture[] =>
+		($fixtures as Fixture[]).filter((f) => 'OpenHaunt' in f.address && f.address.OpenHaunt.serial === device.serial);
+
 	/// Select the fixture a node was adopted as: click alone, shift-click to add.
 	function pick(event: MouseEvent, device: DiscoveredDevice) {
 		const id = device.adopted_fixture_id;
@@ -104,11 +181,22 @@
 	<div class="panel-header">
 		<span class="panel-title">Devices</span>
 		{#if !devices.active}
-			<span class="badge badge--dim" title="Only the node leading the session drives devices">
-				○ Watching
+			<span
+				class="badge badge--dim"
+				title="The leading station drives the nodes; Adopt, Forget and strip changes made here are done by it"
+			>
+				○ The leader drives these
 			</span>
 		{:else}
 			<span class="badge badge--green">● Driving</span>
+		{/if}
+		{#if differing.length > 0}
+			<span
+				class="badge badge--warn"
+				title="A node and the show call something differently; open the node's Names differ to pick"
+			>
+				Names differ on {differing.length === 1 ? differing[0].name : `${differing.length} nodes`}
+			</span>
 		{/if}
 	</div>
 
@@ -135,11 +223,33 @@
 					<div class="device-info">
 						<span class="device-name">
 							<span class="dot" class:on={device.online}></span>
-							{device.name}
+							{#if $canEdit && ownFixture(device)}
+								<!-- The node is called what its own fixture is called; the station
+								     tells the node, now or when it is next up. -->
+								<input
+									class="rename"
+									value={ownFixture(device)?.name ?? device.name}
+									aria-label="Name of {device.name}"
+									title={device.online ? 'Renames the node too' : 'Renames the node too, when it is next online'}
+									onchange={(e) => rename(device, e.currentTarget.value)}
+									onkeydown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+								/>
+							{:else}
+								{device.name}
+							{/if}
 						</span>
 						<span class="device-meta dim">
 							{device.module_name || 'Unknown module'}
 							{#if device.caps.length}· {device.caps.join(', ')}{/if}
+						</span>
+						<!-- Where it is, in the row and not only behind the disclosure: the first
+						     thing anybody standing at a node with a laptop wants. -->
+						<span class="device-meta dim mono">
+							{#if device.ip}
+								{device.ip}{device.net.length > 1 ? ` · ${device.net.map((a) => `${a.ip} ${a.transport}`).join(', ')}` : ''}
+							{:else}
+								{device.online ? 'address not known yet' : 'offline · not seen since this station started'}
+							{/if}
 						</span>
 						{#if ports(device)}
 							<span class="device-meta dim">{ports(device)}</span>
@@ -151,6 +261,15 @@
 						{/if}
 					</div>
 					<div class="device-actions">
+						{#if device.name_conflicts?.length > 0}
+							<button
+								class="chip-btn conflict"
+								title="The node and the show call {device.name_conflicts.length === 1 ? 'something' : `${device.name_conflicts.length} things`} differently"
+								onclick={() => (settling = device)}
+							>
+								Names differ
+							</button>
+						{/if}
 						{#if device.adopted_fixture_id}
 							<button
 								class="chip-btn"
@@ -160,21 +279,21 @@
 							>
 								Select
 							</button>
-							{#if $unlocked}
+							{#if $canEdit}
 								<button
 									class="chip-btn"
-									disabled={busy === device.serial || !devices.active}
-									onclick={() => act('forget', device)}
+									disabled={busy === device.serial}
+									onclick={() => (forgetting = device)}
 								>
 									Forget
 								</button>
 							{/if}
-						{:else if $unlocked}
+						{:else if $canEdit}
 							<button
 								class="chip-btn adopt"
-								disabled={busy === device.serial || !devices.active || !ports(device)}
+								disabled={busy === device.serial || !ports(device)}
 								title={ports(device) ? undefined : UNDESCRIBED}
-								onclick={() => act('adopt', device)}
+								onclick={() => (adopting = device)}
 							>
 								Adopt
 							</button>
@@ -189,13 +308,45 @@
 						</button>
 					</div>
 
+					{#if device.adopted_fixture_id}
+						<StripPatch {device} unlocked={$canEdit} />
+					{/if}
+
+					{#if device.audio?.stream && ownFixture(device)}
+						{@const own = ownFixture(device)!}
+						<!-- Every packet down every path the node is on: pulling its cable then
+						     costs no sound, at the price of the stream's airtime on Wi-Fi all
+						     the time (OpenHaunt docs/13). -->
+						{#if $canEdit}
+							<label
+								class="redundant"
+								title="Send the audio stream down every path the node is on, not only the one it prefers"
+							>
+								<input
+									type="checkbox"
+									checked={redundant(own)}
+									onchange={(e) => setRedundant(device, own, e.currentTarget.checked)}
+								/>
+								Stream down every path{#if device.net.length > 1}<span class="dim"> · {device.net.length} paths</span>{/if}
+							</label>
+						{:else if redundant(own)}
+							<span class="redundant dim">Stream goes down every path</span>
+						{/if}
+					{/if}
+
 					{#if open.has(device.serial)}
+						{@const rows = portRows(device, $fixtures as Fixture[], $types as FixtureType[])}
 						<!-- Everything the node has told this console about itself. Behind a
 						     disclosure because it is what you look at when something is
 						     wrong, and clutter the rest of the time. -->
 						<div class="detail">
 							<dl>
 								<dt>Address</dt><dd class="mono">{device.ip}:{device.port}</dd>
+								{#if device.net.length > 0}
+									<!-- What the node says on `net`, the path it prefers first. -->
+									<dt>Paths</dt>
+									<dd class="mono">{device.net.map((a) => `${a.ip} (${a.transport})`).join(', ')}</dd>
+								{/if}
 								<dt>Host</dt><dd class="mono">{device.host}</dd>
 								<dt>Firmware</dt><dd>{device.fw || '—'} · protocol {device.protocol_version || '—'}</dd>
 								<dt>Module</dt>
@@ -217,22 +368,65 @@
 										<dt>Errors</dt><dd class="bad">{h.errors.join(', ')}</dd>
 									{/if}
 								{/if}
+								{#if device.audio}
+									{@const a = device.audio}
+									<!-- What the node said its loudspeaker is. An amp output is a
+									     bridged speaker drive, never a line out, and says so. -->
+									<dt>Sound</dt>
+									<dd>
+										{a.outputs
+											.map((o) => `${o.name} (${o.kind === 'amp' ? 'speaker drive, not line level' : `${o.channels} ch line`})`)
+											.join(', ')}
+										· {a.voices} voices at {a.rate / 1000} kHz
+										· {bytesText(a.clips.bytes_free)} of {bytesText(a.clips.bytes_total)} free
+									</dd>
+									{#if device.audio_status}
+										{@const st = device.audio_status}
+										<dt>Playing</dt>
+										<dd class:bad={!st.locked || st.underruns > 0}>
+											{st.voices.length
+												? st.voices.map((v) => v.voice).join(', ')
+												: 'nothing'}
+											{#if st.stream?.active}· stream {st.stream.depth_ms} ms deep, {st.stream.missing} missing, {st.stream.late} late{/if}
+											{#if st.underruns > 0}· {st.underruns} underruns{/if}
+											{#if !st.locked}· not locked to the console's clock{/if}
+										</dd>
+									{/if}
+								{/if}
 							</dl>
 
-							{#if device.description?.ports?.length}
+							{#if rows.length}
 								<table class="ports">
 									<thead>
 										<tr><th>#</th><th>Name</th><th>Flow</th><th>Type</th><th>Can trace</th></tr>
 									</thead>
 									<tbody>
-										{#each device.description.ports as port (port.port)}
-											{@const traces = device.effects?.ports?.find((p) => p.port === port.port)}
+										{#each rows as row (row.port)}
+											{@const traces = device.effects?.ports?.find((p) => p.port === row.port)}
 											<tr>
-												<td class="mono">{port.port}</td>
-												<td>{port.name}</td>
-												<td>{port.access === 'readonly' ? 'read' : 'driven'}</td>
+												<td class="mono">{row.port}</td>
 												<td>
-													{port.dataType}{#if port.unit}<span class="dim"> {port.unit}</span>{/if}
+													{#if $canEdit && row.fixture && row.key}
+														<!-- What the operator calls it; the module's word is the
+														     placeholder, and stays the parameter's key. -->
+														<input
+															class="rename label"
+															value={row.label}
+															placeholder={row.name}
+															aria-label="Name of port {row.port}, {row.name}"
+															title={device.online ? 'Names the port on the node too' : 'Names the port on the node too, when it is next online'}
+															onchange={(e) => label(row, e.currentTarget.value)}
+															onkeydown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+														/>
+														{#if row.label}<span class="dim module-name">{row.name}</span>{/if}
+													{:else}
+														{row.label || row.name}
+														{#if row.label}<span class="dim module-name">{row.name}</span>{/if}
+													{/if}
+												</td>
+												<td>{row.access === null ? '—' : row.access === 'readonly' ? 'read' : 'driven'}</td>
+												<td>
+													{row.dataType ?? '—'}{#if row.unit}<span class="dim"> {row.unit}</span>{/if}
 												</td>
 												<td>
 													<!-- What the node said it can do for itself. Absent is the
@@ -264,7 +458,58 @@
 	{/if}
 </div>
 
+{#if forgetting}
+	{@const device = forgetting}
+	{@const gone = goingWith(device)}
+	<Dialog title="Forget {device.name}?" onclose={() => (forgetting = null)} onaccept={() => forget(device)}>
+		<div class="prompt">
+		{#if gone.length > 0}
+			<p>
+				{gone.length === 1 ? 'Its fixture is' : `Its ${gone.length} fixtures are`} deleted with it, and every
+				cue, group and binding that names {gone.length === 1 ? 'it' : 'them'} has nothing left to drive:
+			</p>
+			<ul class="gone">
+				{#each gone as fixture (fixture.id)}<li>{fixture.name}</li>{/each}
+			</ul>
+		{:else}
+			<p>Nothing is patched to it.</p>
+		{/if}
+		<p class="note">Ctrl-Z brings the fixtures back. {device.online ? '' : 'It is offline, so it is only forgotten here; it is not told.'}</p>
+		</div>
+		{#snippet footer()}
+			<button class="btn btn-ghost" onclick={() => (forgetting = null)}>Cancel</button>
+			<button class="btn btn-danger" onclick={() => forget(device)}>Forget</button>
+		{/snippet}
+	</Dialog>
+{/if}
+
+{#if adopting}
+	<AdoptDialog device={adopting} gone={gone} onclose={() => (adopting = null)} />
+{/if}
+
+{#if settling}
+	{@const current = listed.find((d) => d.serial === settling?.serial)}
+	{#if current && current.name_conflicts.length > 0}
+		<NameConflictsDialog device={current} onclose={() => (settling = null)} />
+	{/if}
+{/if}
+
 <style>
+	.prompt {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+	.prompt p {
+		margin: 0;
+		line-height: 1.5;
+	}
+	.gone {
+		margin: 4px 0 8px;
+		padding-left: 18px;
+		max-height: 200px;
+		overflow-y: auto;
+	}
 	.panel {
 		background: #252525;
 		border: 1px solid #333;
@@ -332,6 +577,22 @@
 		min-width: 0;
 	}
 
+	.rename {
+		font: inherit;
+		color: inherit;
+		background: transparent;
+		border: 1px solid transparent;
+		border-radius: 3px;
+		padding: 0 4px;
+		min-width: 0;
+		flex: 1;
+	}
+	.rename:hover,
+	.rename:focus {
+		border-color: var(--line-strong, #3a3a3a);
+		background: var(--bg-sunken, #111);
+		outline: none;
+	}
 	.device-name {
 		display: flex;
 		align-items: center;
@@ -361,6 +622,16 @@
 		color: #e0a355;
 	}
 
+	/* Under the row, across it, like the strips. */
+	.redundant {
+		grid-column: 1 / -1;
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		font-size: 0.68rem;
+		color: #888;
+	}
+
 	.undescribed {
 		color: #6b5a3a;
 		font-style: italic;
@@ -385,6 +656,11 @@
 	.chip-btn:hover:not(:disabled) { border-color: #888; color: #ccc; }
 	.chip-btn:disabled { cursor: not-allowed; opacity: 0.4; }
 	.chip-btn.adopt { border-color: #4a9eff44; color: #4a9eff; }
+	.chip-btn.conflict { border-color: #a16207; color: #fbbf24; }
+	.chip-btn.conflict:hover:not(:disabled) { background: #a1620722; border-color: #fbbf24; }
+	.badge--warn  { background: #a1620722; color: #fbbf24; border: 1px solid #a16207; }
+	.rename.label { width: 11rem; font-size: inherit; }
+	.module-name { margin-left: 4px; font-size: 0.65rem; }
 	.chip-btn.adopt:hover:not(:disabled) { background: #4a9eff22; border-color: #4a9eff; }
 
 	.hint {

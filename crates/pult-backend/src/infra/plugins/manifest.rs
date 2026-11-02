@@ -183,6 +183,14 @@ pub struct SurfaceSection {
     pub id: String,
     pub kind: SurfaceKind,
     pub title: String,
+    /// A Lucide icon name, drawn beside the title. Optional; see `docs/PLUGINS.md`
+    /// for the names a console carries.
+    #[serde(default)]
+    pub icon: Option<String>,
+    /// Which picker category it is filed under. Optional; a plugin's own surfaces
+    /// go under Program when it says nothing.
+    #[serde(default)]
+    pub category: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
@@ -214,6 +222,11 @@ pub struct PanelSection {
     pub script: String,
     #[serde(default)]
     pub fills: bool,
+    /// As on a surface: a Lucide icon name and a picker category, both optional.
+    #[serde(default)]
+    pub icon: Option<String>,
+    #[serde(default)]
+    pub category: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -589,6 +602,8 @@ mod tests {
             title = "Monitor"
             element = "pult-cli-monitor"
             script = "assets/panel.js"
+            icon = "terminal"
+            category = "system"
 
             [permissions]
             data = "read-write"
@@ -602,6 +617,9 @@ mod tests {
         .expect("parses");
         assert_eq!(m.plugin.id, "command-line");
         assert_eq!(m.surfaces[0].kind, SurfaceKind::Console);
+        assert_eq!(m.surfaces[0].icon, None);
+        assert_eq!(m.panels[0].icon.as_deref(), Some("terminal"));
+        assert_eq!(m.panels[0].category.as_deref(), Some("system"));
         assert_eq!(m.permissions.data, DataPermission::ReadWrite);
         assert!(m.permissions.commands);
         assert_eq!(m.wasm_path(), Path::new("/somewhere/command_line.wasm"));

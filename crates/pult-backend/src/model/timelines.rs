@@ -30,18 +30,24 @@
 
 use std::collections::HashMap;
 
-use pult_schema::types::timeline::Timeline;
+use pult_schema::types::timeline::{AtEnd, Timeline};
 use uuid::Uuid;
 
 /// One thing a timeline wants done.
 #[derive(Debug, Clone, PartialEq)]
-pub struct TimelineFire {
-    pub sequence_id: Uuid,
-    /// The registered command's name, as the engine's command table spells it.
-    pub command: &'static str,
-    pub args: serde_json::Value,
-    /// The wall millisecond the event fell at, which is what a Go anchors on.
-    pub at: u64,
+pub enum TimelineFire {
+    /// A Go, a jump or an Off into a sequence.
+    Sequence {
+        sequence_id: Uuid,
+        /// The registered command's name, as the engine's command table spells it.
+        command: &'static str,
+        args: serde_json::Value,
+        /// The wall millisecond the event fell at, which is what a Go anchors on.
+        at: u64,
+    },
+    /// Something a flow could do too: play or stop a timeline, change a variable. Run
+    /// through the flow's own executor, so the two cannot mean different things.
+    Act(pult_schema::types::flow::TriggerAction),
 }
 
 /// A recording that has just stopped, and where its playhead was when it did.
@@ -49,9 +55,11 @@ pub struct TimelineFire {
 pub struct TimelineStopped {
     pub timeline_id: Uuid,
     pub position_ms: u64,
-    /// The assets that were playing, so the caller can sample each one where it
-    /// stopped and let its keys go.
-    pub tracks: Vec<String>,
+    /// The rows that were playing, so the caller can compose them, sample what they
+    /// were saying where it stopped, and let those keys go.
+    pub tracks: Vec<pult_schema::types::timeline::TimelineTrack>,
+    /// And the flashes over them, which are let go of the same way.
+    pub flashes: Vec<pult_schema::types::timeline::TimelineFlash>,
 }
 
 /// A speed master a timeline wants set to a tempo.
@@ -65,12 +73,23 @@ pub struct TimelineTempo {
     pub t0: u64,
 }
 
+/// A timeline that has reached its [`Timeline::end`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TimelineEnded {
+    pub timeline_id: Uuid,
+    /// The wall millisecond the end fell at, which is what the stop or the loop's
+    /// play anchors on — so a loop does not drift by a pass's lateness each time round.
+    pub at: u64,
+    pub then: AtEnd,
+}
+
 /// What one pass came to.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TimelinePass {
     pub fire: Vec<TimelineFire>,
     pub stopped: Vec<TimelineStopped>,
     pub masters: Vec<TimelineTempo>,
+    pub ended: Vec<TimelineEnded>,
 }
 
 /// What each timeline was doing at the end of the last pass.
@@ -115,7 +134,20 @@ impl Timelines {
         self.seen.retain(|id, _| timelines.iter().any(|timeline| timeline.id == *id));
 
         for timeline in timelines {
-            let position = timeline.position_at(wall_ms);
+            let running_to = timeline.position_at(wall_ms);
+            // Nothing past the end is crossed: the leader stops or loops the timeline
+            // at it, and an event after the end is one the timeline never reaches.
+            let end = end_of(timeline);
+            let position = end.map_or(running_to, |end| running_to.min(end));
+            if timeline.running {
+                if let Some(end) = end.filter(|end| running_to >= *end) {
+                    out.ended.push(TimelineEnded {
+                        timeline_id: timeline.id,
+                        at: wall_at(timeline, wall_ms, running_to - end),
+                        then: timeline.end.map_or(AtEnd::Stop, |e| e.then),
+                    });
+                }
+            }
             let before = self.seen.get(&timeline.id).copied();
             let was_running = before.is_some_and(|seen| seen.running);
             // The segment the playhead is in, whatever the timeline is doing: kept in
@@ -127,24 +159,28 @@ impl Timelines {
                 if was_running {
                     out.stopped.push(TimelineStopped {
                         timeline_id: timeline.id,
-                        position_ms: position,
+                        position_ms: running_to,
                         tracks: timeline
                             .tracks
                             .iter()
                             .filter(|track| track.enabled)
-                            .map(|track| track.asset.clone())
+                            .cloned()
                             .collect(),
+                        flashes: timeline.all_flashes().to_vec(),
                     });
                 }
-                // A stopped timeline keeps its place in the record rather than being
-                // forgotten: pressing play again must not re-fire everything before
-                // the playhead.
+                // A stopped timeline's record follows its playhead to just short of
+                // it: pressing play again must not re-fire everything before the
+                // playhead, and must fire what is exactly *at* it. Kept where the last
+                // run left it, the record made a timeline played from the top a second
+                // time skip its first event — and one stopped at 30 s and played again
+                // from the start skip everything until 30 s (HHG, 2026-10-26).
                 self.seen.insert(
                     timeline.id,
                     Seen {
                         running: false,
-                        fired_to: before.and_then(|s| s.fired_to),
-                        position_ms: position,
+                        fired_to: running_to.checked_sub(1),
+                        position_ms: running_to,
                         at_ms: wall_ms,
                         segment,
                     },
@@ -161,7 +197,27 @@ impl Timelines {
 
             if jumped {
                 for event in timeline.tracked_at(position) {
-                    out.fire.push(fire_at(event, wall_ms));
+                    // What it jumped past is applied now; what is exactly where it
+                    // starts goes when the playhead gets there, which on a Play with a
+                    // stream lead is the anchor and not this pass.
+                    let at = if event.at_ms as u64 >= timeline.position_at_anchor_ms {
+                        wall_of(timeline, event.at_ms as u64, wall_ms, running_to)
+                    } else {
+                        wall_ms
+                    };
+                    out.fire.push(fire_at(event, at));
+                }
+                // An event that drives no sequence — stopping or playing another
+                // timeline, setting a variable — has no tracked state to take, so the
+                // rule above dropped it, even one at the very position played from: a
+                // phone's "start from the beginning" on the trigger never stopped the
+                // loop (HHG, 2026-10-26). Those fire as crossed, from where this run
+                // started to the playhead, and nothing before it.
+                let started = timeline.position_at_anchor_ms;
+                for event in timeline.crossed(started.checked_sub(1), position) {
+                    if event.action.sequence_id().is_none() {
+                        out.fire.push(fire_at(event, wall_of(timeline, event.at_ms as u64, wall_ms, running_to)));
+                    }
                 }
                 // Always restated after a jump, even into the same segment: the
                 // playhead is somewhere else in the bar, so the master's `t0` is now
@@ -174,7 +230,7 @@ impl Timelines {
                     Seen {
                         running: true,
                         fired_to: Some(position),
-                        position_ms: position,
+                        position_ms: running_to,
                         at_ms: wall_ms,
                         segment,
                     },
@@ -190,25 +246,17 @@ impl Timelines {
 
             let fired_to = before.and_then(|seen| seen.fired_to);
             for event in timeline.crossed(fired_to, position) {
-                // The wall millisecond the *event* fell at, worked out backwards from
-                // the playhead — so a pass that ran 40 ms late still anchors the cue
-                // where it belonged. A rate of zero, and a position before the anchor,
-                // both fall back to now rather than dividing by nothing.
-                let late = position.saturating_sub(event.at_ms as u64);
-                let rate = timeline.rate.max(0.0);
-                let at = if rate > 0.0 {
-                    wall_ms.saturating_sub((late as f64 / rate as f64) as u64)
-                } else {
-                    wall_ms
-                };
-                out.fire.push(fire_at(event, at));
+                // The wall millisecond the *event* falls at — so a pass that ran 40 ms
+                // late still anchors the cue where it belonged, and one that ran before
+                // a delayed start anchors it at the start.
+                out.fire.push(fire_at(event, wall_of(timeline, event.at_ms as u64, wall_ms, running_to)));
             }
             self.seen.insert(
                 timeline.id,
                 Seen {
                     running: true,
                     fired_to: Some(position),
-                    position_ms: position,
+                    position_ms: running_to,
                     at_ms: wall_ms,
                     segment,
                 },
@@ -228,19 +276,57 @@ impl Timelines {
             .filter(|timeline| timeline.running && timeline.rate > 0.0)
             .filter_map(|timeline| {
                 let position = timeline.position_at(wall_ms);
-                let next = timeline.next_event_after(position)?;
-                let ahead = (next.at_ms as u64).saturating_sub(position);
+                let event = timeline.next_event_after(position).map(|next| next.at_ms as u64);
+                // The end is a deadline like an event: a scare that has finished
+                // must stop on time rather than whenever something else wakes the
+                // engine.
+                let end = end_of(timeline).filter(|end| *end > position);
+                let next = match (event, end) {
+                    (Some(a), Some(b)) => a.min(b),
+                    (a, b) => a.or(b)?,
+                };
+                let ahead = next.saturating_sub(position);
                 Some(wall_ms + (ahead as f64 / timeline.rate as f64) as u64)
             })
             .min()
     }
 }
 
+/// Where a timeline ends, if it does. An end at zero is no end: a loop there would
+/// start again on every pass.
+fn end_of(timeline: &Timeline) -> Option<u64> {
+    timeline.end.map(|end| end.at_ms).filter(|at| *at > 0)
+}
+
+/// The wall millisecond a timeline was `behind` milliseconds of timeline ago.
+///
+/// A rate of zero, and a position before the anchor, both fall back to now rather
+/// than dividing by nothing.
+fn wall_at(timeline: &Timeline, wall_ms: u64, behind: u64) -> u64 {
+    let rate = timeline.rate.max(0.0);
+    if rate > 0.0 {
+        wall_ms.saturating_sub((behind as f64 / rate as f64) as u64)
+    } else {
+        wall_ms
+    }
+}
+
+/// The wall millisecond the playhead is at `at_ms`: from the anchor, which also answers
+/// for a position the playhead has not reached yet — an event at the start of a Play
+/// anchored ahead of now. Before the anchor's position, measured back from now.
+fn wall_of(timeline: &Timeline, at_ms: u64, wall_ms: u64, running_to: u64) -> u64 {
+    let rate = timeline.rate.max(0.0);
+    if rate > 0.0 && at_ms >= timeline.position_at_anchor_ms {
+        return timeline.anchor_ms + ((at_ms - timeline.position_at_anchor_ms) as f64 / rate as f64) as u64;
+    }
+    wall_at(timeline, wall_ms, running_to.saturating_sub(at_ms))
+}
+
 /// Which grid segment a position falls in: the last one that has started.
 ///
 /// `None` before the first segment, and for a timeline with no grid at all — which is
 /// most of them, and is why nothing here has to be told whether a song has been
-/// analysed.
+/// analyzed.
 fn segment_at(timeline: &Timeline, position_ms: u64) -> Option<usize> {
     timeline.grid.iter().rposition(|segment| segment.at_ms as u64 <= position_ms)
 }
@@ -268,11 +354,17 @@ fn tempo_of(
 }
 
 fn fire_at(event: &pult_schema::types::timeline::TimelineEvent, at: u64) -> TimelineFire {
-    let (command, mut args) = event.action.command();
-    if let Some(object) = args.as_object_mut() {
-        object.insert("at".into(), serde_json::json!(at));
+    match (event.action.sequence_id(), event.action.command()) {
+        (Some(sequence_id), Some((command, mut args))) => {
+            if let Some(object) = args.as_object_mut() {
+                object.insert("at".into(), serde_json::json!(at));
+            }
+            TimelineFire::Sequence { sequence_id, command, args, at }
+        }
+        _ => TimelineFire::Act(
+            event.action.as_flow_action().expect("an act that is not on a sequence is a flow's"),
+        ),
     }
-    TimelineFire { sequence_id: event.action.sequence_id(), command, args, at }
 }
 
 #[cfg(test)]
@@ -282,23 +374,27 @@ mod tests {
 
     fn a_timeline(events: Vec<TimelineEvent>) -> Timeline {
         Timeline {
+            folder: None,
             id: Uuid::from_u128(1),
             name: "Song".into(),
-            audio: None,
-            peaks: None,
+            clips: Vec::new(),
             detected: None,
             source: TimelineSource::Internal,
             grid: Vec::new(),
             markers: Vec::new(),
             events,
             tracks: Vec::new(),
+            flashes: None,
+            pending: None,
             speed_master: None,
             node_id: None,
+            end: None,
             running: false,
             anchor_ms: 0,
             position_at_anchor_ms: 0,
             rate: 1.0,
             recording: None,
+            armed_by: None,
         }
     }
 
@@ -327,11 +423,44 @@ mod tests {
 
         let fired = timelines.pass(11_200, std::slice::from_ref(&timeline)).fire;
         assert_eq!(fired.len(), 1);
-        assert_eq!(fired[0].command, "goNext");
-        assert_eq!(fired[0].sequence_id, Uuid::from_u128(7));
-        assert_eq!(fired[0].at, 11_000, "anchored where the event fell, not where the pass ran");
+        let TimelineFire::Sequence { command, sequence_id, at, .. } = &fired[0] else {
+            panic!("a Go is a sequence command");
+        };
+        assert_eq!(*command, "goNext");
+        assert_eq!(*sequence_id, Uuid::from_u128(7));
+        assert_eq!(*at, 11_000, "anchored where the event fell, not where the pass ran");
 
         assert!(timelines.pass(20_000, &[timeline]).fire.is_empty(), "and not again");
+    }
+
+    #[test]
+    fn an_event_at_the_end_can_play_the_next_timeline() {
+        // The loop-and-scare pattern: a scare whose last event plays the loop again.
+        let mut timelines = Timelines::default();
+        let ambience = Uuid::from_u128(42);
+        let mut scare = a_timeline(vec![TimelineEvent {
+            id: Uuid::new_v4(),
+            at_ms: 2_000,
+            action: TimelineAction::PlayTimeline {
+                timeline_id: ambience,
+                if_running: pult_schema::types::flow::IfRunning::Ignore,
+            },
+        }]);
+        scare.end = Some(pult_schema::types::timeline::TimelineEnd { at_ms: 2_000, then: AtEnd::Stop });
+        let scare = playing(scare, 10_000, 0);
+
+        // Seen at Play first, as a real one always is: a first look already in the
+        // middle is a play from a position, which takes the tracked state instead.
+        timelines.pass(10_000, std::slice::from_ref(&scare));
+        let pass = timelines.pass(12_500, std::slice::from_ref(&scare));
+        assert_eq!(
+            pass.fire,
+            vec![TimelineFire::Act(pult_schema::types::flow::TriggerAction::PlayTimeline {
+                timeline_id: ambience,
+                if_running: pult_schema::types::flow::IfRunning::Ignore,
+            })],
+            "an event exactly at the end is reached"
+        );
     }
 
     /// A jump takes the tracked state: one Go per sequence, and nothing that was
@@ -354,6 +483,61 @@ mod tests {
         assert!(timelines.pass(12_500, &[located]).fire.is_empty());
     }
 
+    fn ending(mut timeline: Timeline, at_ms: u64, then: AtEnd) -> Timeline {
+        timeline.end = Some(pult_schema::types::timeline::TimelineEnd { at_ms, then });
+        timeline
+    }
+
+    /// A scare has to finish, or a flow told to ignore a running timeline ignores it
+    /// for the rest of the night.
+    #[test]
+    fn a_timeline_reaching_its_end_says_so_once_anchored_where_the_end_fell() {
+        let mut timelines = Timelines::default();
+        let timeline =
+            ending(playing(a_timeline(vec![go_next(500, 1), go_next(3_000, 2)]), 10_000, 0), 2_000, AtEnd::Stop);
+
+        assert!(timelines.pass(11_000, std::slice::from_ref(&timeline)).ended.is_empty());
+        let pass = timelines.pass(12_300, std::slice::from_ref(&timeline));
+        assert_eq!(
+            pass.ended,
+            vec![TimelineEnded { timeline_id: timeline.id, at: 12_000, then: AtEnd::Stop }],
+        );
+        assert!(
+            pass.fire.iter().all(|f| !matches!(
+                f,
+                TimelineFire::Sequence { sequence_id, .. } if *sequence_id == Uuid::from_u128(2)
+            )),
+            "an event past the end is never reached",
+        );
+    }
+
+    #[test]
+    fn the_end_is_a_deadline() {
+        let timelines = Timelines::default();
+        let timeline = ending(playing(a_timeline(Vec::new()), 10_000, 0), 4_000, AtEnd::Loop);
+        assert_eq!(timelines.next_deadline(11_000, &[timeline]), Some(14_000));
+    }
+
+    #[test]
+    fn an_end_at_zero_is_no_end() {
+        let mut timelines = Timelines::default();
+        let timeline = ending(playing(a_timeline(Vec::new()), 10_000, 0), 0, AtEnd::Loop);
+        assert!(timelines.pass(10_500, &[timeline]).ended.is_empty(), "or it would loop on every pass");
+    }
+
+    /// A loop is a play from zero anchored on the end, and the events at the top of
+    /// the bed fire again on the way round.
+    #[test]
+    fn a_loop_round_fires_the_start_again() {
+        let mut timelines = Timelines::default();
+        let timeline = ending(playing(a_timeline(vec![go_next(0, 1)]), 10_000, 0), 1_000, AtEnd::Loop);
+        assert_eq!(timelines.pass(10_000, std::slice::from_ref(&timeline)).fire.len(), 1);
+        assert_eq!(timelines.pass(11_050, std::slice::from_ref(&timeline)).ended[0].at, 11_000);
+
+        let round = playing(timeline.clone(), 11_000, 0);
+        assert_eq!(timelines.pass(11_050, &[round]).fire.len(), 1, "the top of the bed again");
+    }
+
     /// Pressing play must not re-fire everything before the playhead.
     #[test]
     fn stopping_and_starting_again_does_not_repeat_what_was_already_fired() {
@@ -374,6 +558,84 @@ mod tests {
         assert!(fired.is_empty(), "the playhead has not gone back over it");
     }
 
+    /// Played from the top a second time, an event at zero fires again.
+    #[test]
+    fn an_event_at_the_very_start_fires_every_time_the_timeline_is_played_from_it() {
+        let mut timelines = Timelines::default();
+        let first = playing(a_timeline(vec![go_next(0, 1)]), 1_000, 0);
+        assert_eq!(timelines.pass(1_000, std::slice::from_ref(&first)).fire.len(), 1);
+        timelines.pass(3_000, std::slice::from_ref(&first));
+
+        let mut stopped = first.clone();
+        stopped.running = false;
+        stopped.position_at_anchor_ms = 0;
+        stopped.anchor_ms = 4_000;
+        timelines.pass(4_000, std::slice::from_ref(&stopped));
+
+        let again = playing(stopped.clone(), 5_000, 0);
+        let fired = timelines.pass(5_000, &[again]).fire;
+        assert_eq!(fired.len(), 1, "the start again");
+    }
+
+    /// Stopped at 30 s, put back at the top and played: everything after the top fires.
+    #[test]
+    fn played_again_from_earlier_everything_after_it_fires_once_more() {
+        let mut timelines = Timelines::default();
+        let timeline = playing(a_timeline(vec![go_next(500, 1), go_next(2_000, 2)]), 0, 0);
+        timelines.pass(30_000, std::slice::from_ref(&timeline));
+
+        let mut stopped = timeline.clone();
+        stopped.running = false;
+        stopped.position_at_anchor_ms = 0;
+        stopped.anchor_ms = 31_000;
+        timelines.pass(31_000, std::slice::from_ref(&stopped));
+        timelines.pass(31_500, std::slice::from_ref(&stopped));
+
+        let again = playing(stopped.clone(), 32_000, 0);
+        assert!(timelines.pass(32_000, std::slice::from_ref(&again)).fire.is_empty(), "nothing at the top");
+        assert_eq!(timelines.pass(32_600, std::slice::from_ref(&again)).fire.len(), 1, "0.5 s in");
+        assert_eq!(timelines.pass(34_100, &[again]).fire.len(), 1, "2 s in");
+    }
+
+    /// Played from a position, an event that drives no sequence — stopping another
+    /// timeline — fires where it is, as well as the tracked state of the sequences.
+    #[test]
+    fn a_play_from_the_beginning_fires_a_timeline_event_at_the_beginning() {
+        let mut timelines = Timelines::default();
+        let other = Uuid::from_u128(77);
+        let stop = TimelineEvent {
+            id: Uuid::from_u128(5),
+            at_ms: 0,
+            action: TimelineAction::StopTimeline { timeline_id: other },
+        };
+        let earlier = TimelineEvent {
+            id: Uuid::from_u128(6),
+            at_ms: 0,
+            action: TimelineAction::StopTimeline { timeline_id: Uuid::from_u128(78) },
+        };
+        let timeline = playing(a_timeline(vec![stop, go_next(0, 1)]), 1_000, 0);
+        let fired = timelines.pass(1_000, std::slice::from_ref(&timeline)).fire;
+        assert_eq!(fired.len(), 2, "the Go and the Stop");
+        // Located half way in, an event before the start of this run is not fired.
+        let mut located = a_timeline(vec![earlier]);
+        located.running = true;
+        located.anchor_ms = 2_000;
+        located.position_at_anchor_ms = 500;
+        assert!(timelines.pass(2_000, &[located]).fire.is_empty());
+    }
+
+    /// A Play anchored ahead of now — the stream lead — fires its first event at the
+    /// anchor, not at the pass that saw the Play.
+    #[test]
+    fn an_event_at_the_start_of_a_delayed_play_goes_at_the_start() {
+        let mut timelines = Timelines::default();
+        let timeline = playing(a_timeline(vec![go_next(0, 1)]), 10_400, 0);
+        let fired = timelines.pass(10_000, std::slice::from_ref(&timeline)).fire;
+        assert_eq!(fired.len(), 1);
+        let TimelineFire::Sequence { at, .. } = &fired[0] else { panic!("a sequence event") };
+        assert_eq!(*at, 10_400);
+    }
+
     #[test]
     fn a_timeline_that_stops_says_which_recordings_were_playing() {
         let mut timelines = Timelines::default();
@@ -386,6 +648,10 @@ mod tests {
                 input_id: None,
                 offset_ms: 0,
                 enabled: true,
+                fixture_id: None,
+                key: None,
+                from_ms: None,
+                to_ms: None,
             },
             pult_schema::types::timeline::TimelineTrack {
                 id: Uuid::from_u128(5),
@@ -394,6 +660,10 @@ mod tests {
                 input_id: None,
                 offset_ms: 0,
                 enabled: false,
+                fixture_id: None,
+                key: None,
+                from_ms: None,
+                to_ms: None,
             },
         ];
         timelines.pass(1_000, std::slice::from_ref(&timeline));
@@ -405,7 +675,11 @@ mod tests {
 
         assert_eq!(pass.stopped.len(), 1);
         assert_eq!(pass.stopped[0].position_ms, 2_000);
-        assert_eq!(pass.stopped[0].tracks, vec!["abc".to_string()], "only the enabled one");
+        assert_eq!(
+            pass.stopped[0].tracks.iter().map(|t| t.asset.as_str()).collect::<Vec<_>>(),
+            vec!["abc"],
+            "only the enabled one"
+        );
     }
 
     fn with_grid(mut timeline: Timeline, master: Uuid) -> Timeline {
@@ -485,7 +759,7 @@ mod tests {
 
     /// A timeline with a grid and no master, and one with a master and no grid, both
     /// write nothing — which is most timelines, and is why nothing here has to be told
-    /// whether a song has been analysed.
+    /// whether a song has been analyzed.
     #[test]
     fn a_timeline_with_nothing_to_drive_drives_nothing() {
         let mut timelines = Timelines::default();

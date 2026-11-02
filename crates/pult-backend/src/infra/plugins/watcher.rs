@@ -68,6 +68,7 @@ fn watch(roots: Vec<PathBuf>, tx: mpsc::Sender<PluginCommand>) {
             .map(|due| due.saturating_duration_since(Instant::now()))
             .unwrap_or(Duration::from_secs(3600));
         match event_rx.recv_timeout(wait) {
+            Ok(event) if !changes_something(&event.kind) => {}
             Ok(event) => {
                 for path in &event.paths {
                     if let Some(dir) = plugin_dir_of(&roots, path) {
@@ -92,6 +93,16 @@ fn watch(roots: Vec<PathBuf>, tx: mpsc::Sender<PluginCommand>) {
             }
         }
     }
+}
+
+/// Is this event a change, rather than somebody reading?
+///
+/// On Linux inotify reports a file being opened and closed after reading, and loading
+/// a plugin reads its whole directory — so counting those reloaded a plugin because it
+/// had just been loaded, every two seconds for ever, with a Pi at 90% compiling the
+/// same 24 MB of wasm. macOS never reports a read, which is why nobody saw it there.
+fn changes_something(kind: &notify::EventKind) -> bool {
+    !matches!(kind, notify::EventKind::Access(_))
 }
 
 /// Would watching this root mean watching the unpack cache?
@@ -126,6 +137,19 @@ fn plugin_dir_of(roots: &[PathBuf], path: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reading_a_plugin_is_not_changing_it() {
+        use notify::event::{AccessKind, AccessMode, CreateKind, DataChange, ModifyKind};
+        use notify::EventKind;
+        assert!(!changes_something(&EventKind::Access(AccessKind::Open(AccessMode::Any))));
+        assert!(!changes_something(&EventKind::Access(AccessKind::Close(AccessMode::Read))));
+        assert!(changes_something(&EventKind::Modify(ModifyKind::Data(DataChange::Content))));
+        assert!(changes_something(&EventKind::Create(CreateKind::File)));
+        // Closing after a write is reported as an access too; the write before it is
+        // what counts, so a rebuilt plugin still reloads.
+        assert!(changes_something(&EventKind::Any));
+    }
 
     /// `PULT_PLUGIN_CACHE` is process-wide, so these run one at a time.
     static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());

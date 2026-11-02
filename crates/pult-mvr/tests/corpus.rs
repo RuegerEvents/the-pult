@@ -1,7 +1,7 @@
 //! Other people's MVR files.
 //!
 //! `#[ignore]`d, because the corpus is gitignored: these are other people's rigs
-//! under other people's licences, and a clone that has never run
+//! under other people's licenses, and a clone that has never run
 //! `scripts/fetch-interop-corpus.sh` has a passing suite. What is checked in beside
 //! them is `testdata/mvr/`, small files written here.
 //!

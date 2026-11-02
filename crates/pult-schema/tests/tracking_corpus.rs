@@ -3,8 +3,8 @@
 //! `testdata/tracking.json` is read by this test and by
 //! `frontend/src/lib/cues.test.ts`. "A cue is the stack up to it" decides what a Go
 //! asserts, what a rendered viewport on a sheet draws, and — since the cue sheet
-//! exists — what colour every cell of the fixture sheet is. The browser cannot ask
-//! the station for that: a cue clicked in a list has to colour a sheet in the same
+//! exists — what color every cell of the fixture sheet is. The browser cannot ask
+//! the station for that: a cue clicked in a list has to color a sheet in the same
 //! frame. So there are two implementations of one rule, and this is the price.
 
 use std::collections::HashMap;
@@ -32,7 +32,7 @@ struct Case {
 struct Expected {
     fixture: Uuid,
     key: String,
-    /// Which cue the surviving capture came from, which is the half a sheet colours by.
+    /// Which cue the surviving capture came from, which is the half a sheet colors by.
     cue: Uuid,
     value: ParameterValue,
 }

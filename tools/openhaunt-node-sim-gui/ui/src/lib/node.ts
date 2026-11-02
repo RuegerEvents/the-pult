@@ -100,7 +100,7 @@ export const ACCESSES = ['readonly', 'readwrite'] as const;
 export const DATA_TYPES = ['boolean', 'number', 'string', 'color'] as const;
 
 /**
- * The `class` vocabulary a controller may recognise. Not a closed set — a node is
+ * The `class` vocabulary a controller may recognize. Not a closed set — a node is
  * free to declare a class nobody has heard of, and a controller that does not know
  * the word treats the port as a parameter named after `name`.
  */
@@ -121,8 +121,8 @@ export const UNITS = [
 	'percent',
 	'degree-celsius',
 	'parts-per-million',
-	'metre-per-second',
-	'millimetre'
+	'meter-per-second',
+	'millimeter'
 ] as const;
 
 export type Frame = { universe: number; channels: number[] };
@@ -208,9 +208,9 @@ export function unitLabel(unit: string | undefined): string {
 			return '%';
 		case 'parts-per-million':
 			return 'ppm';
-		case 'metre-per-second':
+		case 'meter-per-second':
 			return 'm/s';
-		case 'millimetre':
+		case 'millimeter':
 			return 'mm';
 		default:
 			// A unit nobody has abbreviated. Shown as the node spelled it, which is

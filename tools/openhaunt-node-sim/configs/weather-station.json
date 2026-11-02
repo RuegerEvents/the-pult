@@ -34,7 +34,7 @@
       "name": "Wind speed",
       "access": "readonly",
       "dataType": "number",
-      "unit": "metre-per-second",
+      "unit": "meter-per-second",
       "minimum": 0,
       "maximum": 60
     },
@@ -43,7 +43,7 @@
       "name": "Rainfall",
       "access": "readonly",
       "dataType": "number",
-      "unit": "millimetre",
+      "unit": "millimeter",
       "minimum": 0,
       "maximum": 100
     }

@@ -27,8 +27,10 @@ fn a_fixture(fixture_type: &FixtureType, universe: u16, address: u16) -> Fixture
         address: FixtureAddress::dmx(universe, address),
         position: None,
         sensed_values: HashMap::new(),
+        sensed_at: Default::default(),
         live_effects: Default::default(),
         live_fades: Default::default(),
+        live_htp: Default::default(),
         home_values: Default::default(),
         ..Fixture::default()
     }
@@ -95,7 +97,7 @@ fn a_parameter_with_no_live_value_falls_back_to_its_default() {
 }
 
 #[test]
-fn colour_takes_three_consecutive_channels() {
+fn color_takes_three_consecutive_channels() {
     let ft = a_type(vec![ParameterDefinition::new(
         ParameterKind::ColorRgb,
         ParameterValue::rgb(0.0, 0.0, 0.0))],
@@ -206,7 +208,7 @@ fn a_fixture_patched_to_a_missing_type_is_skipped() {
 fn a_fixture_on_a_node_has_no_place_in_a_universe() {
     let ft = a_type(vec![dimmer()]);
     let mut fixture = a_fixture(&ft, 1, 1);
-    fixture.address = FixtureAddress::OpenHaunt { serial: "1a2b3c".into(), universe: Some(1) };
+    fixture.address = FixtureAddress::node("1a2b3c", Some(1));
     holding(&mut fixture, "Intensity", ParameterValue::Float(1.0));
 
     let universes = render(&patch(vec![fixture], vec![ft]), 0);
@@ -326,7 +328,7 @@ fn a_modal_fixture(
 fn a_sixteen_bit_channel_puts_the_coarse_byte_first_and_the_fine_one_where_the_mode_says() {
     // Offsets 1 and 9: a real head commonly writes every coarse byte, then every fine
     // one. A writer that took the first offset and put the rest after it would land
-    // the fine byte on somebody else's colour.
+    // the fine byte on somebody else's color.
     let ft = a_modal_type(
         vec![ParameterDefinition::new(ParameterKind::Pan, ParameterValue::Float(0.5))],
         vec![DmxMode {
@@ -536,7 +538,7 @@ fn a_mode_the_type_does_not_have_falls_back_to_the_first_one() {
 }
 
 #[test]
-fn an_rgbw_head_lights_its_white_die_on_a_colour_from_a_cue_that_knows_nothing_about_it() {
+fn an_rgbw_head_lights_its_white_die_on_a_color_from_a_cue_that_knows_nothing_about_it() {
     let emitters = {
         let mut list = rgb_emitters();
         list.push(Emitter {
@@ -546,12 +548,12 @@ fn an_rgbw_head_lights_its_white_die_on_a_colour_from_a_cue_that_knows_nothing_a
         });
         list
     };
-    let colour = ParameterDefinition {
+    let color = ParameterDefinition {
         emitters: emitters.clone(),
         ..ParameterDefinition::new(ParameterKind::ColorRgb, ParameterValue::rgb(0.0, 0.0, 0.0))
     };
     let ft = a_modal_type(
-        vec![colour],
+        vec![color],
         vec![DmxMode {
             name: "RGBW".into(),
             breaks: vec![4],
@@ -572,7 +574,7 @@ fn an_rgbw_head_lights_its_white_die_on_a_colour_from_a_cue_that_knows_nothing_a
     let universes = render(&patch(vec![fixture.clone()], vec![ft.clone()]), 0);
     assert_eq!(&universes[0].channels[..4], &[255, 0, 0, 0], "red is not white");
 
-    // And white: the neutral part of the colour is what the white die is for.
+    // And white: the neutral part of the color is what the white die is for.
     holding(&mut fixture, "ColorRgb", ParameterValue::rgb(1.0, 1.0, 1.0));
     let universes = render(&patch(vec![fixture.clone()], vec![ft.clone()]), 0);
     assert_eq!(&universes[0].channels[..4], &[255, 255, 255, 255]);
@@ -787,16 +789,16 @@ fn an_emitter(name: &str, rgb: [f32; 3]) -> Emitter {
     }
 }
 
-/// A colour fixture whose emitters occupy one byte each from the start address.
-fn a_colour_head(emitters: Vec<Emitter>) -> FixtureType {
-    let colour = ParameterDefinition {
+/// A color fixture whose emitters occupy one byte each from the start address.
+fn a_color_head(emitters: Vec<Emitter>) -> FixtureType {
+    let color = ParameterDefinition {
         emitters: emitters.clone(),
         ..ParameterDefinition::new(ParameterKind::ColorRgb, ParameterValue::rgb(0.0, 0.0, 0.0))
     };
     a_modal_type(
-        vec![colour],
+        vec![color],
         vec![DmxMode {
-            name: "Colour".into(),
+            name: "Color".into(),
             breaks: vec![emitters.len() as u16],
             channels: emitters
                 .iter()
@@ -812,23 +814,23 @@ fn a_colour_head(emitters: Vec<Emitter>) -> FixtureType {
 
 #[test]
 fn a_plain_rgb_head_reads_back_as_the_bytes_it_went_out_as() {
-    let ft = a_colour_head(rgb_emitters());
-    let mut fixture = a_modal_fixture(&ft, "Colour", vec![(1, 1)]);
+    let ft = a_color_head(rgb_emitters());
+    let mut fixture = a_modal_fixture(&ft, "Color", vec![(1, 1)]);
     holding(&mut fixture, "ColorRgb", ParameterValue::rgb(1.0, 0.4, 0.0));
     survives_a_round_trip("rgb", vec![fixture], vec![ft]);
 }
 
 /// The case `unmix` exists for: a white die at something the mix would never derive.
-/// Without the overrides this comes back as a colour whose white is `min(r,g,b)` and
+/// Without the overrides this comes back as a color whose white is `min(r,g,b)` and
 /// the byte changes, which is a guest console's rig quietly repatched on the way
 /// through this one.
 #[test]
 fn an_rgbw_head_keeps_a_white_the_mix_would_not_have_derived() {
     let mut emitters = rgb_emitters();
     emitters.push(an_emitter("White", [1.0, 1.0, 1.0]));
-    let ft = a_colour_head(emitters);
+    let ft = a_color_head(emitters);
 
-    let mut fixture = a_modal_fixture(&ft, "Colour", vec![(1, 1)]);
+    let mut fixture = a_modal_fixture(&ft, "Color", vec![(1, 1)]);
     let mut overrides = std::collections::BTreeMap::new();
     overrides.insert("White".to_string(), 1.0);
     holding(
@@ -903,8 +905,8 @@ fn a_universe_of_several_fixtures_comes_back_as_all_of_them() {
     let mut two = a_fixture(&dim, 1, 2);
     holding(&mut two, "Intensity", ParameterValue::Float(0.2));
 
-    let rgb = a_colour_head(rgb_emitters());
-    let mut head = a_modal_fixture(&rgb, "Colour", vec![(1, 10)]);
+    let rgb = a_color_head(rgb_emitters());
+    let mut head = a_modal_fixture(&rgb, "Color", vec![(1, 10)]);
     holding(&mut head, "ColorRgb", ParameterValue::rgb(0.0, 1.0, 0.5));
 
     survives_a_round_trip("a rig", vec![one, two, head], vec![dim, rgb]);
@@ -927,4 +929,126 @@ fn a_fixture_in_a_universe_that_did_not_arrive_is_not_decoded() {
     assert_eq!(read.len(), 1);
     assert_eq!(read[0].0, ids.0);
     assert!(read.iter().all(|(id, _, _)| *id != ids.1));
+}
+
+/// A level a playing take recorded dims a cue's intensity on the wire, per frame, over
+/// a fader at the top — and stops when the take does not say one.
+#[test]
+fn a_recorded_sequence_level_dims_its_cues_on_the_wire() {
+    use pult_schema::types::sequence::{Masters, Sequence, LEVEL_KEY};
+    let ft = a_type(vec![dimmer()]);
+    let cue = Uuid::new_v4();
+    let mut fixture = a_fixture(&ft, 1, 1);
+    // A cue's intensity, landed at full.
+    fixture.live_fades.insert(
+        "Intensity".into(),
+        pult_render::RunningFade {
+            from: ParameterValue::Float(1.0),
+            to: ParameterValue::Float(1.0),
+            t0: 0,
+            duration_ms: 0,
+            easing: Default::default(),
+            cue_id: cue,
+        },
+    );
+    let sequence = Sequence { merge: None, wrap: None,
+        folder: None,
+        id: Uuid::new_v4(),
+        name: "Act".into(),
+        cue_ids: vec![cue],
+        active_cue_index: Some(0),
+        went_at: None,
+        master: None,
+    };
+    let level = pult_render::Track {
+        keys: vec![pult_render::TrackKey {
+            fixture_id: sequence.id,
+            key: LEVEL_KEY.into(),
+            // Half from the second second of the timeline on, nothing before.
+            points: vec![pult_render::TrackPoint { release: false, ms: 1_000, value: ParameterValue::Float(0.5) }],
+        }],
+    };
+    let transport = pult_render::Transport { anchor_ms: 10_000, position_at_anchor_ms: 0, rate: 1.0 };
+    let patch = Patch::new(vec![fixture], vec![ft], vec![])
+        .playing(vec![(std::sync::Arc::new(level), transport)])
+        .mastered(Masters::of([&sequence]));
+
+    assert_eq!(render(&patch, 10_500)[0].channels[0], 255, "before the take's first point, the fader");
+    assert_eq!(render(&patch, 11_500)[0].channels[0], 128, "then the recorded level");
+}
+
+// ── Forcing channels by hand ──────────────────────────────────────────────────
+
+fn forced(universe: u16, solo: bool, levels: &[(u16, u8)]) -> ChannelTest {
+    ChannelTest {
+        universes: vec![pult_schema::types::output::TestUniverse {
+            universe,
+            solo,
+            levels: levels.iter().copied().collect(),
+        }],
+    }
+}
+
+#[test]
+fn a_forced_channel_is_taken_from_the_show_and_the_rest_is_left_running() {
+    let ft = a_type(vec![dimmer()]);
+    let mut fixture = a_fixture(&ft, 1, 1);
+    holding(&mut fixture, "Intensity", ParameterValue::Float(1.0));
+    let mut universes = render(&patch(vec![fixture], vec![ft]), 0);
+
+    force(&mut universes, &forced(1, false, &[(2, 10), (512, 255)]), &[]);
+
+    assert_eq!(universes[0].channels[0], 255, "channel 1 is the show's");
+    assert_eq!(universes[0].channels[1], 10, "channel 2 is the tester's, over the show's 0");
+    assert_eq!(universes[0].channels[511], 255, "channel 512 is the last index");
+}
+
+#[test]
+fn a_channel_forced_to_zero_is_forced_dark() {
+    let ft = a_type(vec![dimmer()]);
+    let mut fixture = a_fixture(&ft, 1, 1);
+    holding(&mut fixture, "Intensity", ParameterValue::Float(1.0));
+    let mut universes = render(&patch(vec![fixture], vec![ft]), 0);
+
+    force(&mut universes, &forced(1, false, &[(1, 0)]), &[]);
+
+    assert_eq!(universes[0].channels[0], 0, "naming a channel at 0 is not the same as not naming it");
+}
+
+#[test]
+fn solo_blacks_the_rest_of_that_universe_and_only_that_universe() {
+    let ft = a_type(vec![dimmer()]);
+    let mut a = a_fixture(&ft, 1, 1);
+    let mut b = a_fixture(&ft, 2, 1);
+    holding(&mut a, "Intensity", ParameterValue::Float(1.0));
+    holding(&mut b, "Intensity", ParameterValue::Float(1.0));
+    let mut universes = render(&patch(vec![a, b], vec![ft]), 0);
+
+    force(&mut universes, &forced(1, true, &[(9, 40)]), &[]);
+
+    assert_eq!(universes[0].channels[0], 0, "universe 1 is dark but for the forced channel");
+    assert_eq!(universes[0].channels[8], 40);
+    assert_eq!(universes[1].channels[0], 255, "universe 2 was not named and goes on running");
+}
+
+#[test]
+fn a_universe_nothing_is_patched_on_is_made_and_kept_in_order() {
+    let ft = a_type(vec![dimmer()]);
+    let fixture = a_fixture(&ft, 5, 1);
+    let mut universes = render(&patch(vec![fixture], vec![ft]), 0);
+
+    force(&mut universes, &forced(2, false, &[(1, 1)]), &[]);
+    force(&mut universes, &forced(9, false, &[(1, 1)]), &[]);
+
+    let numbers: Vec<u16> = universes.iter().map(|u| u.number).collect();
+    assert_eq!(numbers, vec![2, 5, 9], "ascending, as the connectors and the dedup expect");
+}
+
+#[test]
+fn a_test_does_not_reach_past_what_the_output_carries() {
+    let mut universes = Vec::new();
+
+    force(&mut universes, &forced(3, false, &[(1, 255)]), &[1, 2]);
+
+    assert!(universes.is_empty(), "the filter every connector obeys is not something a test can opt out of");
 }

@@ -22,7 +22,7 @@ official checkpoints of **Beat This!** (<https://github.com/CPJKU/beat_this>, MI
 *"Beat This! Accurate and Generalizable Beat Tracking"*, ISMIR 2024,
 <https://arxiv.org/abs/2407.21658>.
 
-`LICENSE-beat-this` beside this file is the MIT licence both projects are under. The
+`LICENSE-beat-this` beside this file is the MIT license both projects are under. The
 port of the inference path itself lives in `../src/beats.rs` and carries its attribution
 in the module header.
 
@@ -31,4 +31,4 @@ in the module header.
 `rten` 0.26 loads ONNX directly (`Model::load_static_slice`), so there is nothing to
 convert — which also means no Python toolchain anywhere in this repository's build, and
 a file whose checksum can be compared against the one upstream publishes. A converted
-`.rten` would be a fourth artefact nobody could check against anything.
+`.rten` would be a fourth artifact nobody could check against anything.

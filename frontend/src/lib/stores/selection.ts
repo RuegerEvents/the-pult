@@ -21,18 +21,24 @@
 
 import { derived, get, writable, type Readable } from 'svelte/store';
 
+import type { CellSpan, Element } from '$lib/generated/index.js';
+import { hasCells } from '$lib/patch.js';
 import {
+	elements as elementsOf,
 	EMPTY_QUERY,
 	evaluate,
 	idsQuery,
 	isManualList,
 	type Order,
 	type SelectionQuery,
-	type Term
+	type Term,
+	withId,
+	withoutId
 } from '$lib/selection.js';
 import { collection } from './show.js';
 
 const fixtures = collection('fixtures');
+const fixtureTypes = collection('fixture_types');
 /// What a fixture may hang off. A light on a truss is where the truss put it, so a
 /// geometric term in a query reads a world position rather than the row's own numbers.
 const sceneObjects = collection('scene_objects');
@@ -68,6 +74,52 @@ export const selection: Readable<string[]> = derived(
 /** Membership, for a component that only needs to ask about one fixture. */
 export const selected = derived(selection, ($selection) => new Set($selection));
 
+/**
+ * What the selection acts on: each fixture, and for a multi-cell one each of its cells
+ * the query's spans pick. `elements` in `selection.ts` is the rule; this is it applied
+ * to the rig as it stands, so a strip patched longer has more cells in the selection
+ * without anybody re-selecting it.
+ */
+export const elements: Readable<Element[]> = derived(
+	[selection, query, fixtures, fixtureTypes],
+	([$selection, $query, $fixtures, $types]) => {
+		const typeOf = new Map($fixtures.map((f) => [f.id, f.fixture_type_id]));
+		const types = new Map($types.map((t) => [t.id, t]));
+		return elementsOf($selection, $query.cells ?? [], (id) => {
+			const type = types.get(typeOf.get(id) ?? '');
+			return hasCells(type) ? (type?.cells ?? 0) : 0;
+		});
+	}
+);
+
+/** Whether anything selected has cells, for the panels that offer a cell field. */
+/**
+ * What a value set on the selection is aimed at: the cut cells where the query cuts,
+ * and otherwise each fixture whole, so a bar selected whole takes its master and a
+ * strip selected whole takes every cell (`rowTargets` decides which). The station's
+ * `selection.targets` builds the same thing before it asks the same rule.
+ */
+export const targetElements: Readable<Element[]> = derived(
+	[elements, selection, query],
+	([$elements, $selection, $query]) =>
+		($query.cells ?? []).length ? $elements : $selection.map((fixture) => ({ fixture, cell: null }))
+);
+
+export const hasCellsSelected: Readable<boolean> = derived(elements, ($elements) =>
+	$elements.some((e) => e.cell !== null)
+);
+
+/** Cut every multi-cell fixture in the selection to these cells. Empty is all of them. */
+export function setCells(cells: CellSpan[]) {
+	query.update((q) => ({ ...q, cells }));
+}
+
+/** Just these cells of this one fixture, for a drag across a strip in the rig. */
+export function selectCells(id: string, cells: CellSpan[]) {
+	handOrder.set([]);
+	query.set(idsQuery([id], undefined, cells));
+}
+
 /** How many, and what the query says, for the panel's heading. */
 export const isQuery = derived(query, ($query) => !isManualList($query));
 
@@ -86,35 +138,21 @@ export function select(id: string) {
 }
 
 /**
- * Add or remove one, for a shift-click.
+ * Add or remove one, for a Ctrl/Cmd-click.
  *
- * Tacked onto a trailing hand-picked clause rather than rewriting the query, so a
- * geometric selection can be adjusted by hand without losing the geometry. Removing
- * a fixture the geometry picked adds a `Drop`, because there is no clause to take it
- * out of.
+ * Undone where it was done: a light picked by hand comes out of the hand-picked list,
+ * and only one something else still picks gets a `Drop` — see `withoutId`.
  */
 export function toggle(id: string) {
 	const current = get(query);
-	const present = get(selection).includes(id);
+	const picks = (q: SelectionQuery) => evaluate(q, get(fixtures), null, get(sceneObjects));
+	query.set(get(selection).includes(id) ? withoutId(current, id, picks) : withId(current, id, picks));
+}
 
-	if (present) {
-		query.set({ ...current, clauses: [...current.clauses, { combine: 'Drop', term: { kind: 'Ids', ids: [id] } }] });
-		return;
-	}
-
-	// Extend the trailing manual clause if there is one, rather than growing a chain
-	// of single-id clauses as somebody shift-clicks their way across a truss.
-	const last = current.clauses[current.clauses.length - 1];
-	if (last?.combine === 'Add' && last.term.kind === 'Ids') {
-		const clauses = [...current.clauses];
-		clauses[clauses.length - 1] = {
-			combine: 'Add',
-			term: { kind: 'Ids', ids: [...last.term.ids, id] }
-		};
-		query.set({ ...current, clauses });
-	} else {
-		query.set({ ...current, clauses: [...current.clauses, { combine: 'Add', term: { kind: 'Ids', ids: [id] } }] });
-	}
+/** Exactly these, in this order: a shift-click's range, or a drag down a list. */
+export function selectIds(ids: string[]) {
+	handOrder.set([]);
+	query.set(idsQuery(ids));
 }
 
 export const clearSelection = () => {
@@ -227,7 +265,7 @@ export function freeze() {
  * question is "whatever is downstage".
  *
  * Out-of-range indices leave the selection alone rather than throwing — a drop that
- * lands outside the list is a cancelled drag, not an error.
+ * lands outside the list is a canceled drag, not an error.
  */
 export function reorder(from: number, to: number) {
 	const ids = get(selection);

@@ -4,17 +4,23 @@
 import type { PathProxy, SubscribeOptions } from './proxy.js';
 import type { PultWsClient } from './client.js';
 import { createDataProxy } from './proxy.js';
+import type { ControlBinding } from '../generated/ControlBinding.js';
+import type { ControlPage } from '../generated/ControlPage.js';
 import type { Cue } from '../generated/Cue.js';
+import type { EffectTemplate } from '../generated/EffectTemplate.js';
 import type { Fixture } from '../generated/Fixture.js';
 import type { FixtureType } from '../generated/FixtureType.js';
 import type { Flow } from '../generated/Flow.js';
 import type { FlowEdge } from '../generated/FlowEdge.js';
 import type { FlowNode } from '../generated/FlowNode.js';
+import type { Folder } from '../generated/Folder.js';
 import type { Group } from '../generated/Group.js';
 import type { InputConfig } from '../generated/InputConfig.js';
 import type { Layer } from '../generated/Layer.js';
 import type { Layout } from '../generated/Layout.js';
 import type { NamedAsset } from '../generated/NamedAsset.js';
+import type { NodeHealthReport } from '../generated/NodeHealthReport.js';
+import type { NodeReport } from '../generated/NodeReport.js';
 import type { OutputConfig } from '../generated/OutputConfig.js';
 import type { PluginDatum } from '../generated/PluginDatum.js';
 import type { PluginPackage } from '../generated/PluginPackage.js';
@@ -25,18 +31,35 @@ import type { SceneObject } from '../generated/SceneObject.js';
 import type { Sequence } from '../generated/Sequence.js';
 import type { Sheet } from '../generated/Sheet.js';
 import type { Show } from '../generated/Show.js';
+import type { SpeakerZone } from '../generated/SpeakerZone.js';
 import type { SpeedMaster } from '../generated/SpeedMaster.js';
 import type { StagePlan } from '../generated/StagePlan.js';
 import type { Station } from '../generated/Station.js';
+import type { StationAudio } from '../generated/StationAudio.js';
 import type { StationNetwork } from '../generated/StationNetwork.js';
+import type { Surface } from '../generated/Surface.js';
 import type { Symbol } from '../generated/Symbol.js';
 import type { Timeline } from '../generated/Timeline.js';
 import type { User } from '../generated/User.js';
+import type { Variable } from '../generated/Variable.js';
 import type { Version } from '../generated/Version.js';
+import type { Workspace } from '../generated/Workspace.js';
 
 // ── Entity handles ───────────────────────────────────────────────────────────
 
+export type ControlBindingEntity = PathProxy<ControlBinding> & {
+  delete(): Promise<void>;
+};
+
+export type ControlPageEntity = PathProxy<ControlPage> & {
+  delete(): Promise<void>;
+};
+
 export type CueEntity = PathProxy<Cue> & {
+  delete(): Promise<void>;
+};
+
+export type EffectTemplateEntity = PathProxy<EffectTemplate> & {
   delete(): Promise<void>;
 };
 
@@ -61,6 +84,10 @@ export type FlowNodeEntity = PathProxy<FlowNode> & {
   press(): Promise<void>;
 };
 
+export type FolderEntity = PathProxy<Folder> & {
+  delete(): Promise<void>;
+};
+
 export type GroupEntity = PathProxy<Group> & {
   delete(): Promise<void>;
 };
@@ -78,6 +105,14 @@ export type LayoutEntity = PathProxy<Layout> & {
 };
 
 export type NamedAssetEntity = PathProxy<NamedAsset> & {
+  delete(): Promise<void>;
+};
+
+export type NodeHealthReportEntity = PathProxy<NodeHealthReport> & {
+  delete(): Promise<void>;
+};
+
+export type NodeReportEntity = PathProxy<NodeReport> & {
   delete(): Promise<void>;
 };
 
@@ -111,12 +146,17 @@ export type SceneObjectEntity = PathProxy<SceneObject> & {
 
 export type SequenceEntity = PathProxy<Sequence> & {
   delete(): Promise<void>;
+  goBack(args: { at?: number }): Promise<void>;
   goNext(args: { at?: number }): Promise<void>;
   goToCue(args: { cueId: string, at?: number }): Promise<void>;
   off(args: { at?: number }): Promise<void>;
 };
 
 export type SheetEntity = PathProxy<Sheet> & {
+  delete(): Promise<void>;
+};
+
+export type SpeakerZoneEntity = PathProxy<SpeakerZone> & {
   delete(): Promise<void>;
 };
 
@@ -132,7 +172,15 @@ export type StationEntity = PathProxy<Station> & {
   delete(): Promise<void>;
 };
 
+export type StationAudioEntity = PathProxy<StationAudio> & {
+  delete(): Promise<void>;
+};
+
 export type StationNetworkEntity = PathProxy<StationNetwork> & {
+  delete(): Promise<void>;
+};
+
+export type SurfaceEntity = PathProxy<Surface> & {
   delete(): Promise<void>;
 };
 
@@ -144,7 +192,7 @@ export type TimelineEntity = PathProxy<Timeline> & {
   delete(): Promise<void>;
   locate(args: { positionMs: number, at?: number }): Promise<void>;
   play(args: { at?: number, fromMs?: number }): Promise<void>;
-  record(args: { inputId: string | null }): Promise<void>;
+  record(args: { inputId?: string | null, programmer?: boolean, release?: boolean, armedBy?: string }): Promise<void>;
   stop(args: { at?: number }): Promise<void>;
 };
 
@@ -152,11 +200,47 @@ export type UserEntity = PathProxy<User> & {
   delete(): Promise<void>;
 };
 
+export type VariableEntity = PathProxy<Variable> & {
+  delete(): Promise<void>;
+};
+
 export type VersionEntity = PathProxy<Version> & {
   delete(): Promise<void>;
 };
 
+export type WorkspaceEntity = PathProxy<Workspace> & {
+  delete(): Promise<void>;
+};
+
 // ── Collection handles ──────────────────────────────────────────────────────
+
+export type ControlBindingCollection = {
+  get(): Promise<ControlBinding[]>;
+  set(value: ControlBinding[]): Promise<void>;
+  subscribe(cb: (value: ControlBinding[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: ControlBinding[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): ControlBindingEntity;
+  nth(n: number): ControlBindingEntity;
+  create(entity: ControlBinding): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
+  [n: number]: ControlBindingEntity;
+};
+
+export type ControlPageCollection = {
+  get(): Promise<ControlPage[]>;
+  set(value: ControlPage[]): Promise<void>;
+  subscribe(cb: (value: ControlPage[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: ControlPage[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): ControlPageEntity;
+  nth(n: number): ControlPageEntity;
+  create(entity: ControlPage): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
+  [n: number]: ControlPageEntity;
+};
 
 export type CueCollection = {
   get(): Promise<Cue[]>;
@@ -170,6 +254,20 @@ export type CueCollection = {
   takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
   [n: number]: CueEntity;
+};
+
+export type EffectTemplateCollection = {
+  get(): Promise<EffectTemplate[]>;
+  set(value: EffectTemplate[]): Promise<void>;
+  subscribe(cb: (value: EffectTemplate[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: EffectTemplate[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): EffectTemplateEntity;
+  nth(n: number): EffectTemplateEntity;
+  create(entity: EffectTemplate): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
+  [n: number]: EffectTemplateEntity;
 };
 
 export type FixtureCollection = {
@@ -242,6 +340,20 @@ export type FlowNodeCollection = {
   [n: number]: FlowNodeEntity;
 };
 
+export type FolderCollection = {
+  get(): Promise<Folder[]>;
+  set(value: Folder[]): Promise<void>;
+  subscribe(cb: (value: Folder[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: Folder[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): FolderEntity;
+  nth(n: number): FolderEntity;
+  create(entity: Folder): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
+  [n: number]: FolderEntity;
+};
+
 export type GroupCollection = {
   get(): Promise<Group[]>;
   set(value: Group[]): Promise<void>;
@@ -310,6 +422,34 @@ export type NamedAssetCollection = {
   takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
   [n: number]: NamedAssetEntity;
+};
+
+export type NodeHealthReportCollection = {
+  get(): Promise<NodeHealthReport[]>;
+  set(value: NodeHealthReport[]): Promise<void>;
+  subscribe(cb: (value: NodeHealthReport[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: NodeHealthReport[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): NodeHealthReportEntity;
+  nth(n: number): NodeHealthReportEntity;
+  create(entity: NodeHealthReport): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
+  [n: number]: NodeHealthReportEntity;
+};
+
+export type NodeReportCollection = {
+  get(): Promise<NodeReport[]>;
+  set(value: NodeReport[]): Promise<void>;
+  subscribe(cb: (value: NodeReport[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: NodeReport[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): NodeReportEntity;
+  nth(n: number): NodeReportEntity;
+  create(entity: NodeReport): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
+  [n: number]: NodeReportEntity;
 };
 
 export type OutputConfigCollection = {
@@ -438,6 +578,20 @@ export type SheetCollection = {
   [n: number]: SheetEntity;
 };
 
+export type SpeakerZoneCollection = {
+  get(): Promise<SpeakerZone[]>;
+  set(value: SpeakerZone[]): Promise<void>;
+  subscribe(cb: (value: SpeakerZone[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: SpeakerZone[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): SpeakerZoneEntity;
+  nth(n: number): SpeakerZoneEntity;
+  create(entity: SpeakerZone): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
+  [n: number]: SpeakerZoneEntity;
+};
+
 export type SpeedMasterCollection = {
   get(): Promise<SpeedMaster[]>;
   set(value: SpeedMaster[]): Promise<void>;
@@ -480,6 +634,20 @@ export type StationCollection = {
   [n: number]: StationEntity;
 };
 
+export type StationAudioCollection = {
+  get(): Promise<StationAudio[]>;
+  set(value: StationAudio[]): Promise<void>;
+  subscribe(cb: (value: StationAudio[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: StationAudio[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): StationAudioEntity;
+  nth(n: number): StationAudioEntity;
+  create(entity: StationAudio): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
+  [n: number]: StationAudioEntity;
+};
+
 export type StationNetworkCollection = {
   get(): Promise<StationNetwork[]>;
   set(value: StationNetwork[]): Promise<void>;
@@ -492,6 +660,20 @@ export type StationNetworkCollection = {
   takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
   [n: number]: StationNetworkEntity;
+};
+
+export type SurfaceCollection = {
+  get(): Promise<Surface[]>;
+  set(value: Surface[]): Promise<void>;
+  subscribe(cb: (value: Surface[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: Surface[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): SurfaceEntity;
+  nth(n: number): SurfaceEntity;
+  create(entity: Surface): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
+  [n: number]: SurfaceEntity;
 };
 
 export type SymbolCollection = {
@@ -536,6 +718,20 @@ export type UserCollection = {
   [n: number]: UserEntity;
 };
 
+export type VariableCollection = {
+  get(): Promise<Variable[]>;
+  set(value: Variable[]): Promise<void>;
+  subscribe(cb: (value: Variable[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: Variable[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): VariableEntity;
+  nth(n: number): VariableEntity;
+  create(entity: Variable): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
+  [n: number]: VariableEntity;
+};
+
 export type VersionCollection = {
   get(): Promise<Version[]>;
   set(value: Version[]): Promise<void>;
@@ -550,21 +746,41 @@ export type VersionCollection = {
   [n: number]: VersionEntity;
 };
 
+export type WorkspaceCollection = {
+  get(): Promise<Workspace[]>;
+  set(value: Workspace[]): Promise<void>;
+  subscribe(cb: (value: Workspace[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: Workspace[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): WorkspaceEntity;
+  nth(n: number): WorkspaceEntity;
+  create(entity: Workspace): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
+  [n: number]: WorkspaceEntity;
+};
+
 // ── DataRoot ─────────────────────────────────────────────────────────────────
 
 /** Typed root for the pult:data context. Every field maps to a live path proxy. */
 export type DataRoot = {
+  control_bindings: ControlBindingCollection;
+  control_pages: ControlPageCollection;
   cues: CueCollection;
+  effect_templates: EffectTemplateCollection;
   fixtures: FixtureCollection;
   fixture_types: FixtureTypeCollection;
   flows: FlowCollection;
   flow_edges: FlowEdgeCollection;
   flow_nodes: FlowNodeCollection;
+  folders: FolderCollection;
   groups: GroupCollection;
   inputs: InputConfigCollection;
   layers: LayerCollection;
   layouts: LayoutCollection;
   named_assets: NamedAssetCollection;
+  node_health: NodeHealthReportCollection;
+  node_reports: NodeReportCollection;
   outputs: OutputConfigCollection;
   plugin_data: PluginDatumCollection;
   plugin_packages: PluginPackageCollection;
@@ -575,14 +791,19 @@ export type DataRoot = {
   sequences: SequenceCollection;
   sheets: SheetCollection;
   show: PathProxy<Show | null>;
+  speaker_zones: SpeakerZoneCollection;
   speed_masters: SpeedMasterCollection;
   stage_plans: StagePlanCollection;
   stations: StationCollection;
+  station_audio: StationAudioCollection;
   station_networks: StationNetworkCollection;
+  surfaces: SurfaceCollection;
   symbols: SymbolCollection;
   timelines: TimelineCollection;
   users: UserCollection;
+  variables: VariableCollection;
   versions: VersionCollection;
+  workspaces: WorkspaceCollection;
 };
 
 /** Create the typed root proxy. The runtime proxy handles all DataRoot operations generically. */

@@ -10,7 +10,7 @@
     "curves, step lists, spread, phase, direction, width, master rates, priority and",
     "home fallback, and two of it would drift — so what has to be guarded is not two",
     "implementations agreeing but two *compilations* of one agreeing. A wasm build",
-    "that optimises a float differently, or a boundary that packs a colour wrong, is",
+    "that optimizes a float differently, or a boundary that packs a color wrong, is",
     "exactly the failure this catches, and it shows up here rather than as a screen",
     "disagreeing with the lamps.",
     "",
@@ -422,7 +422,7 @@
       }
     },
     {
-      "name": "a colour fades channel by channel",
+      "name": "a color fades channel by channel",
       "driving": {
         "fade": {
           "from": {
@@ -1010,7 +1010,7 @@
       }
     },
     {
-      "name": "a colour effect blends between two colours",
+      "name": "a color effect blends between two colors",
       "driving": {
         "effect": {
           "effect_id": "00000000-0000-0000-0000-000000000000",
@@ -1289,6 +1289,156 @@
       }
     },
     {
+      "name": "a flicker is a hashed level, the same on every runtime",
+      "driving": {
+        "effect": {
+          "effect_id": "00000000-0000-0000-0000-000000000000",
+          "curve": {
+            "Shape": "Flicker"
+          },
+          "rate_hz": 2.0,
+          "low": {
+            "type": "Float",
+            "value": 0.2
+          },
+          "high": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "width": 0.5,
+          "direction": "Forward",
+          "phase": 0.25,
+          "t0": 0,
+          "source": "Programmer"
+        }
+      },
+      "at": 1234,
+      "expect": {
+        "type": "Float",
+        "value": 0.47981566
+      }
+    },
+    {
+      "name": "and one cycle later is a different level, because it never repeats",
+      "driving": {
+        "effect": {
+          "effect_id": "00000000-0000-0000-0000-000000000000",
+          "curve": {
+            "Shape": "Flicker"
+          },
+          "rate_hz": 2.0,
+          "low": {
+            "type": "Float",
+            "value": 0.2
+          },
+          "high": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "width": 0.5,
+          "direction": "Forward",
+          "phase": 0.25,
+          "t0": 0,
+          "source": "Programmer"
+        }
+      },
+      "at": 1734,
+      "expect": {
+        "type": "Float",
+        "value": 0.7289632
+      }
+    },
+    {
+      "name": "lightning that strikes this cycle is falling from its flash",
+      "driving": {
+        "effect": {
+          "effect_id": "00000000-0000-0000-0000-000000000000",
+          "curve": {
+            "Shape": "Lightning"
+          },
+          "rate_hz": 0.2,
+          "low": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "high": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "width": 0.3,
+          "direction": "Forward",
+          "phase": 0.0,
+          "t0": 0,
+          "source": "Programmer"
+        }
+      },
+      "at": 100,
+      "expect": {
+        "type": "Float",
+        "value": 0.6474842
+      }
+    },
+    {
+      "name": "lightning skips a cycle now and then",
+      "driving": {
+        "effect": {
+          "effect_id": "00000000-0000-0000-0000-000000000000",
+          "curve": {
+            "Shape": "Lightning"
+          },
+          "rate_hz": 0.2,
+          "low": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "high": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "width": 0.3,
+          "direction": "Forward",
+          "phase": 0.0,
+          "t0": 0,
+          "source": "Programmer"
+        }
+      },
+      "at": 15100,
+      "expect": {
+        "type": "Float",
+        "value": 0.0
+      }
+    },
+    {
+      "name": "lightning is dark outside its window",
+      "driving": {
+        "effect": {
+          "effect_id": "00000000-0000-0000-0000-000000000000",
+          "curve": {
+            "Shape": "Lightning"
+          },
+          "rate_hz": 0.2,
+          "low": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "high": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "width": 0.3,
+          "direction": "Forward",
+          "phase": 0.0,
+          "t0": 0,
+          "source": "Programmer"
+        }
+      },
+      "at": 3000,
+      "expect": {
+        "type": "Float",
+        "value": 0.0
+      }
+    },
+    {
       "name": "an effect beats a fade",
       "driving": {
         "effect": {
@@ -1417,7 +1567,7 @@
       }
     },
     {
-      "name": "a colour a cue pinned an emitter on rests there",
+      "name": "a color a cue pinned an emitter on rests there",
       "driving": {
         "home": {
           "type": "Color",
@@ -1445,7 +1595,7 @@
       }
     },
     {
-      "name": "a colour written before overrides existed reads as one with none",
+      "name": "a color written before overrides existed reads as one with none",
       "driving": {
         "home": {
           "type": "Color",
@@ -1468,7 +1618,7 @@
       }
     },
     {
-      "name": "a fade between two colours moves the pinned emitter with the rest",
+      "name": "a fade between two colors moves the pinned emitter with the rest",
       "driving": {
         "fade": {
           "from": {
@@ -1858,6 +2008,324 @@
       "expect": {
         "type": "Float",
         "value": 0.9
+      }
+    },
+    {
+      "name": "a master at half scales a fade halfway through",
+      "driving": {
+        "fade": {
+          "from": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "to": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "t0": 1000,
+          "duration_ms": 4000,
+          "easing": "Linear",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        },
+        "master": 0.5
+      },
+      "at": 3000,
+      "expect": {
+        "type": "Float",
+        "value": 0.25
+      }
+    },
+    {
+      "name": "a master scales an effect",
+      "driving": {
+        "effect": {
+          "effect_id": "00000000-0000-0000-0000-000000000000",
+          "curve": {
+            "Shape": "Sine"
+          },
+          "rate_hz": 1.0,
+          "low": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "high": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "width": 0.5,
+          "direction": "Forward",
+          "phase": 0.0,
+          "t0": 0,
+          "source": "Programmer"
+        },
+        "master": 0.5
+      },
+      "at": 0,
+      "expect": {
+        "type": "Float",
+        "value": 0.25
+      }
+    },
+    {
+      "name": "a master at zero is dark, not home",
+      "driving": {
+        "fade": {
+          "from": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "to": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "t0": 1000,
+          "duration_ms": 4000,
+          "easing": "Linear",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        },
+        "home": {
+          "type": "Float",
+          "value": 0.6
+        },
+        "master": 0.0
+      },
+      "at": 9000,
+      "expect": {
+        "type": "Float",
+        "value": 0.0
+      }
+    },
+    {
+      "name": "a master never dims the programmer",
+      "driving": {
+        "programmer": {
+          "type": "Float",
+          "value": 0.9
+        },
+        "fade": {
+          "from": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "to": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "t0": 1000,
+          "duration_ms": 4000,
+          "easing": "Linear",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        },
+        "master": 0.1
+      },
+      "at": 9000,
+      "expect": {
+        "type": "Float",
+        "value": 0.9
+      }
+    },
+    {
+      "name": "a master never dims home",
+      "driving": {
+        "home": {
+          "type": "Float",
+          "value": 0.6
+        },
+        "master": 0.1
+      },
+      "at": 9000,
+      "expect": {
+        "type": "Float",
+        "value": 0.6
+      }
+    },
+    {
+      "name": "a master scales every channel of a color, pinned emitters too",
+      "driving": {
+        "fade": {
+          "from": {
+            "type": "Color",
+            "value": {
+              "r": 0,
+              "g": 0,
+              "b": 0,
+              "overrides": {}
+            }
+          },
+          "to": {
+            "type": "Color",
+            "value": {
+              "r": 1.0,
+              "g": 0.5,
+              "b": 0.0,
+              "overrides": {
+                "White": 1.0
+              }
+            }
+          },
+          "t0": 0,
+          "duration_ms": 0,
+          "easing": "Linear",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        },
+        "master": 0.5
+      },
+      "at": 10,
+      "expect": {
+        "type": "Color",
+        "value": {
+          "r": 0.5,
+          "g": 0.25,
+          "b": 0.0,
+          "overrides": {
+            "White": 0.5
+          }
+        }
+      }
+    },
+    {
+      "name": "an htp layer beside the winner shows where it is higher",
+      "driving": {
+        "fade": {
+          "from": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "to": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "t0": 0,
+          "duration_ms": 0,
+          "easing": "Linear",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        },
+        "master": 0.2,
+        "beside": [
+          {
+            "fade": {
+              "from": {
+                "type": "Float",
+                "value": 0.4
+              },
+              "to": {
+                "type": "Float",
+                "value": 0.4
+              },
+              "t0": 0,
+              "duration_ms": 0,
+              "easing": "Linear",
+              "cue_id": "00000000-0000-0000-0000-000000000000"
+            }
+          }
+        ]
+      },
+      "at": 1000,
+      "expect": {
+        "type": "Float",
+        "value": 0.4
+      }
+    },
+    {
+      "name": "the winner shows where it is higher than what is beside it",
+      "driving": {
+        "fade": {
+          "from": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "to": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "t0": 0,
+          "duration_ms": 0,
+          "easing": "Linear",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        },
+        "master": 0.6,
+        "beside": [
+          {
+            "fade": {
+              "from": {
+                "type": "Float",
+                "value": 0.4
+              },
+              "to": {
+                "type": "Float",
+                "value": 0.4
+              },
+              "t0": 0,
+              "duration_ms": 0,
+              "easing": "Linear",
+              "cue_id": "00000000-0000-0000-0000-000000000000"
+            }
+          }
+        ]
+      },
+      "at": 1000,
+      "expect": {
+        "type": "Float",
+        "value": 0.6
+      }
+    },
+    {
+      "name": "an htp layer beside the winner is scaled by its own sequence's level",
+      "driving": {
+        "fade": {
+          "from": {
+            "type": "Float",
+            "value": 0.1
+          },
+          "to": {
+            "type": "Float",
+            "value": 0.1
+          },
+          "t0": 0,
+          "duration_ms": 0,
+          "easing": "Linear",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        },
+        "beside": [
+          {
+            "fade": {
+              "from": {
+                "type": "Float",
+                "value": 0.8
+              },
+              "to": {
+                "type": "Float",
+                "value": 0.8
+              },
+              "t0": 0,
+              "duration_ms": 0,
+              "easing": "Linear",
+              "cue_id": "00000000-0000-0000-0000-000000000000"
+            },
+            "master": 0.5
+          },
+          {
+            "fade": {
+              "from": {
+                "type": "Float",
+                "value": 0.0
+              },
+              "to": {
+                "type": "Float",
+                "value": 1.0
+              },
+              "t0": 1000,
+              "duration_ms": 2000,
+              "easing": "Linear",
+              "cue_id": "00000000-0000-0000-0000-000000000000"
+            }
+          }
+        ]
+      },
+      "at": 1500,
+      "expect": {
+        "type": "Float",
+        "value": 0.4
       }
     }
   ]

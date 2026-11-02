@@ -1,4 +1,4 @@
-//! The catalogue's own geometry: is it the size it says it is, and does it bolt
+//! The catalog's own geometry: is it the size it says it is, and does it bolt
 //! together?
 //!
 //! Both are gates rather than curiosities. The size is what a rig is measured in — a
@@ -12,8 +12,8 @@
 //! reader has to get out of the file anyway.
 
 use pult_schema::stock::stock_glb;
-use pult_schema::types::catalogue::{
-    canonical_properties, number, Connector, ConnectorKind, StockPiece, StockShape, CATALOGUE,
+use pult_schema::types::catalog::{
+    canonical_properties, number, Connector, ConnectorKind, StockPiece, StockShape, CATALOG,
 };
 use pult_schema::types::fixture::Vec3;
 use pult_schema::types::scene::{euler_xyz_degrees_to_basis, Transform};
@@ -57,7 +57,7 @@ fn wanted_height(piece: &StockPiece, properties: &Value) -> f32 {
 
 #[test]
 fn every_piece_is_the_size_the_table_says_it_is() {
-    for piece in CATALOGUE {
+    for piece in CATALOG {
         let glb = stock_glb(piece.id, &Value::Null).expect("a listed piece draws");
         let (min, max) = bounds_of(&glb);
         let span = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
@@ -72,7 +72,7 @@ fn every_piece_is_the_size_the_table_says_it_is() {
     }
 }
 
-/// A deck's legs are the one property in the catalogue, and the whole of what it is
+/// A deck's legs are the one property in the catalog, and the whole of what it is
 /// for is that a stage can be at two heights.
 #[test]
 fn a_decks_legs_reach_as_far_as_it_was_asked_for() {
@@ -147,7 +147,7 @@ fn rotation_taking(from: Vec3, to: Vec3) -> Vec3 {
         cross(from, to)
     };
     let angle = dot.acos();
-    axis_angle_to_euler(normalise(axis), angle)
+    axis_angle_to_euler(normalize(axis), angle)
 }
 
 fn cross(a: Vec3, b: Vec3) -> Vec3 {
@@ -158,7 +158,7 @@ fn cross(a: Vec3, b: Vec3) -> Vec3 {
     }
 }
 
-fn normalise(v: Vec3) -> Vec3 {
+fn normalize(v: Vec3) -> Vec3 {
     let length = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
     if length < 1e-9 {
         Vec3 { x: 1.0, y: 0.0, z: 0.0 }
@@ -194,11 +194,11 @@ fn axis_angle_to_euler(axis: Vec3, angle: f32) -> Vec3 {
 /// together and the two facings end up opposite.
 ///
 /// The rule is what stops a snap radius from being a guess, and stating it as a test
-/// over the *whole* catalogue is what stops a new piece from being added with a
+/// over the *whole* catalog is what stops a new piece from being added with a
 /// connector facing into its own middle.
 #[test]
 fn like_connectors_mate() {
-    let all: Vec<(&StockPiece, &Connector)> = CATALOGUE
+    let all: Vec<(&StockPiece, &Connector)> = CATALOG
         .iter()
         .flat_map(|piece| piece.connectors.iter().map(move |c| (piece, c)))
         .collect();
@@ -244,11 +244,11 @@ fn like_connectors_mate() {
 /// snapping onto a truss end because somebody dragged it close.
 #[test]
 fn a_truss_end_is_not_a_deck_edge() {
-    let truss = pult_schema::types::catalogue::piece("f34-2m").unwrap();
-    let deck = pult_schema::types::catalogue::piece("deck-2x1").unwrap();
+    let truss = pult_schema::types::catalog::piece("f34-2m").unwrap();
+    let deck = pult_schema::types::catalog::piece("deck-2x1").unwrap();
     assert!(truss.connectors.iter().all(|c| c.kind == ConnectorKind::TrussEnd));
     assert!(deck.connectors.iter().all(|c| c.kind == ConnectorKind::DeckEdge));
-    let pipe = pult_schema::types::catalogue::piece("pipe-2m").unwrap();
+    let pipe = pult_schema::types::catalog::piece("pipe-2m").unwrap();
     assert!(pipe.connectors.iter().all(|c| c.kind == ConnectorKind::PipeEnd));
 }
 
@@ -256,8 +256,8 @@ fn a_truss_end_is_not_a_deck_edge() {
 /// which is what makes a spigot kind unnecessary — and what lets a tower stand.
 #[test]
 fn the_plates_are_a_truss_end_each_way_up() {
-    let base = pult_schema::types::catalogue::piece("f34-base").unwrap();
-    let top = pult_schema::types::catalogue::piece("f34-top").unwrap();
+    let base = pult_schema::types::catalog::piece("f34-base").unwrap();
+    let top = pult_schema::types::catalog::piece("f34-top").unwrap();
     assert_eq!(base.connectors.len(), 1);
     assert_eq!(top.connectors.len(), 1);
     assert!(base.connectors[0].facing.y > 0.9, "a base plate takes a truss upwards");
@@ -268,7 +268,7 @@ fn the_plates_are_a_truss_end_each_way_up() {
 /// nothing and an object carrying the defaults are one piece.
 #[test]
 fn a_piece_asked_for_nothing_is_a_piece_asked_for_its_defaults() {
-    for piece in CATALOGUE {
+    for piece in CATALOG {
         let empty = canonical_properties(piece, &Value::Null);
         let spelled = canonical_properties(piece, &empty);
         assert_eq!(empty, spelled, "{}", piece.id);

@@ -58,7 +58,7 @@ describe('what is driving one cell', () => {
 	});
 
 	/**
-	 * A release fades to exactly where the parameter rests, so colouring it as a cue's
+	 * A release fades to exactly where the parameter rests, so coloring it as a cue's
 	 * would name a cue that has stopped asserting anything.
 	 */
 	it('reads a fade with no cue behind it as home', () => {

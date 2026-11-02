@@ -18,7 +18,7 @@ use pult_schema::{
     types::{
         evaluate,
         fixture::{
-            driving, output_parameters, parameter_key, FixtureType, HeldByProgrammer,
+            driving, parameter_key, FixtureType, HeldByProgrammer,
             ParameterKind,
         },
         scene::SceneObject,
@@ -48,8 +48,18 @@ pub struct LocalRpcMeta {
 pub const LOCAL_RPCS: &[LocalRpcMeta] = &[
     LocalRpcMeta {
         method: "device.adopt",
-        args_schema: r#"[{"name":"serial","type":"string","optional":false}]"#,
-        doc: "Adopt a discovered OpenHaunt device; answers with the new fixture's id.",
+        args_schema: r#"[{"name":"serial","type":"string","optional":false},{"name":"replaces","type":"string","optional":true},{"name":"names","type":"{ name?: string, heads?: Record<number, string>, ports?: Record<number, string> }","optional":true}]"#,
+        doc: "Adopt a discovered OpenHaunt device; answers with the new fixture's id. `replaces` names an offline node whose fixtures it takes over, ids and all, so every cue and flow that named them now drives it. `names` are written to the show and to the node: the node's, and labels by head and port number.",
+    },
+    LocalRpcMeta {
+        method: "device.names",
+        args_schema: r#"[{"name":"serial","type":"string","optional":false},{"name":"choices","type":"{ head: number, port: number | null, take: 'node' | 'show' }[]","optional":false}]"#,
+        doc: "Settle where a node and the show call something differently: for each, take the node's name into the show or tell the node the show's.",
+    },
+    LocalRpcMeta {
+        method: "device.compare",
+        args_schema: r#"[{"name":"serial","type":"string","optional":false},{"name":"replaces","type":"string","optional":false}]"#,
+        doc: "What adopting a node in place of an offline one would leave without a port: its module against the old one's, and every parameter the new node does not have.",
     },
     LocalRpcMeta {
         method: "device.identify",
@@ -62,9 +72,29 @@ pub const LOCAL_RPCS: &[LocalRpcMeta] = &[
         doc: "Forget an adopted device and release its fixture.",
     },
     LocalRpcMeta {
+        method: "device.strip",
+        args_schema: r#"[{"name":"serial","type":"string","optional":false},{"name":"head","type":"number","optional":false},{"name":"mode","type":"'effect' | 'sacn'","optional":true},{"name":"count","type":"number","optional":true},{"name":"order","type":"string","optional":true},{"name":"universe","type":"number","optional":true},{"name":"address","type":"number","optional":true},{"name":"holdMs","type":"number","optional":true},{"name":"pitchM","type":"number","optional":true}]"#,
+        doc: "Patch a node's pixel strip in a mode: `effect`, where the node draws it, or `sacn`, a fixture per pixel the console draws. Anything left out stays. One Ctrl-Z; answers the strip's fixture id.",
+    },
+    LocalRpcMeta {
         method: "session.join",
         args_schema: r#"[{"name":"sessionId","type":"string","optional":false}]"#,
         doc: "Join a discovered session as a follower.",
+    },
+    LocalRpcMeta {
+        method: "session.joinAt",
+        args_schema: r#"[{"name":"address","type":"string","optional":false}]"#,
+        doc: "Join the station at a sync address (`host:port`) as a follower, without having discovered it — for a network where mDNS does not reach.",
+    },
+    LocalRpcMeta {
+        method: "session.invite",
+        args_schema: r#"[{"name":"nodeId","type":"string","optional":true},{"name":"address","type":"string","optional":true}]"#,
+        doc: "Ask a station to join this one's session, starting a session first if this station has none: one on the network by `nodeId`, or any by its HTTP `address` (`host:port`). The station invited takes this show: its own open show is replaced.",
+    },
+    LocalRpcMeta {
+        method: "session.watchNearby",
+        args_schema: r#"[{"name":"on","type":"boolean","optional":false}]"#,
+        doc: "This page is showing the stations on the network, or has stopped: they are looked for only while some page is. The list is `session.nearby`.",
     },
     LocalRpcMeta {
         method: "session.leave",
@@ -84,6 +114,14 @@ pub const LOCAL_RPCS: &[LocalRpcMeta] = &[
         args_schema: r#"[{"name":"groupId","type":"string","optional":false}]"#,
         doc: "The fixtures a saved group picks out of the rig right now, in its order.",
     },
+    // Where a value set on a selection lands, cut to cells or not: the schema's rule,
+    // asked rather than copied, so the command line puts `at 50` on exactly the keys
+    // the Programmer would. A read like the one above.
+    LocalRpcMeta {
+        method: "selection.targets",
+        args_schema: r#"[{"name":"fixtureIds","type":"array","optional":false},{"name":"cells","type":"array","optional":true},{"name":"parameterKind","type":"object","optional":false}]"#,
+        doc: "The parameters a value of one kind lands on, over these fixtures and these cells of them.",
+    },
     // The paperwork's arithmetic. A read like the two above, and on the station rather
     // than in the browser for one reason: the browser is the only thing that can *draw*
     // a sheet, and if the tables were drawn there too then what the rig weighs would be
@@ -91,7 +129,7 @@ pub const LOCAL_RPCS: &[LocalRpcMeta] = &[
     LocalRpcMeta {
         method: "paperwork.tables",
         args_schema: r#"[{"name":"kind","type":"string","optional":false},{"name":"grouping","type":"string","optional":true},{"name":"rows","type":"object","optional":true},{"name":"layers","type":"array","optional":true}]"#,
-        doc: "A paperwork table over the rig: Patch, Loading, Power or Counts, grouped and subtotalled.",
+        doc: "A paperwork table over the rig: Patch, Loading, Power or Counts, grouped and subtotaled.",
     },
     // What a rig would look like in a given state, for a rendered viewport on a sheet.
     // A read like the one above, and it must stay one: rendering a beauty shot must not
@@ -106,6 +144,13 @@ pub const LOCAL_RPCS: &[LocalRpcMeta] = &[
     // write history. It exists because nothing stores the answer any more — the
     // console keeps what is *driving* each parameter and evaluates on demand — and a
     // caller that cannot hold the whole stack still has to be able to ask.
+    // A read: the types a console knows without a file, and the color mixes the type
+    // editor offers. Nothing is written until one is patched.
+    LocalRpcMeta {
+        method: "fixtureTypes.library",
+        args_schema: r#"[]"#,
+        doc: "The generic fixture types and the color emitter presets this console ships with.",
+    },
     LocalRpcMeta {
         method: "parameter.value",
         args_schema: r#"[{"name":"fixtureId","type":"string","optional":false},{"name":"parameterKind","type":"object","optional":true}]"#,
@@ -143,10 +188,34 @@ pub const LOCAL_RPCS: &[LocalRpcMeta] = &[
         args_schema: "[]",
         doc: "What this station can play a timeline through and listen for timecode on.",
     },
+    // A show variable's value. RPCs rather than a field write or an entity command,
+    // because both of those carry the caller's user id, and a phone resetting a maze
+    // area would then be a row in the History panel and something for Ctrl-Z. A flow
+    // writes the same way, so who changed a count is never the question undo answers.
+    LocalRpcMeta {
+        method: "variable.set",
+        args_schema: r#"[{"name":"variableId","type":"string","optional":false},{"name":"value","type":"number","optional":false}]"#,
+        doc: "Set a show variable, clamped to its bounds. Not undoable and not in History.",
+    },
+    LocalRpcMeta {
+        method: "variable.add",
+        args_schema: r#"[{"name":"variableId","type":"string","optional":false},{"name":"by","type":"number","optional":false}]"#,
+        doc: "Add to a show variable (negative to subtract), clamped to its bounds.",
+    },
+    LocalRpcMeta {
+        method: "variable.toggle",
+        args_schema: r#"[{"name":"variableId","type":"string","optional":false}]"#,
+        doc: "Zero becomes one and anything else zero.",
+    },
+    LocalRpcMeta {
+        method: "variable.reset",
+        args_schema: r#"[{"name":"variableId","type":"string","optional":false}]"#,
+        doc: "Put a show variable back at its initial value.",
+    },
     LocalRpcMeta {
         method: "timeline.detect",
-        args_schema: r#"[{"name":"timelineId","type":"string","optional":false}]"#,
-        doc: "Find the beats and downbeats in a timeline's audio; answers them and writes them to `detected`, which an operator then confirms into `grid`.",
+        args_schema: r#"[{"name":"timelineId","type":"string","optional":false},{"name":"clipId","type":"string","optional":true}]"#,
+        doc: "Find the beats and downbeats in one of a timeline's clips (the first unless `clipId` names another), in timeline positions; answers them and writes them to `detected`, which an operator then confirms into `grid`.",
     },
     LocalRpcMeta {
         method: "timeline.model",
@@ -202,6 +271,15 @@ pub const LOCAL_RPCS: &[LocalRpcMeta] = &[
         args_schema: r#"[{"name":"outputId","type":"string","optional":false},{"name":"nodeId","type":"string","optional":true}]"#,
         doc: "Stop watching an output; the connector stops drawing when nobody is.",
     },
+    // Forcing channels is the one thing here that *drives* the rig from a diagnostic,
+    // so it holds only as long as the client that asked for it: closing the page, or
+    // the socket dropping, lets go. `nodeId` may be a peer's, for the reason a watch's
+    // may — only the station holding the socket can put bytes on it.
+    LocalRpcMeta {
+        method: "output.test",
+        args_schema: r#"[{"name":"outputId","type":"string","optional":false},{"name":"nodeId","type":"string","optional":true},{"name":"test","type":"object","optional":true}]"#,
+        doc: "Force channels to a level on an output's wire, for as long as this client holds them. Omit `test` to let go.",
+    },
     // Opening a show is not a change to the show, which is what makes these RPCs
     // rather than commands: nothing about which showfile this console has open is in
     // anybody's undo stack, and a peer must not be told to change shows because
@@ -214,8 +292,8 @@ pub const LOCAL_RPCS: &[LocalRpcMeta] = &[
     },
     LocalRpcMeta {
         method: "show.open",
-        args_schema: r#"[{"name":"path","type":"string","optional":false}]"#,
-        doc: "Open the show bundle at this path.",
+        args_schema: r#"[{"name":"path","type":"string","optional":false},{"name":"upgrade","type":"boolean","optional":true}]"#,
+        doc: "Open the show bundle at this path. A show from an older build answers {needsUpgrade: {from, to}} and opens nothing, until it is asked again with upgrade: true.",
     },
     LocalRpcMeta {
         method: "show.close",
@@ -229,8 +307,8 @@ pub const LOCAL_RPCS: &[LocalRpcMeta] = &[
     },
     LocalRpcMeta {
         method: "show.restore",
-        args_schema: r#"[{"name":"versionId","type":"string","optional":false}]"#,
-        doc: "Put a saved version back as the show. Refused while a peer is connected.",
+        args_schema: r#"[{"name":"versionId","type":"string","optional":false},{"name":"upgrade","type":"boolean","optional":true}]"#,
+        doc: "Put a saved version back as the show, as one undoable edit that every station in the session follows. A version from an older build answers {needsUpgrade: {from, to}} and restores nothing, until it is asked again with upgrade: true.",
     },
     LocalRpcMeta {
         method: "show.list",
@@ -241,10 +319,89 @@ pub const LOCAL_RPCS: &[LocalRpcMeta] = &[
     // one machine's, and a cross-station grab would mean shipping a universe across
     // the link carrying the show for a button press. Refused by name instead, so the
     // page can say which console to open.
+    // A recording that stopped waits as the timeline's `pending` take until somebody
+    // answers. Either answer is the caller's, in one gesture, so one Ctrl-Z takes a
+    // Merge back and puts the take up for review again.
+    LocalRpcMeta {
+        method: "take.merge",
+        args_schema: r#"[{"name":"timelineId","type":"string","optional":false},{"name":"takes","type":"array","optional":true},{"name":"flashes","type":"array","optional":true},{"name":"events","type":"array","optional":true}]"#,
+        doc: "Merge a timeline's pending take: the take of each [fixtureId, key] in takes, the flashes of each in flashes, and the cues taken whose ids are in events, or everything where a list is left out.",
+    },
+    LocalRpcMeta {
+        method: "take.discard",
+        args_schema: r#"[{"name":"timelineId","type":"string","optional":false}]"#,
+        doc: "Throw a timeline's pending take away without merging any of it.",
+    },
+    // The two acts that put the programmer into a cue, written once
+    // (`infra/storing.rs`): the top bar, the Store dialog, the wing and the command
+    // line all reach the same code. Each is one gesture under the caller's name.
+    LocalRpcMeta {
+        method: "programmer.update",
+        args_schema: "[]",
+        doc: "Update: every programmer value into the cue driving it now (or the cue loaded for editing), one undoable act. Answers how many cues it wrote and the entries no cue drives, which stay in the programmer.",
+    },
+    LocalRpcMeta {
+        method: "programmer.store",
+        args_schema: r#"[{"name":"sequenceId","type":"string","optional":true},{"name":"newSequence","type":"string","optional":true},{"name":"cueId","type":"string","optional":true},{"name":"replace","type":"boolean","optional":true},{"name":"include","type":"array","optional":true},{"name":"name","type":"string","optional":true},{"name":"after","type":"string","optional":true},{"name":"fadeInMs","type":"number","optional":true},{"name":"fadeOutMs","type":"number","optional":true},{"name":"easing","type":"string","optional":true},{"name":"followMode","type":"object","optional":true},{"name":"timing","type":"object","optional":true},{"name":"cueOnly","type":"boolean","optional":true},{"name":"keep","type":"boolean","optional":true},{"name":"onto","type":"object","optional":true}]"#,
+        doc: "Store the programmer into a sequence (or a new one, by name): into cueId, merged or replaced, or as a new cue after `after`, appended when left out. One undoable act; the programmer is cleared unless `keep`.",
+    },
+    // Blind (`infra/blind.rs`): the programmer reaches no lamp while every screen still
+    // shows it. Unattributed, so Ctrl-Z can never switch it off on the way past.
+    LocalRpcMeta {
+        method: "programmer.blind",
+        args_schema: r#"[{"name":"on","type":"boolean","optional":true}]"#,
+        doc: "Switch blind on or off, or over when `on` is left out. Answers {blind}. Not undoable and not in History.",
+    },
+    // The show as it comes up (`infra/default_state.rs`), under the caller's name.
+    LocalRpcMeta {
+        method: "defaultState.save",
+        args_schema: "[]",
+        doc: "Save what the show is doing now — sequences on and their cues, masters, running timelines; never the programmer — as how it comes up.",
+    },
+    LocalRpcMeta {
+        method: "defaultState.apply",
+        args_schema: "[]",
+        doc: "Put the show into its default state: those cues, those masters, those timelines from their beginning, and everything else off. Answers whether there was one.",
+    },
+    LocalRpcMeta {
+        method: "defaultState.clear",
+        args_schema: "[]",
+        doc: "Forget the default state, so the show comes up with nothing running.",
+    },
     LocalRpcMeta {
         method: "input.grab",
         args_schema: r#"[{"name":"fixtureIds","type":"array","optional":false},{"name":"inputId","type":"string","optional":true}]"#,
         doc: "Decode what is arriving on an input for these fixtures and put it in the programmer.",
+    },
+    LocalRpcMeta {
+        method: "wing.claim",
+        args_schema: "[]",
+        doc: "This page shows the command wing from now on: it shares its selection with it, and answers what needs a screen. The station runs the wing either way.",
+    },
+    LocalRpcMeta {
+        method: "wing.release",
+        args_schema: "[]",
+        doc: "Stop showing the command wing. It goes on working.",
+    },
+    LocalRpcMeta {
+        method: "wing.context",
+        args_schema: r#"[{"name":"fixtures","type":"array","optional":false},{"name":"cells","type":"array","optional":true},{"name":"query","type":"object","optional":true},{"name":"seenRev","type":"number","optional":false},{"name":"focusedSequence","type":"string","optional":true},{"name":"dialog","type":"boolean","optional":false},{"name":"userId","type":"string","optional":true}]"#,
+        doc: "What the page showing the wing has selected, which cue sheet it touched last, whether a dialog is open on it, and who is at it.",
+    },
+    LocalRpcMeta {
+        method: "wing.learn",
+        args_schema: r#"[{"name":"on","type":"boolean","optional":false}]"#,
+        doc: "Start or stop learning: the next control touched on the wing is handed to this page to bind.",
+    },
+    LocalRpcMeta {
+        method: "wing.calculator",
+        args_schema: r#"[{"name":"slot","type":"number","optional":true},{"name":"text","type":"string","optional":true},{"name":"set","type":"boolean","optional":true}]"#,
+        doc: "Open an encoder's calculator (no slot closes it), with what is typed, and set it on the wing's selection when `set`.",
+    },
+    LocalRpcMeta {
+        method: "wing.map",
+        args_schema: "[]",
+        doc: "MA's names for every key, fader, encoder and LED of the command wing, where this machine has a grandMA3 install to read them from; null on a station with no wing.",
     },
     LocalRpcMeta {
         method: "client.report",
@@ -272,10 +429,17 @@ pub struct LocalRpcDeps {
     /// `log.report`, the two calls whose whole meaning is "while *this* client is
     /// here", say so rather than pretending. Every other call ignores it.
     pub caller: Option<uuid::Uuid>,
+    /// The operator a plugin is acting for while one of its commands runs — the
+    /// command line typed at a page or on the wing — so `programmer.store` from there
+    /// is that operator's to take back. `None` everywhere else.
+    pub acting_for: Option<uuid::Uuid>,
     /// MVR-xchange, where this station is running one. `None` in a test that built
     /// its own dependencies, which is what makes the three calls say so rather than
     /// panic.
     pub xchange: Option<crate::infra::interop::xchange::XchangeHandle>,
+    /// The command wing, where this station has one. `None` in a test, which is what
+    /// makes the wing's calls say so rather than panic.
+    pub wing: Option<crate::infra::wing::WingStation>,
     /// For the calls that answer a question about the show. Reads only — anything
     /// here that wanted to write would be an entity command instead.
     pub engine: EngineHandle,
@@ -357,11 +521,14 @@ async fn running_sequences(engine: &EngineHandle) -> Vec<String> {
 
 /// Who is asking, for the writes an RPC can cause.
 ///
-/// Only `xchange.apply` needs one, and it needs it badly: an applied commit is an
-/// ordinary import and belongs to the operator who clicked, from whichever station
-/// they clicked at. A browser that has not identified itself writes as the default
-/// user, which is what every other path already does.
+/// An applied MVR commit, a grab, an answered take, an Update and a Store each belong
+/// to the operator who asked, from whichever station they asked at — or the one a
+/// plugin's command is running for. A browser that has not identified itself writes as
+/// the default user, which is what every other path already does.
 fn asking_user(deps: &LocalRpcDeps) -> uuid::Uuid {
+    if let Some(user) = deps.acting_for {
+        return user;
+    }
     match (&deps.ws_registry, deps.caller) {
         (Some(registry), Some(session)) => registry.user_for_writes(session),
         _ => pult_schema::types::user::User::DEFAULT_ID,
@@ -378,10 +545,45 @@ pub async fn dispatch(method: &str, args: Value, deps: &LocalRpcDeps) -> Result<
             .ok_or_else(|| "missing serial".to_string())
     };
 
+    // Only the leader drives devices, so on a follower an act on one is the leader's to
+    // do: asked over its own page socket, and its answer — a fixture id, or why not — is
+    // this one's. Before, a page served by a follower (the Pi, the audio MacBook's own
+    // window) showed Adopt greyed out with a "Watching" badge as the only explanation.
+    if method.starts_with("device.") {
+        // Every one names a device, and a call that does not is refused here rather
+        // than carried to the leader to be refused there — or, with no leader to ask,
+        // left waiting on a question about the session it never needed to put.
+        serial()?;
+        if let Some((hostname, http_addr)) = leader_to_relay_to(deps).await {
+            return call_station(&hostname, &http_addr, method, args.clone(), std::time::Duration::from_secs(20))
+                .await
+                .map_err(|why| format!("{hostname} (leading): {why}"));
+        }
+    }
+
     match method {
         "device.adopt" => {
-            let id = deps.devices.adopt(serial()?).await?;
+            let replaces = args["replaces"].as_str().filter(|s| !s.is_empty()).map(str::to_string);
+            let names = match args.get("names") {
+                Some(names) if !names.is_null() => Some(
+                    serde_json::from_value::<crate::infra::devices::AdoptNames>(names.clone())
+                        .map_err(|e| format!("invalid names: {e}"))?,
+                ),
+                _ => None,
+            };
+            let id = deps.devices.adopt_named(serial()?, replaces, names).await?;
             serde_json::to_value(id).map_err(|e| e.to_string())
+        }
+        "device.names" => {
+            let choices: Vec<pult_schema::types::devices::NameChoice> =
+                serde_json::from_value(args["choices"].clone()).map_err(|e| format!("invalid choices: {e}"))?;
+            deps.devices.settle_names(serial()?, choices).await?;
+            Ok(Value::Null)
+        }
+        "device.compare" => {
+            let replaces = args["replaces"].as_str().ok_or_else(|| "missing replaces".to_string())?;
+            let comparison = deps.devices.compare(serial()?, replaces.to_string()).await?;
+            serde_json::to_value(comparison).map_err(|e| e.to_string())
         }
         "device.identify" => {
             deps.devices.identify(serial()?).await?;
@@ -391,6 +593,20 @@ pub async fn dispatch(method: &str, args: Value, deps: &LocalRpcDeps) -> Result<
             deps.devices.forget(serial()?).await?;
             Ok(Value::Null)
         }
+        "device.strip" => {
+            let head = args["head"]
+                .as_u64()
+                .and_then(|h| u8::try_from(h).ok())
+                .ok_or_else(|| "missing head".to_string())?;
+            let change: crate::infra::devices::StripChange = serde_json::from_value(args.clone())
+                .map_err(|e| format!("invalid strip: {e}"))?;
+            let id = deps.devices.patch_strip(serial()?, head, change, asking_user(deps)).await?;
+            serde_json::to_value(id).map_err(|e| e.to_string())
+        }
+        "fixtureTypes.library" => Ok(serde_json::json!({
+            "types": pult_schema::types::generic::library(),
+            "emitterPresets": pult_schema::types::generic::emitter_presets(),
+        })),
         "parameter.value" => {
             let fixture_id: uuid::Uuid = serde_json::from_value(args["fixtureId"].clone())
                 .map_err(|e| format!("invalid fixtureId: {e}"))?;
@@ -402,6 +618,60 @@ pub async fn dispatch(method: &str, args: Value, deps: &LocalRpcDeps) -> Result<
                 _ => None,
             };
             what_is_it_doing(&deps.engine, fixture_id, kind).await
+        }
+        "defaultState.save" => {
+            let saved = crate::infra::default_state::save(&deps.engine, asking_user(deps)).await?;
+            serde_json::to_value(saved).map_err(|e| e.to_string())
+        }
+        "defaultState.apply" => {
+            let applied = crate::infra::default_state::apply(&deps.engine, asking_user(deps)).await?;
+            Ok(serde_json::json!({ "applied": applied }))
+        }
+        "defaultState.clear" => {
+            crate::infra::default_state::clear(&deps.engine, asking_user(deps)).await?;
+            Ok(Value::Null)
+        }
+        "programmer.blind" => {
+            let on = match args.get("on") {
+                Some(serde_json::Value::Bool(on)) => Some(*on),
+                None | Some(serde_json::Value::Null) => None,
+                Some(_) => return Err("programmer.blind takes `on` as a boolean".into()),
+            };
+            let blind = crate::infra::blind::set(&deps.engine, on).await?;
+            Ok(serde_json::json!({ "blind": blind }))
+        }
+        "programmer.update" => {
+            let updated = crate::infra::storing::update(&deps.engine, asking_user(deps)).await?;
+            serde_json::to_value(updated).map_err(|e| e.to_string())
+        }
+        "programmer.store" => {
+            let request: crate::infra::storing::StoreRequest =
+                serde_json::from_value(args.clone()).map_err(|e| format!("invalid store: {e}"))?;
+            let stored = crate::infra::storing::store(&deps.engine, asking_user(deps), request).await?;
+            serde_json::to_value(stored).map_err(|e| e.to_string())
+        }
+        "take.merge" | "take.discard" => {
+            let timeline_id: uuid::Uuid = serde_json::from_value(args["timelineId"].clone())
+                .map_err(|e| format!("invalid timelineId: {e}"))?;
+            let keys = |name: &str| -> Result<Option<Vec<(uuid::Uuid, String)>>, String> {
+                match args.get(name) {
+                    Some(v) if !v.is_null() => serde_json::from_value(v.clone())
+                        .map(Some)
+                        .map_err(|e| format!("invalid {name}: {e}")),
+                    _ => Ok(None),
+                }
+            };
+            if method == "take.discard" {
+                answer_a_take(deps, timeline_id, Some(Vec::new()), Some(Vec::new()), Some(Vec::new())).await
+            } else {
+                let events: Option<Vec<uuid::Uuid>> = match args.get("events") {
+                    Some(v) if !v.is_null() => {
+                        Some(serde_json::from_value(v.clone()).map_err(|e| format!("invalid events: {e}"))?)
+                    }
+                    _ => None,
+                };
+                answer_a_take(deps, timeline_id, keys("takes")?, keys("flashes")?, events).await
+            }
         }
         "input.grab" => {
             let fixture_ids: Vec<uuid::Uuid> =
@@ -420,11 +690,35 @@ pub async fn dispatch(method: &str, args: Value, deps: &LocalRpcDeps) -> Result<
             let audio = deps.audio.as_ref().ok_or_else(no_audio)?;
             serde_json::to_value(audio.devices().await).map_err(|e| e.to_string())
         }
+        "variable.set" | "variable.add" | "variable.toggle" | "variable.reset" => {
+            use pult_schema::types::VariableOp;
+            let variable_id: uuid::Uuid = serde_json::from_value(args["variableId"].clone())
+                .map_err(|e| format!("invalid variableId: {e}"))?;
+            let number = |name: &str| {
+                args.get(name)
+                    .and_then(|v| v.as_f64())
+                    .ok_or_else(|| format!("{method} needs a number `{name}`"))
+            };
+            let op = match method {
+                "variable.set" => VariableOp::Set(number("value")?),
+                "variable.add" => VariableOp::Add(number("by")?),
+                "variable.toggle" => VariableOp::Toggle,
+                _ => VariableOp::Reset,
+            };
+            deps.engine.set_variable(variable_id, op).await.map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "ok": true }))
+        }
         "timeline.detect" => {
             let audio = deps.audio.as_ref().ok_or_else(no_audio)?;
             let timeline_id: uuid::Uuid = serde_json::from_value(args["timelineId"].clone())
                 .map_err(|e| format!("invalid timelineId: {e}"))?;
-            let found = audio.detect(timeline_id).await?;
+            let clip_id = match args.get("clipId") {
+                Some(v) if !v.is_null() => Some(
+                    serde_json::from_value(v.clone()).map_err(|e| format!("invalid clipId: {e}"))?,
+                ),
+                _ => None,
+            };
+            let found = audio.detect(timeline_id, clip_id).await?;
             serde_json::to_value(found).map_err(|e| e.to_string())
         }
         "timeline.model" => {
@@ -526,6 +820,46 @@ pub async fn dispatch(method: &str, args: Value, deps: &LocalRpcDeps) -> Result<
             log.emit(level, "browser", source, message);
             Ok(Value::Null)
         }
+        "wing.claim" | "wing.release" | "wing.context" | "wing.learn" | "wing.calculator" | "wing.map" => {
+            use crate::infra::wing::Inbound;
+            // The map is a question every page asks on connecting, and "none" is an
+            // answer to it rather than a fault: an error here was a toast on every
+            // page served by a station with no wing.
+            if method == "wing.map" {
+                return Ok(deps.wing.as_ref().map(|wing| wing.map()).unwrap_or(Value::Null));
+            }
+            let wing = deps
+                .wing
+                .as_ref()
+                .ok_or_else(|| "this station has no command wing".to_string())?;
+            // The rest are a page showing a desk, so they need a page.
+            let caller = deps
+                .caller
+                .ok_or_else(|| format!("{method} is a page showing the wing, so it needs one"))?;
+            match method {
+                "wing.claim" => serde_json::to_value(wing.claim(caller).await).map_err(|e| e.to_string()),
+                "wing.release" => {
+                    serde_json::to_value(wing.release(caller).await).map_err(|e| e.to_string())
+                }
+                "wing.context" => {
+                    let context = serde_json::from_value(args).map_err(|e| format!("wing.context: {e}"))?;
+                    wing.from_page(caller, Inbound::Context(context))?;
+                    Ok(Value::Null)
+                }
+                "wing.learn" => {
+                    let on = args.get("on").and_then(Value::as_bool).unwrap_or(false);
+                    wing.from_page(caller, Inbound::Learn(on))?;
+                    Ok(Value::Null)
+                }
+                _ => {
+                    let slot = args.get("slot").and_then(Value::as_u64).map(|s| s.min(4) as u8);
+                    let text = args.get("text").and_then(Value::as_str).map(String::from);
+                    let set = args.get("set").and_then(Value::as_bool).unwrap_or(false);
+                    wing.from_page(caller, Inbound::Calculator { slot, text, set })?;
+                    Ok(Value::Null)
+                }
+            }
+        }
         "client.report" => {
             let caller = deps.caller.ok_or_else(|| {
                 "client.report is a browser describing itself, so it needs one".to_string()
@@ -590,13 +924,78 @@ pub async fn dispatch(method: &str, args: Value, deps: &LocalRpcDeps) -> Result<
             }
             Ok(Value::Null)
         }
+        "output.test" => {
+            let caller = deps.caller.ok_or_else(|| {
+                "forcing channels is about one client holding them, so it needs one".to_string()
+            })?;
+            let output_id: uuid::Uuid = serde_json::from_value(args["outputId"].clone())
+                .map_err(|e| format!("invalid outputId: {e}"))?;
+            let node = match args.get("nodeId") {
+                Some(v) if !v.is_null() => pult_schema::events::operation::NodeId(
+                    serde_json::from_value(v.clone())
+                        .map_err(|e| format!("invalid nodeId: {e}"))?,
+                ),
+                _ => deps.node_id,
+            };
+            // A missing test is the withdrawal, so a page that unmounts can say so
+            // without building one.
+            let test: pult_schema::types::output::ChannelTest = match args.get("test") {
+                Some(v) if !v.is_null() => serde_json::from_value(v.clone())
+                    .map_err(|e| format!("invalid test: {e}"))?,
+                _ => Default::default(),
+            };
+            let test = test.checked()?;
+            // An output whose row names no station is run by whichever stations its
+            // kind says, and the test has to reach every one of them — the wire on
+            // stage is the one at the highest sACN priority, which is not necessarily
+            // this station's.
+            let row = deps
+                .engine
+                .get(vec![PathSegment::Key("outputs".into()), PathSegment::Id(output_id)])
+                .await
+                .ok()
+                .and_then(|row| serde_json::from_value::<pult_schema::types::output::OutputConfig>(row).ok());
+            if row.is_some_and(|row| row.node_id.is_none()) {
+                use crate::infra::connectors::channel_tests::ANYWHERE;
+                let moved = deps.viewers.tests.set(ANYWHERE, output_id, caller, test);
+                if let Some(sync) = &deps.sync {
+                    // Always sent, moved or not, for the reason a peer's output is below.
+                    let merged = deps
+                        .viewers
+                        .tests
+                        .merged_for(ANYWHERE, output_id)
+                        .or(moved)
+                        .unwrap_or_default();
+                    sync.test_every_peer_output(output_id, merged).await;
+                }
+                return Ok(Value::Null);
+            }
+            let moved = deps.viewers.tests.set(node, output_id, caller, test);
+            if node != deps.node_id {
+                if let Some(sync) = &deps.sync {
+                    // Always sent for a peer's output, moved or not, because the link
+                    // can have dropped and taken the test with it since the page last
+                    // said it. The page repeats the same test every few seconds while
+                    // it holds one, and this is what makes that mean something.
+                    let merged = deps
+                        .viewers
+                        .tests
+                        .merged_for(node, output_id)
+                        .or(moved)
+                        .unwrap_or_default();
+                    sync.test_peer_output(node, output_id, merged).await;
+                }
+            }
+            Ok(Value::Null)
+        }
         "show.new" | "show.open" | "show.close" | "show.saveAs" => {
             open_a_show(method, &args, &deps.shows).await
         }
         "show.restore" => {
             let version: uuid::Uuid = serde_json::from_value(args["versionId"].clone())
                 .map_err(|e| format!("invalid versionId: {e}"))?;
-            restore_a_show(version, &deps.shows, deps.sync.as_ref(), &deps.engine).await
+            let upgrade = args["upgrade"].as_bool().unwrap_or(false);
+            restore_a_show(version, upgrade, &deps.shows, &deps.engine, asking_user(deps)).await
         }
         "show.list" => list_shows(&deps.shows).await,
         "paperwork.tables" => {
@@ -655,10 +1054,47 @@ pub async fn dispatch(method: &str, args: Value, deps: &LocalRpcDeps) -> Result<
                 .map_err(|e| format!("invalid groupId: {e}"))?;
             resolve_group(&deps.engine, group_id).await
         }
+        "selection.targets" => {
+            let ids: Vec<uuid::Uuid> = serde_json::from_value(args["fixtureIds"].clone())
+                .map_err(|e| format!("invalid fixtureIds: {e}"))?;
+            let cells: Vec<pult_schema::types::group::CellSpan> = match args.get("cells") {
+                Some(c) if !c.is_null() => {
+                    serde_json::from_value(c.clone()).map_err(|e| format!("invalid cells: {e}"))?
+                }
+                _ => Vec::new(),
+            };
+            let kind: pult_schema::types::fixture::ParameterKind =
+                serde_json::from_value(args["parameterKind"].clone())
+                    .map_err(|e| format!("invalid parameterKind: {e}"))?;
+            selection_targets(&deps.engine, &ids, &cells, &kind).await
+        }
         "session.join" => {
             let session_id: uuid::Uuid = serde_json::from_value(args["sessionId"].clone())
                 .map_err(|e| format!("invalid sessionId: {e}"))?;
             deps.session.join_session(session_id).await?;
+            Ok(Value::Null)
+        }
+        "session.joinAt" => {
+            let address = args["address"].as_str().ok_or("address is a host:port")?;
+            let addr = resolve_sync_address(address).await?;
+            deps.session.join_at(addr).await?;
+            Ok(Value::Null)
+        }
+        "session.invite" => {
+            let guest = match args["address"].as_str().map(str::trim).filter(|a| !a.is_empty()) {
+                Some(address) => Invitee::At(address.to_string()),
+                None => Invitee::Node(
+                    serde_json::from_value(args["nodeId"].clone())
+                        .map_err(|e| format!("invalid nodeId: {e}"))?,
+                ),
+            };
+            invite(deps, guest).await?;
+            Ok(Value::Null)
+        }
+        "session.watchNearby" => {
+            let caller = deps.caller.ok_or("session.watchNearby is a page's, so it needs one")?;
+            let on = args["on"].as_bool().ok_or("on is true or false")?;
+            deps.session.watch_nearby(caller, on).await;
             Ok(Value::Null)
         }
         "session.leave" => {
@@ -682,6 +1118,150 @@ pub async fn dispatch(method: &str, args: Value, deps: &LocalRpcDeps) -> Result<
     }
 }
 
+/// Ask the station `node_id` to join this one, at this station's sync address.
+///
+/// The invited station does the joining, exactly as if somebody had pressed Join on
+/// it: this one connects to its socket and calls its own `session.joinAt`. So nothing
+/// about the sync handshake changes, and a station the operator cannot walk to — a Pi
+/// in a rack — is brought in from the desk. The ask is answered once the invited
+/// station has joined or failed to, and its reason comes back with it.
+/// Who an invitation goes to: a station found on the network, or one named by the
+/// address its page is served from, for a network mDNS does not cross.
+enum Invitee {
+    Node(uuid::Uuid),
+    At(String),
+}
+
+async fn invite(deps: &LocalRpcDeps, invitee: Invitee) -> Result<(), String> {
+    use pult_schema::types::session::SessionState;
+
+    let read = |path: Vec<PathSegment>| async {
+        deps.engine.get(path).await.map_err(|e| e.to_string())
+    };
+    let session: SessionState = serde_json::from_value(read(vec![PathSegment::Key("session".into())]).await?)
+        .map_err(|e| e.to_string())?;
+    if session.is_follower {
+        return Err("this station follows another; invite from the one it follows".into());
+    }
+    // What the station is called in a message, and where its socket is.
+    let (hostname, http_addr) = match invitee {
+        Invitee::Node(node_id) => {
+            let guest = session
+                .nearby
+                .iter()
+                .find(|s| s.node_id.0 == node_id)
+                .ok_or("that station is not on the network as seen from here")?;
+            (guest.hostname.clone(), guest.http_addr.clone())
+        }
+        Invitee::At(address) => (address.clone(), address),
+    };
+
+    // A session to be invited into. A lone station leads one as soon as anybody joins
+    // it, but would say Idle about it; saying Advertising is the truth.
+    if !session.is_advertising {
+        let show = read(vec![PathSegment::Key("show".into())]).await?;
+        let show_id: uuid::Uuid = serde_json::from_value(show["id"].clone())
+            .map_err(|_| "no show is open here, so there is nothing to invite anybody into")?;
+        let show_name = show["name"].as_str().unwrap_or("Untitled Show").to_string();
+        deps.session.create_session(show_name, show_id).await.ok_or("could not start a session")?;
+    }
+
+    // Where the guest should dial: the address this station tells every peer, and the
+    // one its row already publishes for exactly that.
+    let me = read(vec![PathSegment::Key("stations".into()), PathSegment::Id(deps.node_id.0)]).await?;
+    let sync_addr = me["sync_addr"].as_str().filter(|a| !a.is_empty()).ok_or("this station has not said its sync address yet; try again in a moment")?.to_string();
+
+    call_station(
+        &hostname,
+        &http_addr,
+        "session.joinAt",
+        serde_json::json!({ "address": sync_addr }),
+        // Joining is a handshake and a whole show's snapshot, which on a Pi is seconds.
+        std::time::Duration::from_secs(30),
+    )
+    .await
+    .map(|_| ())
+    .map_err(|why| format!("{hostname} did not join: {why}"))
+}
+
+/// Call one RPC on another station, over its own page socket, and answer what it said.
+///
+/// The same door a browser uses, so the station asked cannot tell this from a person
+/// at a tablet — and needs nothing added to the sync protocol to be asked.
+async fn call_station(
+    hostname: &str,
+    http_addr: &str,
+    method: &str,
+    args: Value,
+    within: std::time::Duration,
+) -> Result<Value, String> {
+    use futures::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message as Frame;
+
+    let url = format!("ws://{http_addr}/ws");
+    let ask = async {
+        let (mut socket, _) = tokio_tungstenite::connect_async(&url)
+            .await
+            .map_err(|e| format!("could not reach {hostname} at {http_addr}: {e}"))?;
+        let call = serde_json::json!({
+            "type": "Call",
+            "payload": { "request_id": "relay", "method": method, "args": args }
+        });
+        socket.send(Frame::Text(call.to_string().into())).await.map_err(|e| e.to_string())?;
+        while let Some(frame) = socket.next().await {
+            let Ok(Frame::Text(text)) = frame else { continue };
+            let Ok(message) = serde_json::from_str::<Value>(&text) else { continue };
+            let payload = &message["payload"];
+            if payload["request_id"] != "relay" {
+                continue;
+            }
+            let _ = socket.close(None).await;
+            return match payload["error"].as_str() {
+                Some(why) => Err(why.to_string()),
+                None => Ok(payload["result"].clone()),
+            };
+        }
+        Err(format!("{hostname} hung up before answering"))
+    };
+    tokio::time::timeout(within, ask)
+        .await
+        .map_err(|_| format!("{hostname} did not answer within {} s", within.as_secs()))?
+}
+
+/// The leader's name and page address, when this station is somebody's follower.
+///
+/// `None` on the leader itself and on a station in no session, which both act here.
+async fn leader_to_relay_to(deps: &LocalRpcDeps) -> Option<(String, String)> {
+    let session: pult_schema::types::session::SessionState =
+        serde_json::from_value(deps.engine.get(vec![PathSegment::Key("session".into())]).await.ok()?).ok()?;
+    if !session.is_follower {
+        return None;
+    }
+    let leader = deps.sync.as_ref()?.leader().await?;
+    if leader == deps.node_id {
+        return None;
+    }
+    let row = deps
+        .engine
+        .get(vec![PathSegment::Key("stations".into()), PathSegment::Id(leader.0)])
+        .await
+        .ok()?;
+    let http_addr = row["http_addr"].as_str().filter(|a| !a.is_empty())?.to_string();
+    let hostname = row["hostname"].as_str().unwrap_or("the leader").to_string();
+    Some((hostname, http_addr))
+}
+
+/// `host:port`, where the host may be a name: a station somebody reads off another
+/// console's Stations panel is as often `booth.local` as it is an address.
+async fn resolve_sync_address(address: &str) -> Result<std::net::SocketAddr, String> {
+    let mut found = tokio::net::lookup_host(address)
+        .await
+        .map_err(|e| format!("{address} is not a host:port this station can reach: {e}"))?;
+    found
+        .find(|a| a.is_ipv4())
+        .ok_or_else(|| format!("{address} has no IPv4 address"))
+}
+
 /// Does this method name belong to the station rather than to an entity?
 pub fn is_local_rpc(method: &str) -> bool {
     method.starts_with("show.")
@@ -698,8 +1278,17 @@ pub fn is_local_rpc(method: &str) -> bool {
         // entity command is a *path* write (`["timelines", id, "play"]`) and never
         // reaches this function, which only ever sees the name of a `Call`.
         || method.starts_with("timeline.")
+        // A take waiting for its review: answered here, never by the engine's commands.
+        || method.starts_with("take.")
+        || method.starts_with("variable.")
         || method.starts_with("client.")
         || method.starts_with("xchange.")
+        || method.starts_with("wing.")
+        // Update and Store. Not the `programmer_values` collection, whose name has no dot.
+        || method.starts_with("programmer.")
+        || method.starts_with("defaultState.")
+        // Camel case, unlike the `fixture_types` collection, for the reason above.
+        || method.starts_with("fixtureTypes.")
 }
 
 /// The four acts that change which show this console has open.
@@ -731,10 +1320,20 @@ pub async fn open_a_show(
             // into — instead of taking the console down and bringing it back with
             // nothing open and an error in the log.
             let bundle = bundle::Bundle::open(path).map_err(|e| format!("{e:#}"))?;
+            // Asked here, for the reason the bundle is opened here: an upgrade is a
+            // one-way door, so the person in front of the dialog is the one asked —
+            // not a console that has already stopped to find out.
+            let upgrade = args["upgrade"].as_bool().unwrap_or(false);
+            if !upgrade {
+                if let Some(asking) = needs_upgrade(&bundle.db_path()).await {
+                    return Ok(asking);
+                }
+            }
             crate::ShowSwitch::Open {
                 path: bundle.path().to_path_buf(),
                 then_join: None,
                 demo: None,
+                upgrade,
             }
         }
         "show.new" => {
@@ -760,7 +1359,7 @@ pub async fn open_a_show(
                 ),
                 _ => None,
             };
-            crate::ShowSwitch::Open { path, then_join, demo }
+            crate::ShowSwitch::Open { path, then_join, demo, upgrade: false }
         }
         "show.saveAs" => {
             let name = args["name"].as_str().unwrap_or_default().trim().to_string();
@@ -797,27 +1396,25 @@ pub async fn open_a_show(
 /// restore anything: it briefly shows an older show and then loses it again.
 pub async fn restore_a_show(
     version: uuid::Uuid,
+    upgrade: bool,
     shows: &crate::ShowsHandle,
-    sync: Option<&crate::infra::sync::SyncHandle>,
     engine: &EngineHandle,
+    user: uuid::Uuid,
 ) -> Result<Value, String> {
-    let alone = match sync {
-        Some(sync) => sync.peer_count().await == 0,
-        None => true,
-    };
-    if !alone {
-        return Err("leave the session first: a peer still holds this show as it is now, \
-                    and would put it straight back"
-            .into());
+    let bundle = shows.bundle.as_ref().ok_or_else(|| "no show is open".to_string())?;
+    if !upgrade {
+        if let Some(asking) = needs_upgrade(&bundle.version_path(version)).await {
+            return Ok(asking);
+        }
     }
 
     // A point to come back *from*, taken before the show is overwritten. Restoring is
     // the one act in this console that throws work away, and an operator who restores
-    // the wrong version must have somewhere to go.
+    // the wrong version must have somewhere to go — beside the Ctrl-Z that now takes a
+    // restore back, because a version outlives an undo history.
     //
     // Automatic and unattributed: nobody asked for this one, and it must not be the
-    // thing Ctrl-Z reaches for. Its row is not in the database being put back — that
-    // one was written earlier — which is why `versions::reconcile` exists.
+    // thing Ctrl-Z reaches for.
     let name = restoring_from(engine, version).await;
     let taken = engine
         .set(
@@ -835,8 +1432,23 @@ pub async fn restore_a_show(
         tracing::warn!("[versions] could not save a point to come back from: {e}");
     }
 
-    shows.ask(crate::ShowSwitch::Restore { version }).await?;
-    Ok(serde_json::json!({ "ok": true }))
+    // In place, as writes: see `versions::restore_in_place` for why not a file swap.
+    let changed = crate::infra::showfile::versions::restore_in_place(bundle, version, upgrade, engine, user)
+        .await
+        .map_err(|e| format!("{e:#}"))?;
+    Ok(serde_json::json!({ "ok": true, "changed": changed }))
+}
+
+/// `{needsUpgrade: {from, to}}` for a file an upgrade would have to touch, or `None`.
+///
+/// The answer rather than an error, the way `xchange.apply` answers `needsConfirm`:
+/// nothing went wrong, a person has a question to answer.
+async fn needs_upgrade(db: &std::path::Path) -> Option<Value> {
+    use crate::infra::showfile::upgrade;
+    let from = upgrade::generation_of(db).await?;
+    upgrade::upgradable(from).then(|| {
+        serde_json::json!({ "needsUpgrade": { "from": from, "to": upgrade::CURRENT } })
+    })
 }
 
 /// What to call the version taken just before a restore.
@@ -905,6 +1517,9 @@ pub async fn list_shows(shows: &crate::ShowsHandle) -> Result<Value, String> {
             .collect::<Vec<_>>(),
         "showsDir": shows.shows_dir,
         "open": shows.bundle.as_ref().map(|b| b.path()),
+        // A show this console could not open without an upgrade, and is waiting for
+        // another station to have made: the welcome screen says so on its card.
+        "waitingToUpgrade": shows.waiting_to_upgrade,
         "recent": recents,
         "inDir": in_dir,
     }))
@@ -945,14 +1560,25 @@ async fn what_is_it_doing(
         .get(vec![PathSegment::Key("programmer_values".into())])
         .await
         .map_err(|e| format!("cannot read the programmer: {e}"))?;
-    let entries: Vec<pult_schema::types::programmer::ProgrammerValue> =
+    let mut entries: Vec<pult_schema::types::programmer::ProgrammerValue> =
         serde_json::from_value(entries).unwrap_or_default();
+    // What the lamp is doing, so a blind programmer is not part of the answer.
+    if crate::infra::blind::is_blind(engine).await {
+        entries.clear();
+    }
     let held = HeldByProgrammer::of(&entries);
+    let sequences = engine
+        .get(vec![PathSegment::Key("sequences".into())])
+        .await
+        .map_err(|e| format!("cannot read the sequences: {e}"))?;
+    let sequences: Vec<pult_schema::types::sequence::Sequence> =
+        serde_json::from_value(sequences).unwrap_or_default();
+    let masters = pult_schema::types::sequence::Masters::of(&sequences);
 
     let keys: Vec<String> = match (&kind, fixture_type) {
         (Some(kind), _) => vec![parameter_key(kind)],
         (None, Some(fixture_type)) => {
-            output_parameters(fixture_type).map(|p| parameter_key(&p.kind)).collect()
+            fixture_type.controls().iter().map(|(kind, _)| parameter_key(kind)).collect()
         }
         // Patched to a type this station has not got. Whatever the fixture overrides
         // for itself is still the truth about it, so that is what it can answer with.
@@ -963,11 +1589,70 @@ async fn what_is_it_doing(
     let values: std::collections::HashMap<String, pult_schema::types::fixture::ParameterValue> =
         keys.into_iter()
             .filter_map(|key| {
-                let driving = driving(&fixture, fixture_type, held.get(fixture_id, &key), &key);
+                let driving = driving(&fixture, fixture_type, held.get(fixture_id, &key), &key, &masters);
                 pult_render::value_at(&driving, now_ms).map(|value| (key, value))
             })
             .collect();
     serde_json::to_value(values).map_err(|e| e.to_string())
+}
+
+/// Answer a timeline's pending take: merge what was chosen, drop the rest, and clear
+/// the review — `None` for a list means all of it, an empty list none.
+///
+/// Every write under the caller's name and one gesture, which is what makes the answer
+/// one Ctrl-Z: the rows, the flashes, the cues and the review come back together, so undoing a
+/// Merge puts the take up for review again rather than losing it.
+async fn answer_a_take(
+    deps: &LocalRpcDeps,
+    timeline_id: uuid::Uuid,
+    takes: Option<Vec<(uuid::Uuid, String)>>,
+    flashes: Option<Vec<(uuid::Uuid, String)>>,
+    events: Option<Vec<uuid::Uuid>>,
+) -> Result<Value, String> {
+    use pult_schema::{lifecycle::Lifecycle, types::timeline::Timeline};
+
+    let path = vec![PathSegment::Key("timelines".into()), PathSegment::Id(timeline_id)];
+    let timeline: Timeline = deps
+        .engine
+        .get(path.clone())
+        .await
+        .ok()
+        .and_then(|v| serde_json::from_value(v).ok())
+        .ok_or_else(|| "no such timeline".to_string())?;
+    let pending = timeline.pending.clone().ok_or_else(|| "nothing is waiting to be merged".to_string())?;
+    let chosen = |list: &Option<Vec<(uuid::Uuid, String)>>, fixture_id: uuid::Uuid, key: &str| {
+        list.as_ref().is_none_or(|keys| keys.iter().any(|(id, k)| *id == fixture_id && k == key))
+    };
+    let mut rows = timeline.tracks.clone();
+    let mut kept = timeline.all_flashes().to_vec();
+    pending.merge(&mut rows, &mut kept, |id, key| chosen(&takes, id, key), |id, key| chosen(&flashes, id, key));
+    let mut cues = timeline.events.clone();
+    pending.merge_events(&mut cues, |id| events.as_ref().is_none_or(|ids| ids.contains(&id)));
+
+    let user_id = asking_user(deps);
+    let gesture = Some(uuid::Uuid::new_v4());
+    let field = |name: &str| {
+        let mut path = path.clone();
+        path.push(PathSegment::Key(name.into()));
+        path
+    };
+    if rows != timeline.tracks {
+        let value = serde_json::to_value(&rows).map_err(|e| e.to_string())?;
+        deps.engine.set_as(user_id, gesture, field("tracks"), Lifecycle::Persisted, value).await.map_err(|e| e.to_string())?;
+    }
+    if kept.len() != timeline.all_flashes().len() {
+        let value = serde_json::to_value(&kept).map_err(|e| e.to_string())?;
+        deps.engine.set_as(user_id, gesture, field("flashes"), Lifecycle::Persisted, value).await.map_err(|e| e.to_string())?;
+    }
+    if cues.len() != timeline.events.len() {
+        let value = serde_json::to_value(&cues).map_err(|e| e.to_string())?;
+        deps.engine.set_as(user_id, gesture, field("events"), Lifecycle::Persisted, value).await.map_err(|e| e.to_string())?;
+    }
+    deps.engine
+        .set_as(user_id, gesture, field("pending"), Lifecycle::Persisted, Value::Null)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "rows": rows.len(), "flashes": kept.len(), "events": cues.len() }))
 }
 
 /// Read a wire and put what is on it into the programmer.
@@ -1023,9 +1708,7 @@ async fn grab_into_the_programmer(
             .find(|fixture| fixture.id == fixture_id)
             .and_then(|fixture| types.iter().find(|t| t.id == fixture.fixture_type_id))
             .and_then(|fixture_type| {
-                output_parameters(fixture_type)
-                    .find(|p| parameter_key(&p.kind) == key)
-                    .map(|p| p.kind.clone())
+                fixture_type.controls().into_iter().find(|(kind, _)| parameter_key(kind) == key).map(|(kind, _)| kind)
             })
         else {
             continue;
@@ -1117,6 +1800,55 @@ async fn resolve_group(engine: &EngineHandle, group_id: uuid::Uuid) -> Result<Va
 
     let ids = evaluate(&group.query, &fixtures, None, &objects);
     serde_json::to_value(ids).map_err(|e| e.to_string())
+}
+
+/// Where a value of `kind` set on these fixtures, cut to these cells, lands: the
+/// selection's elements and then [`pult_schema::types::group::targets`].
+async fn selection_targets(
+    engine: &EngineHandle,
+    ids: &[uuid::Uuid],
+    cells: &[pult_schema::types::group::CellSpan],
+    kind: &pult_schema::types::fixture::ParameterKind,
+) -> Result<Value, String> {
+    use pult_schema::types::fixture::FixtureType;
+    use pult_schema::types::group::{elements, targets};
+    let read = |table: &'static str| async move {
+        engine
+            .get(vec![PathSegment::Key(table.into())])
+            .await
+            .map_err(|e| format!("cannot read the rig: {e}"))
+    };
+    let fixtures: Vec<Fixture> = serde_json::from_value(read("fixtures").await?).unwrap_or_default();
+    let types: Vec<FixtureType> =
+        serde_json::from_value(read("fixture_types").await?).unwrap_or_default();
+    let types: std::collections::HashMap<uuid::Uuid, FixtureType> =
+        types.into_iter().map(|t| (t.id, t)).collect();
+    let type_of_fixture: std::collections::HashMap<uuid::Uuid, &FixtureType> = fixtures
+        .iter()
+        .filter_map(|f| types.get(&f.fixture_type_id).map(|t| (f.id, t)))
+        .collect();
+    // Cut, the cells it picks; not cut, each fixture whole — so a bar selected whole
+    // takes its master and a strip selected whole every cell, as `targets` decides.
+    // The browser's `targetElements` is the same.
+    let picked = if cells.is_empty() {
+        ids.iter().map(|id| pult_schema::types::group::Element { fixture: *id, cell: None }).collect()
+    } else {
+        elements(ids, cells, |id| {
+            type_of_fixture.get(id).filter(|t| t.has_cells()).map_or(0, |t| t.cells)
+        })
+    };
+    let address: std::collections::HashMap<uuid::Uuid, &pult_schema::types::fixture::FixtureAddress> =
+        fixtures.iter().map(|f| (f.id, &f.address)).collect();
+    let landed = targets(
+        kind,
+        &picked,
+        |id| type_of_fixture.get(id).copied(),
+        |id, key| match (type_of_fixture.get(id), address.get(id)) {
+            (Some(fixture_type), Some(address)) => fixture_type.reaches(address, key),
+            _ => true,
+        },
+    );
+    serde_json::to_value(landed).map_err(|e| e.to_string())
 }
 
 /// Build one paperwork table out of what the station holds.
@@ -1298,7 +2030,10 @@ mod tests {
     async fn the_table_and_the_dispatcher_agree() {
         let (session_tx, _session_rx) = tokio::sync::mpsc::channel(1);
         let (device_tx, _device_rx) = tokio::sync::mpsc::channel(1);
-        let (engine_tx, _engine_rx) = tokio::sync::mpsc::channel(1);
+        // Closed, not merely unanswered: an arm that reads the show before it looks
+        // at its arguments (`programmer.update` has none to look at) gets an error at
+        // once rather than waiting on an engine that will never answer.
+        let (engine_tx, _) = tokio::sync::mpsc::channel(1);
         let deps = LocalRpcDeps {
             session: SessionHandle(session_tx),
             devices: DeviceHandle(device_tx),
@@ -1309,6 +2044,7 @@ mod tests {
             log_watchers: Default::default(),
             sync: None,
             caller: None,
+            acting_for: None,
             clients: None,
             node_id: pult_schema::events::operation::NodeId::new(),
             viewers: Default::default(),
@@ -1317,6 +2053,7 @@ mod tests {
             ws_registry: None,
             shows: crate::ShowsHandle::detached(),
             xchange: None,
+            wing: None,
         };
         for meta in LOCAL_RPCS {
             assert!(is_local_rpc(meta.method), "{} is not routed here", meta.method);
@@ -1410,6 +2147,7 @@ mod tests {
             log_watchers: Default::default(),
             sync: None,
             caller: None,
+            acting_for: None,
             clients: None,
             node_id: pult_schema::events::operation::NodeId::new(),
             viewers: Default::default(),
@@ -1418,6 +2156,7 @@ mod tests {
             ws_registry: None,
             shows: crate::ShowsHandle::detached(),
             xchange: None,
+            wing: None,
         };
         let ask = || {
             dispatch("parameter.value", serde_json::json!({ "fixtureId": fixture_id }), &deps)
@@ -1454,5 +2193,134 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(400)).await;
         let later = ask().await.unwrap()["Intensity"]["value"].as_f64().unwrap();
         assert!(later > first, "and it has moved on since, with nothing written: {later}");
+    }
+
+    /// Blind: the programmer is what a screen shows and not what a lamp does. Asked of
+    /// the station the way a plugin or the command line asks, a programmer value is the
+    /// answer until the show goes blind, where it rests while blind, and the answer again
+    /// once blind is off — and switching blind is nothing Ctrl-Z can take back, or an
+    /// undo of a programmer change could put the whole programmer on stage on its way.
+    #[tokio::test]
+    async fn a_blind_programmer_is_not_what_the_lamp_is_doing() {
+        use pult_schema::{
+            lifecycle::Lifecycle,
+            types::fixture::{FixtureType, ParameterDefinition, ParameterKind, ParameterValue},
+        };
+
+        let pool =
+            std::sync::Arc::new(crate::infra::showfile::open_in_memory().await.expect("showfile"));
+        let (engine, handle, _broadcast) = crate::engine::ShowEngine::new(
+            pult_schema::events::operation::NodeId(uuid::Uuid::new_v4()),
+            pool,
+            None,
+        );
+        tokio::spawn(engine.run());
+
+        // A show row written before blind existed: the field is not in it at all.
+        handle
+            .set(
+                vec![PathSegment::Key("show".into())],
+                Lifecycle::Persisted,
+                serde_json::json!({ "id": uuid::Uuid::new_v4(), "name": "Blind", "created_at": "2026-10-29T00:00:00Z" }),
+            )
+            .await
+            .unwrap();
+
+        let user = uuid::Uuid::new_v4();
+        let fixture_type = FixtureType {
+            id: uuid::Uuid::new_v4(),
+            name: "Dimmer".into(),
+            channel_count: 1,
+            parameters: vec![ParameterDefinition::new(ParameterKind::Intensity, ParameterValue::Float(0.0))],
+            ..FixtureType::default()
+        };
+        let fixture_id = uuid::Uuid::new_v4();
+        let create = |table: &str| vec![PathSegment::Key(table.into()), PathSegment::Key("__create".into())];
+        handle
+            .set(create("fixture_types"), Lifecycle::Persisted, serde_json::to_value(&fixture_type).unwrap())
+            .await
+            .unwrap();
+        handle
+            .set(
+                create("fixtures"),
+                Lifecycle::Persisted,
+                serde_json::json!({
+                    "id": fixture_id,
+                    "name": "Spot",
+                    "fixture_type_id": fixture_type.id,
+                    "address": { "Dmx": { "mode": "Default", "breaks": [{ "universe": 1, "address": 1 }] } },
+                    "position": null,
+                }),
+            )
+            .await
+            .unwrap();
+        let entry = pult_schema::types::programmer::programmer_entry_id(&fixture_id.to_string(), "Intensity");
+        handle
+            .set_as(
+                user,
+                None,
+                create("programmer_values"),
+                Lifecycle::Synced,
+                serde_json::json!({
+                    "id": entry,
+                    "fixture_id": fixture_id,
+                    "parameter_kind": "Intensity",
+                    "value": ParameterValue::Float(0.8),
+                    "locked": false,
+                }),
+            )
+            .await
+            .unwrap();
+
+        let deps = LocalRpcDeps {
+            session: SessionHandle(tokio::sync::mpsc::channel(1).0),
+            devices: DeviceHandle(tokio::sync::mpsc::channel(1).0),
+            engine: handle.clone(),
+            log: None,
+            log_watchers: Default::default(),
+            sync: None,
+            caller: None,
+            acting_for: None,
+            clients: None,
+            node_id: pult_schema::events::operation::NodeId::new(),
+            viewers: Default::default(),
+            input: None,
+            audio: None,
+            ws_registry: None,
+            shows: crate::ShowsHandle::detached(),
+            xchange: None,
+            wing: None,
+        };
+        let level = || async {
+            dispatch("parameter.value", serde_json::json!({ "fixtureId": fixture_id }), &deps).await.unwrap()
+                ["Intensity"]["value"]
+                .as_f64()
+                .unwrap()
+        };
+        let blind = |on: Option<bool>| {
+            let args = match on {
+                Some(on) => serde_json::json!({ "on": on }),
+                None => serde_json::json!({}),
+            };
+            dispatch("programmer.blind", args, &deps)
+        };
+
+        assert!((level().await - 0.8).abs() < 1e-6, "the programmer is on stage");
+
+        assert_eq!(blind(None).await.unwrap()["blind"], true, "left out, it switches over");
+        assert_eq!(level().await, 0.0, "blind: the lamp rests where nothing drives it");
+        let still = handle.get(vec![PathSegment::Key("programmer_values".into())]).await.unwrap();
+        assert!(still.to_string().contains("0.8"), "and the programmer still holds what was set");
+
+        assert_eq!(blind(Some(false)).await.unwrap()["blind"], false);
+        assert!((level().await - 0.8).abs() < 1e-6, "off again: what was programmed goes live");
+
+        // Ctrl-Z goes past the switch to the operator's own last change — setting the
+        // value — and leaves the show blind.
+        blind(Some(true)).await.unwrap();
+        handle.undo(user, false).await;
+        assert!(crate::infra::blind::is_blind(&handle).await, "Ctrl-Z does not switch blind off");
+        let held = handle.get(vec![PathSegment::Key("programmer_values".into())]).await.unwrap();
+        assert!(!held.to_string().contains("0.8"), "it took back the value instead: {held}");
     }
 }

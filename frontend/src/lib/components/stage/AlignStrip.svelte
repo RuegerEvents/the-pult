@@ -50,7 +50,7 @@
 
 	function chordsOf(parent: string) {
 		const object = $objectsById.get(parent);
-		return chordsFor(piece(object?.catalogue), null);
+		return chordsFor(piece(object?.catalog), null);
 	}
 
 	async function alongTheBar(place: (values: number[]) => number[]) {

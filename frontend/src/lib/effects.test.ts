@@ -23,7 +23,7 @@ describe('handing out phases', () => {
 	 * thing to do by accident and dividing by n − 1 would give NaN.
 	 */
 	it('gives a lone fixture phase zero, whatever the spread', () => {
-		for (const spread of ['Even', 'Linear', 'Reversed', 'Centre'] as const) {
+		for (const spread of ['Even', 'Linear', 'Reversed', 'Center'] as const) {
 			expect(phases(spread, 1)).toEqual([0]);
 		}
 		expect(phases({ Wings: 2 }, 1)).toEqual([0]);
@@ -46,7 +46,7 @@ describe('handing out phases', () => {
 	 */
 	it('spreads one whole cycle across a chase', () => {
 		expect(phases('Linear', 4)).toEqual([0, 0.25, 0.5, 0.75]);
-		// Compared loosely: fifths are not exact in binary, and pinning the artefacts
+		// Compared loosely: fifths are not exact in binary, and pinning the artifacts
 		// would be a test about IEEE 754 rather than about spreads.
 		phases('Linear', 5).forEach((p, i) => expect(p).toBeCloseTo(i / 5, 10));
 	});
@@ -57,9 +57,9 @@ describe('handing out phases', () => {
 	});
 
 	/** The ends together and the middle opposite: a row breathing outwards. */
-	it('makes Centre symmetric about the middle', () => {
-		expect(phases('Centre', 5)).toEqual([0.5, 0.25, 0, 0.25, 0.5]);
-		const four = phases('Centre', 4);
+	it('makes Center symmetric about the middle', () => {
+		expect(phases('Center', 5)).toEqual([0.5, 0.25, 0, 0.25, 0.5]);
+		const four = phases('Center', 4);
 		expect(four[0]).toBeCloseTo(four[3], 10);
 		expect(four[1]).toBeCloseTo(four[2], 10);
 	});
@@ -126,6 +126,12 @@ describe('the numeric table, again', () => {
 	it('takes a second over a one-hertz cycle', () => {
 		expect(cyclePosition(1, false, 0, 1000, 1250)).toBeCloseTo(0.25, 6);
 		expect(cyclePosition(1, false, 0, 1000, 2000)).toBeCloseTo(0, 6);
+	});
+
+	it('runs across every cycle a drawing shows, not only the first', () => {
+		// Two cycles drawn: at 1.5 s into a one-hertz effect a dot is in the second.
+		expect(cyclePosition(1, false, 0, 1000, 2500, 2)).toBeCloseTo(1.5, 6);
+		expect(cyclePosition(1, false, 0, 1000, 3000, 2)).toBeCloseTo(0, 6);
 	});
 
 	it('wraps rather than going negative before the anchor', () => {

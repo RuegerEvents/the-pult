@@ -21,6 +21,9 @@ import { shouldReload } from '$lib/shows.js';
 import type { PultWsClient } from '$lib/ws/client.js';
 import { backendOrigin, fetchConfig, type BackendConfig } from '$lib/ws/endpoint.js';
 
+/** How often the build is asked about between reconnects. */
+const BUILD_POLL_MS = 60_000;
+
 /** What this page loaded onto, and what it is looking at now. */
 export type StationStore = Readable<BackendConfig | null>;
 
@@ -39,7 +42,13 @@ export function watchStation(
 	 * is the moment a switch is over. Not called when the answer is a reload: the
 	 * page that comes back asks again and hears it then.
 	 */
-	onFresh: () => void = () => {}
+	onFresh: () => void = () => {},
+	/**
+	 * Told which build of the page the station serves, on every answer and once a
+	 * minute besides — a redeploy that happens while this tab stays connected closes
+	 * no socket, so a reconnect alone would never hear about it. `stores/build.ts`.
+	 */
+	onBuild: (build: string | null | undefined) => void = () => {}
 ): StationStore {
 	return readable<BackendConfig | null>(null, (set) => {
 		// What this page believes it loaded onto. Set once, from the first answer:
@@ -56,11 +65,22 @@ export function watchStation(
 			loadedWith ??= config;
 			set(config);
 			onFresh();
+			onBuild(config.build);
 		};
 
 		void ask();
+		// Only the build, on the timer: the full answer also ends a show switch, and a
+		// poll landing between the switch beginning and the station stopping would take
+		// the cover down early.
+		const poll = setInterval(() => {
+			void fetchConfig(origin).then((config) => config && onBuild(config.build));
+		}, BUILD_POLL_MS);
 		// Every reconnect, because a switch is what closes the socket and coming back
 		// is the first moment there is anything to ask.
-		return client.addConnectListener(() => void ask());
+		const unlisten = client.addConnectListener(() => void ask());
+		return () => {
+			clearInterval(poll);
+			unlisten();
+		};
 	});
 }

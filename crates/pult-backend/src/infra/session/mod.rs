@@ -8,13 +8,18 @@ use pult_schema::{
     events::operation::NodeId,
     lifecycle::Lifecycle,
     path::PathSegment,
-    types::session::{DiscoveredSession, SessionState},
+    types::session::{DiscoveredSession, NearbyStation, SessionState},
 };
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::{engine::EngineHandle, infra::sync::SyncHandle};
+
+pub mod remembered;
+
+/// How often a station that came up remembering a session tries to get back into it.
+const REJOIN_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
 
 // ── SessionCommand ────────────────────────────────────────────────────────────
 
@@ -30,7 +35,14 @@ pub enum SessionCommand {
         session_id: Uuid,
         reply: oneshot::Sender<Result<(), String>>,
     },
+    /// Join the station at a sync address, with no advert to go by.
+    JoinAt {
+        addr: SocketAddr,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     Leave,
+    /// A page has the stations on the network on screen, or no longer has.
+    WatchNearby { session: Uuid, on: bool },
     Stop,
 }
 
@@ -51,13 +63,60 @@ impl SessionHandle {
         let _ = self.0.send(SessionCommand::Join { session_id, reply: tx }).await;
         rx.await.unwrap_or(Err("channel closed".into()))
     }
+
+    /// Join the station at `addr` — its sync address — without having discovered it.
+    ///
+    /// The way in when mDNS is not: a venue switch that drops multicast, or a Mac whose
+    /// Local Network permission was never given. Discovery is a convenience for finding
+    /// a station; joining one is a TCP connection, and nothing about a hot spare should
+    /// rest on the convenience.
+    /// This page is showing the stations on the network, or has stopped. Browsing for
+    /// them runs only while some page is.
+    pub async fn watch_nearby(&self, session: Uuid, on: bool) {
+        let _ = self.0.send(SessionCommand::WatchNearby { session, on }).await;
+    }
+
+    pub async fn join_at(&self, addr: SocketAddr) -> Result<(), String> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.0.send(SessionCommand::JoinAt { addr, reply: tx }).await;
+        rx.await.unwrap_or(Err("channel closed".into()))
+    }
 }
 
 // ── SessionManager ────────────────────────────────────────────────────────────
 
 const SERVICE_TYPE: &str = "_pult._tcp.local.";
+/// Every station, in a session or not, at its HTTP port: what an invitation is sent to.
+/// A service type of its own rather than more fields on the session's, because that
+/// advert exists only while a station leads one, and everything that reads it takes
+/// an advert to be a session somebody can join.
+const STATION_SERVICE: &str = "_pult-station._tcp.local.";
+/// How often a station on the network is asked again whether it is still there.
+const PROBE_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+/// How long it has to answer. A station on the same LAN answers in a millisecond; one
+/// that takes a second is not one an invitation would reach either.
+const PROBE_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// What an mDNS full name was discovered as.
+#[derive(Clone, Copy)]
+enum Advert {
+    Session(Uuid),
+    Station(NodeId),
+}
 
 pub struct SessionManager {
+    /// Whether joins are written down and gone back to after a restart
+    /// (`Config::rejoin`). Off in tests, which start stations by the dozen.
+    remembers: bool,
+    /// The leader to get back to, while this station is not yet in a session.
+    rejoin: Option<SocketAddr>,
+    /// The leader to hand the lead back to: set when this station was promoted out of
+    /// a session it had joined, cleared once it is that leader's follower again.
+    handback: Option<SocketAddr>,
+    /// The leader this station means to follow, while it is following a stand-in: set
+    /// when the remembered leader did not answer after a failover and the station
+    /// joined whoever leads now instead.
+    stand_in: Option<SocketAddr>,
     node_id: NodeId,
     sync_port: u16,
     engine: EngineHandle,
@@ -75,28 +134,71 @@ pub struct SessionManager {
     discovered_leader_ids: HashMap<Uuid, NodeId>,
     discovered_show_ids: HashMap<Uuid, Uuid>,
     mdns: ServiceDaemon,
-    /// The address this station advertises itself at.
+    /// The discovered sessions and stations by mDNS full name, because a removal names
+    /// only that — and the session list used to match a removal against an instance
+    /// name built from the *session* id, when adverts are named by the node's, so a
+    /// session that went away was never taken out of the list.
+    advert_names: HashMap<String, Advert>,
+    /// Where this station's own API answers, and what it has open, for its station
+    /// advert.
+    http_port: u16,
+    show_name: String,
+    /// The session id the station advert last said, so it is announced again only when
+    /// that moves. Re-announcing on every state push would answer each discovery with
+    /// an announcement, which is a discovery on every other station.
+    announced: Option<(Option<Uuid>, bool)>,
+    /// Every station advert resolved, whether or not it answers. `state.nearby` is the
+    /// ones that did at their last probe: an advert says a station was there, and one
+    /// that stopped without withdrawing it — a crash, a pulled cable, a test run —
+    /// goes on being advertised until its record expires, which is the best part of an
+    /// hour. Listing those offered an Invite to a dozen consoles that did not exist.
+    candidates: HashMap<NodeId, NearbyStation>,
+    /// The pages showing the stations on the network. Browsing for them runs while
+    /// there is one and not otherwise: a view is asked for, never published, and a
+    /// station browsing for ever answered every other station's announcements for
+    /// ever — a few dozen of them in one test run starved each other's runtimes.
+    watchers: std::collections::HashSet<Uuid>,
+    browsing: bool,
+    /// Where the station browse's events are fed, once it is started.
+    station_events: mpsc::Sender<ServiceEvent>,
+    probes_tx: mpsc::Sender<(NodeId, String, bool)>,
+    probes_rx: mpsc::Receiver<(NodeId, String, bool)>,
+    /// The address this station advertises itself at, where the session was told a
+    /// cable; `None` advertises each interface's own address on that interface.
     ///
-    /// What the session's own interface setting resolved to, and otherwise
-    /// [`local_ipv4`] — which asks the route table, and so answers with the *house*
-    /// LAN on a console that has one beside a lighting network. That was the silent
-    /// defect here: the address a peer was told to dial for the show was decided by
-    /// which cable reaches the internet.
-    advertise_at: std::net::Ipv4Addr,
+    /// Not `infra::local_ipv4`, twice over. It asks the route table, so it answered with
+    /// the *house* LAN on a console that has one beside a lighting network — the
+    /// address a peer was told to dial for the show was decided by which cable reaches
+    /// the internet — and on a lighting network with no route at all it answered
+    /// loopback, so the peer was told to dial itself.
+    advertise_at: Option<std::net::Ipv4Addr>,
     /// A handle to our own command channel, for the promotion bridge.
     self_tx: mpsc::Sender<SessionCommand>,
+    /// Where "am I the leader" is read by everything that acts on it. Told the moment
+    /// the session changes, not on the reporter's tick: see [`Self::push_state`].
+    net: crate::infra::net::NetHandle,
+    /// Ticks when this machine's addresses move, which a daemon does not survive — see
+    /// [`Self::renew_mdns`].
+    moved: tokio::sync::watch::Receiver<u64>,
+    /// The session advert as last registered, so a renewed daemon can say it again.
+    session_advert: Option<ServiceInfo>,
 }
 
 impl SessionManager {
     pub fn new(
         node_id: NodeId,
         sync_port: u16,
+        http_port: u16,
+        show_name: String,
         engine: EngineHandle,
         sync: SyncHandle,
         net: crate::infra::net::NetHandle,
+        remembers: bool,
     ) -> (Self, SessionHandle) {
+        let rejoin = if remembers { remembered::load(node_id) } else { None };
         let (tx, rx) = mpsc::channel(16);
         let (mdns_tx, mdns_rx) = mpsc::channel(64);
+        let (probes_tx, probes_rx) = mpsc::channel(64);
 
         let mdns = match ServiceDaemon::new() {
             Ok(d) => d,
@@ -122,20 +224,35 @@ impl SessionManager {
                 warn!("[session] mDNS browse failed: {e}");
                 return (
                     SessionManager {
+                        remembers, rejoin, handback: None, stand_in: None,
                         node_id, sync_port, engine, sync, rx, mdns_rx,
                         state: SessionState { node_id: Some(node_id), ..Default::default() },
                         discovered_addrs: HashMap::new(),
                         discovered_leader_ids: HashMap::new(),
                         discovered_show_ids: HashMap::new(),
                         mdns,
+                        advert_names: HashMap::new(),
+                        http_port,
+                        show_name,
+                        announced: None,
+                        candidates: HashMap::new(),
+                        watchers: Default::default(),
+                        browsing: false,
+                        station_events: mdns_tx.clone(),
+                        probes_tx,
+                        probes_rx,
                         advertise_at,
                         self_tx: tx.clone(),
+                        moved: net.address_changes(),
+                        session_advert: None,
+                        net,
                     },
                     SessionHandle(tx),
                 );
             }
         };
 
+        let station_events = mdns_tx.clone();
         std::thread::spawn(move || {
             while let Ok(event) = browse_receiver.recv() {
                 if mdns_tx.blocking_send(event).is_err() { break; }
@@ -144,14 +261,28 @@ impl SessionManager {
 
         (
             SessionManager {
+                remembers, rejoin, handback: None, stand_in: None,
                 node_id, sync_port, engine, sync, rx, mdns_rx,
                 state: SessionState { node_id: Some(node_id), ..Default::default() },
                 discovered_addrs: HashMap::new(),
                 discovered_leader_ids: HashMap::new(),
                 discovered_show_ids: HashMap::new(),
                 mdns,
+                advert_names: HashMap::new(),
+                http_port,
+                show_name,
+                announced: None,
+                candidates: HashMap::new(),
+                watchers: Default::default(),
+                browsing: false,
+                station_events,
+                probes_tx,
+                probes_rx,
                 advertise_at,
                 self_tx: tx.clone(),
+                moved: net.address_changes(),
+                session_advert: None,
+                net,
             },
             SessionHandle(tx),
         )
@@ -173,9 +304,33 @@ impl SessionManager {
         // Say who this node is before anything happens to it. Nothing else will:
         // state is pushed on change, and this node's own id never changes.
         self.push_state().await;
+        self.announce_station();
+        let mut reprobe = tokio::time::interval(PROBE_EVERY);
+        // The first tick is at once: a station that remembers a leader tries it as soon
+        // as it is up, and then every REJOIN_EVERY until it is in a session again.
+        let mut rejoin_tick = tokio::time::interval(REJOIN_EVERY);
+        let mut handback_tick = tokio::time::interval(REJOIN_EVERY);
+        let mut orphan_tick = tokio::time::interval(REJOIN_EVERY);
+        if let Some(addr) = self.rejoin {
+            info!("[session] going back to the session last joined, at {addr}");
+        }
 
         loop {
             tokio::select! {
+                _ = rejoin_tick.tick(), if self.rejoin.is_some() => self.try_rejoin().await,
+                _ = orphan_tick.tick(), if self.remembers => {
+                    self.check_orphaned().await;
+                    self.try_going_home().await;
+                }
+                _ = handback_tick.tick(), if self.handback.is_some() => self.try_handback().await,
+                _ = reprobe.tick(), if self.browsing => {
+                    for station in self.candidates.values() {
+                        self.probe(station);
+                    }
+                }
+                Some((node, http_addr, answered)) = self.probes_rx.recv() => {
+                    self.probed(node, http_addr, answered).await;
+                }
                 cmd = self.rx.recv() => {
                     match cmd {
                         // The channel closing and being told to stop are the same
@@ -185,25 +340,201 @@ impl SessionManager {
                             self.stop_advertising();
                             break;
                         }
-                        Some(cmd) => self.handle_command(cmd).await,
+                        Some(cmd) => {
+                            self.handle_command(cmd).await;
+                            self.announce_station();
+                        }
                     }
                 }
                 event = self.mdns_rx.recv() => {
                     if let Some(event) = event { self.handle_mdns_event(event).await; }
                 }
+                Ok(()) = self.moved.changed() => self.renew_mdns(),
             }
         }
         // The daemon runs on a thread of its own, so dropping the manager is not
         // enough to stop it. A console that opens three shows in a row would
         // otherwise be three responders on the network, two of them answering for
         // ports nothing is listening on.
+        let _ = self.mdns.unregister(&self.station_fullname());
         if let Err(e) = self.mdns.shutdown() {
             debug!("[session] mDNS shutdown: {e}");
         }
     }
 
+    /// One attempt at the remembered leader. Stops trying once this station is in a
+    /// session by any route, so a join somebody made by hand in the meantime wins.
+    async fn try_rejoin(&mut self) {
+        if self.state.is_follower || self.state.is_advertising {
+            self.rejoin = None;
+            return;
+        }
+        let Some(addr) = self.rejoin else { return };
+        let (reply, answer) = oneshot::channel();
+        self.handle_command(SessionCommand::JoinAt { addr, reply }).await;
+        match answer.await {
+            Ok(Ok(())) => self.rejoin = None,
+            _ => debug!("[session] {addr} did not answer yet; trying again in {REJOIN_EVERY:?}"),
+        }
+    }
+
+    /// Join the station at a sync address. `remember` writes it down as the leader to go
+    /// back to; a stand-in joined during a failover is not written down, so the station
+    /// still goes home to the leader it chose once that one answers.
+    async fn join_at(&mut self, addr: SocketAddr, remember: bool) -> Result<(), String> {
+        // No advert, so no session id and no show id to offer: a fresh id names this
+        // session from here on, and the show is whatever the handshake agrees. The node
+        // that answers is the one being joined, and so the leader.
+        let session_id = Uuid::new_v4();
+        match self.sync.dial_peer(vec![addr], session_id, Uuid::nil()).await {
+            Ok((addr, leader)) => {
+                self.sync.set_leader(leader).await;
+                self.state.is_advertising = false;
+                self.state.is_follower = true;
+                self.state.session_id = Some(session_id);
+                self.push_state().await;
+                if remember && self.remembers {
+                    remembered::remember(self.node_id, addr);
+                    self.stand_in = None;
+                }
+                info!("[session] joined the station at {addr} by its address");
+                Ok(())
+            }
+            Err(why) => {
+                warn!("[session] could not join the station at {addr}: {why}");
+                Err(why)
+            }
+        }
+    }
+
+    /// Where the station that leads now — by this station's own election — takes peers,
+    /// read off its row. `None` where that is this station or nobody it has a row for.
+    async fn current_leader_sync_addr(&self) -> Option<SocketAddr> {
+        let leader = self.sync.leader().await?;
+        if leader == self.node_id {
+            return None;
+        }
+        let row = self
+            .engine
+            .get(vec![PathSegment::Key("stations".into()), PathSegment::Id(leader.0)])
+            .await
+            .ok()?;
+        row["sync_addr"].as_str()?.parse().ok()
+    }
+
+    /// A follower that joined a stand-in during a failover goes home as soon as the
+    /// leader it chose answers again: a bare TCP connect first, then a clean join there.
+    async fn try_going_home(&mut self) {
+        let Some(home) = self.stand_in else { return };
+        if self.state.is_advertising {
+            self.stand_in = None;
+            return;
+        }
+        let reachable = matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), tokio::net::TcpStream::connect(home)).await,
+            Ok(Ok(_))
+        );
+        if !reachable {
+            return;
+        }
+        info!("[session] {home} is back; following it again");
+        // Joined without dropping the stand-in first: dropping it reads to the sync
+        // layer as the leader going, which elected this station and set off a promotion
+        // and a handback in the half second before the join landed (seen at the gig).
+        // The stand-in hands its own lead back to the same station a moment later.
+        if self.join_at(home, true).await.is_err() {
+            // Nobody followed for a moment; the orphan check picks this up again.
+            debug!("[session] going home to {home} failed; trying again");
+        }
+    }
+
+    /// A follower with nobody to follow goes back to the leader it remembers.
+    ///
+    /// Found at the gig: the audio MacBook was connected to the Mini only, the Mini
+    /// restarted for an install, and the election named the Pi — a station this one had
+    /// no link to. So it believed it followed the Pi, was connected to nothing, and did
+    /// nothing until somebody restarted it. A follower with no peers at all is in no
+    /// session that matters, whoever it thinks leads; it lets go of that and rejoins the
+    /// leader it last joined, every ten seconds, the way it would after a restart.
+    async fn check_orphaned(&mut self) {
+        if !self.state.is_follower || self.state.is_advertising || self.rejoin.is_some() {
+            return;
+        }
+        if self.sync.peer_count().await > 0 {
+            return;
+        }
+        let Some(addr) = remembered::load(self.node_id) else { return };
+        warn!("[session] following nobody: every peer is gone; going back to {addr}");
+        self.state = SessionState {
+            node_id: Some(self.node_id),
+            discovered: self.state.discovered.clone(),
+            ..Default::default()
+        };
+        self.push_state().await;
+        if self.join_at(addr, true).await.is_ok() {
+            return;
+        }
+        // The leader it remembers is down — the failover case. Whoever leads now is the
+        // session, so join that, and go home once the remembered one answers.
+        if let Some(standing_in) = self.current_leader_sync_addr().await {
+            if self.join_at(standing_in, false).await.is_ok() {
+                info!("[session] following {standing_in} until {addr} is back");
+                self.stand_in = Some(addr);
+                return;
+            }
+        }
+        // Nobody answered: keep trying the remembered one, as after a restart.
+        self.rejoin = Some(addr);
+    }
+
+    /// Give the lead back to the leader this station was promoted away from, if it is
+    /// answering again.
+    ///
+    /// A plain TCP connect first, so the ten-second tick costs a refused connection and
+    /// nothing else while that machine is still down. Then the advert goes, and this
+    /// station joins it the way `session.joinAt` would; if the join fails after all, it
+    /// takes the lead up again at once rather than leaving the rig with nobody driving.
+    async fn try_handback(&mut self) {
+        let Some(addr) = self.handback else { return };
+        if !self.state.is_advertising {
+            // No longer leading, by whatever route: nothing to hand back.
+            self.handback = None;
+            return;
+        }
+        let reachable = matches!(
+            tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                tokio::net::TcpStream::connect(addr)
+            )
+            .await,
+            Ok(Ok(_))
+        );
+        if !reachable {
+            return;
+        }
+        info!("[session] {addr} is back; handing the lead back to it");
+        self.stop_advertising();
+        self.state.is_advertising = false;
+        let (reply, answer) = oneshot::channel();
+        self.handle_command(SessionCommand::JoinAt { addr, reply }).await;
+        match answer.await {
+            Ok(Ok(())) => self.handback = None,
+            _ => {
+                warn!("[session] could not hand the lead back to {addr}; leading on");
+                self.state.is_follower = true;
+                self.handle_command(SessionCommand::Promote).await;
+            }
+        }
+    }
+
     /// Push current session state to the engine so all connected frontends see it.
+    ///
+    /// And tell the station's standing at once. The reporter works it out too, but on
+    /// its own two-second tick and only after the machine's first probe, which on a
+    /// slow disk is seconds: a spare that had joined went on believing it led for that
+    /// long, and played every timeline beside the real leader.
     async fn push_state(&self) {
+        self.net.set_leader(!self.state.is_follower);
         if let Ok(json) = serde_json::to_value(&self.state) {
             let path = vec![PathSegment::Key("session".into())];
             let _ = self.engine.set(path, Lifecycle::Local, json).await;
@@ -213,6 +544,12 @@ impl SessionManager {
     async fn handle_command(&mut self, cmd: SessionCommand) {
         match cmd {
             SessionCommand::Create { show_name, show_id, reply } => {
+                // A station starting its own session is nobody's follower any more.
+                self.rejoin = None;
+                self.handback = None;
+                if self.remembers {
+                    remembered::forget(self.node_id);
+                }
                 let session_id = Uuid::new_v4();
                 self.advertise(session_id, show_id, show_name).await;
                 if self.state.is_advertising {
@@ -230,7 +567,7 @@ impl SessionManager {
                 let show_id = self.discovered_show_ids.get(&session_id).copied().unwrap_or_default();
                 let leader = self.discovered_leader_ids.get(&session_id).copied().unwrap_or(self.node_id);
 
-                // Every address it advertised that could be dialled from here, in the
+                // Every address it advertised that could be dialed from here, in the
                 // order they are worth trying. The sync side works down the list,
                 // because "the address it gave" is several addresses and which of them
                 // reaches this machine is not something either end can know on its own.
@@ -260,11 +597,24 @@ impl SessionManager {
                 self.state.is_follower = true;
                 self.state.session_id = Some(session_id);
                 self.push_state().await;
+                if self.remembers {
+                    remembered::remember(self.node_id, addr);
+                }
                 info!("[session] joined session {session_id} at {addr}");
                 let _ = reply.send(Ok(()));
             }
 
+            SessionCommand::JoinAt { addr, reply } => {
+                let _ = reply.send(self.join_at(addr, true).await);
+            }
+
             SessionCommand::Leave => {
+                // Deliberate, so not gone back to after a restart either.
+                self.rejoin = None;
+                self.handback = None;
+                if self.remembers {
+                    remembered::forget(self.node_id);
+                }
                 if self.state.is_advertising {
                     self.stop_advertising();
                 } else if self.state.is_follower {
@@ -299,11 +649,245 @@ impl SessionManager {
                 self.advertise(session_id, show_id, show_name).await;
                 self.state.is_follower = false;
                 self.push_state().await;
+                // A spare that took over keeps looking for the leader it was following,
+                // and gives the lead back when it answers (decided at the gig,
+                // 2026-10-25: the Mini leads whenever it is up).
+                if self.remembers {
+                    self.handback = remembered::load(self.node_id);
+                    if let Some(addr) = self.handback {
+                        info!("[session] will hand the lead back to {addr} when it answers");
+                    }
+                }
+            }
+
+            SessionCommand::WatchNearby { session, on } => {
+                if on {
+                    self.watchers.insert(session);
+                } else {
+                    self.watchers.remove(&session);
+                }
+                self.set_browsing(!self.watchers.is_empty()).await;
             }
 
             // Handled in `run`, which is where breaking out of the loop is possible.
             SessionCommand::Stop => {}
         }
+    }
+
+    fn station_fullname(&self) -> String {
+        format!("pult-station-{}.{STATION_SERVICE}", &self.node_id.0.to_string()[..8])
+    }
+
+    /// Say this station is here, at its HTTP port, and which session it is in —
+    /// again whenever that moves, so a console listing who could be invited does not
+    /// offer the one that already came.
+    fn announce_station(&mut self) {
+        let said = (self.state.session_id, self.state.is_follower);
+        if self.announced == Some(said) {
+            return;
+        }
+        let instance_name = format!("pult-station-{}", &self.node_id.0.to_string()[..8]);
+        let hostname = format!("{}.local.", gethostname());
+        let mut props = HashMap::new();
+        props.insert("node_id".to_string(), self.node_id.0.to_string());
+        props.insert("hostname".to_string(), gethostname());
+        props.insert("show_name".to_string(), self.show_name.clone());
+        props.insert("sync_port".to_string(), self.sync_port.to_string());
+        props.insert("follows".to_string(), if self.state.is_follower { "1" } else { "0" }.to_string());
+        props.insert(
+            "session_id".to_string(),
+            self.state.session_id.map(|id| id.to_string()).unwrap_or_default(),
+        );
+        // The addresses a peer can actually reach, named — never `enable_addr_auto`,
+        // which announces on every interface the machine has: two dozen on a Mac,
+        // tunnels and AirDrop's among them. A station is announced for as long as it
+        // runs, unlike a session, and a room of them each announcing on every
+        // interface swamped a test machine running a few dozen until none could
+        // accept a connection.
+        let addresses: Vec<IpAddr> = match self.advertise_at {
+            Some(ip) => vec![IpAddr::V4(ip)],
+            None => crate::infra::net::reachable_for(&self.net, &pult_schema::types::network::NetService::Session)
+                .into_iter()
+                .map(IpAddr::V4)
+                .collect(),
+        };
+        if addresses.is_empty() {
+            debug!("[session] nowhere to announce this station yet");
+            return;
+        }
+        let info = ServiceInfo::new(STATION_SERVICE, &instance_name, &hostname, &addresses[..], self.http_port, props);
+        match info.map(|info| self.mdns.register(info)) {
+            Ok(Ok(())) => self.announced = Some(said),
+            Ok(Err(e)) => warn!("[session] mDNS register of this station failed: {e}"),
+            Err(e) => warn!("[session] ServiceInfo::new for this station failed: {e}"),
+        }
+    }
+
+    /// Start again with a new daemon, because this machine's addresses moved.
+    ///
+    /// `mdns-sd` 0.13 does not survive that: a daemon up while a Mac went from wifi to
+    /// ethernet went on reporting what it had found as removed and never found it
+    /// again, while a fresh one found it at once. And the station advert names its
+    /// addresses, so without this it went on announcing the wifi's for as long as the
+    /// station ran. Everything this manager has said or asked for is said and asked
+    /// for again on the new one; what it has found stays, to be found again.
+    fn renew_mdns(&mut self) {
+        let mdns = match ServiceDaemon::new() {
+            Ok(d) => d,
+            Err(e) => {
+                warn!("[session] cannot renew the mDNS daemon: {e}");
+                return;
+            }
+        };
+        let address = self
+            .net
+            .bind(
+                pult_schema::types::network::NetService::Session,
+                "session discovery",
+                self.net.prefs().session.as_deref(),
+            )
+            .unwrap_or(None);
+        self.advertise_at = crate::infra::net::restrict_mdns(&mdns, address);
+        let old = std::mem::replace(&mut self.mdns, mdns);
+        let _ = old.shutdown();
+        info!("[session] this machine's addresses moved; announcing and looking again");
+
+        match self.mdns.browse(SERVICE_TYPE) {
+            Ok(events) => self.forward(events),
+            Err(e) => warn!("[session] mDNS browse failed: {e}"),
+        }
+        if self.browsing {
+            match self.mdns.browse(STATION_SERVICE) {
+                Ok(events) => self.forward(events),
+                Err(e) => warn!("[session] mDNS browse for stations failed: {e}"),
+            }
+        }
+        if let Some(info) = self.session_advert.clone() {
+            if let Err(e) = self.mdns.register(info) {
+                warn!("[session] mDNS register failed: {e}");
+            }
+        }
+        self.announced = None;
+        self.announce_station();
+    }
+
+    /// Feed a browse's events to the manager, until its daemon is shut down.
+    fn forward(&self, events: mdns_sd::Receiver<ServiceEvent>) {
+        let tx = self.station_events.clone();
+        std::thread::spawn(move || {
+            while let Ok(event) = events.recv() {
+                if tx.blocking_send(event).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+
+    /// Start or stop looking for the other stations on the network.
+    async fn set_browsing(&mut self, on: bool) {
+        if on == self.browsing {
+            return;
+        }
+        if on {
+            match self.mdns.browse(STATION_SERVICE) {
+                Ok(events) => {
+                    self.forward(events);
+                    self.browsing = true;
+                }
+                Err(e) => warn!("[session] mDNS browse for stations failed: {e}"),
+            }
+        } else {
+            let _ = self.mdns.stop_browse(STATION_SERVICE);
+            self.browsing = false;
+            // What it found is forgotten with it: a list nobody is keeping up to date
+            // is a list of stations that may have gone.
+            self.candidates.clear();
+            self.advert_names.retain(|_, advert| !matches!(advert, Advert::Station(_)));
+            if !self.state.nearby.is_empty() {
+                self.state.nearby.clear();
+                self.push_state().await;
+            }
+        }
+    }
+
+    /// A station advert, resolved: listed as nearby unless it is this one.
+    async fn station_resolved(&mut self, info: &ServiceInfo) {
+        // A late answer to a browse that has been stopped.
+        if !self.browsing {
+            return;
+        }
+        let props = info.get_properties();
+        let Some(node_id) = props.get("node_id").and_then(|v| v.val_str().parse::<Uuid>().ok()).map(NodeId) else {
+            return;
+        };
+        if node_id == self.node_id {
+            return;
+        }
+        let Some(http_addr) = reachable_at(info.get_addresses().iter().copied(), info.get_port()).first().copied() else {
+            return;
+        };
+        let sync_addr = props
+            .get("sync_port")
+            .and_then(|v| v.val_str().parse::<u16>().ok())
+            .map(|port| SocketAddr::new(http_addr.ip(), port).to_string())
+            .unwrap_or_default();
+        let station = NearbyStation {
+            node_id,
+            hostname: props.get("hostname").map(|v| v.val_str().to_string()).unwrap_or_default(),
+            http_addr: http_addr.to_string(),
+            sync_addr,
+            follows: props.get("follows").is_some_and(|v| v.val_str() == "1"),
+            show_name: props.get("show_name").map(|v| v.val_str().to_string()).unwrap_or_default(),
+            session_id: props.get("session_id").and_then(|v| v.val_str().parse::<Uuid>().ok()),
+        };
+        self.advert_names.insert(info.get_fullname().to_string(), Advert::Station(node_id));
+        // A station is resolved again every time any daemon on the network answers for
+        // it, which on a busy network is several times a second. Asked at once only
+        // when it is new or has moved; otherwise the next round of probes covers it,
+        // and a probe per answer was a connection storm with a few dozen stations.
+        let moved = self.candidates.get(&node_id) != Some(&station);
+        if moved {
+            self.probe(&station);
+        }
+        self.candidates.insert(node_id, station);
+    }
+
+    /// Ask whether a station answers at its HTTP port, off this actor: the answer comes
+    /// back on `probes_rx`.
+    fn probe(&self, station: &NearbyStation) {
+        let tx = self.probes_tx.clone();
+        let (node, http_addr) = (station.node_id, station.http_addr.clone());
+        tokio::spawn(async move {
+            let answered = matches!(
+                tokio::time::timeout(PROBE_WAIT, tokio::net::TcpStream::connect(&http_addr)).await,
+                Ok(Ok(_))
+            );
+            let _ = tx.send((node, http_addr, answered)).await;
+        });
+    }
+
+    /// A probe came back: list the station if it answered, and take it off if not.
+    async fn probed(&mut self, node: NodeId, http_addr: String, answered: bool) {
+        // An answer about an address the station has since moved from, or a station
+        // whose advert has since been withdrawn, says nothing about it now.
+        let Some(station) = self.candidates.get(&node).filter(|s| s.http_addr == http_addr).cloned() else {
+            return;
+        };
+        let listed = self.state.nearby.iter().position(|s| s.node_id == node);
+        match (answered, listed) {
+            (true, Some(i)) if self.state.nearby[i] == station => return,
+            (true, Some(i)) => self.state.nearby[i] = station,
+            (true, None) => {
+                info!("[session] station {} on the network at {http_addr}", station.hostname);
+                self.state.nearby.push(station);
+            }
+            (false, Some(i)) => {
+                debug!("[session] station {} stopped answering at {http_addr}", station.hostname);
+                self.state.nearby.remove(i);
+            }
+            (false, None) => return,
+        }
+        self.push_state().await;
     }
 
     /// Take this node's service off the network.
@@ -320,6 +904,7 @@ impl SessionManager {
             if let Err(e) = self.mdns.unregister(&fullname) {
                 debug!("[session] mDNS unregister: {e}");
             }
+            self.session_advert = None;
             info!("[session] stopped advertising");
         }
     }
@@ -328,7 +913,6 @@ impl SessionManager {
     async fn advertise(&mut self, session_id: Uuid, show_id: Uuid, show_name: String) {
         let instance_name = format!("pult-{}", &self.node_id.0.to_string()[..8]);
         let hostname = format!("{}.local.", gethostname());
-        let ip = self.advertise_at;
 
         let mut props = HashMap::new();
         props.insert("session_id".to_string(), session_id.to_string());
@@ -336,17 +920,17 @@ impl SessionManager {
         props.insert("show_name".to_string(), show_name);
         props.insert("node_id".to_string(), self.node_id.0.to_string());
         props.insert("leader_node_id".to_string(), self.node_id.0.to_string());
+        props.insert("generation".to_string(), crate::infra::showfile::upgrade::CURRENT.to_string());
 
-        match ServiceInfo::new(
-            SERVICE_TYPE,
-            &instance_name,
-            &hostname,
-            IpAddr::V4(ip),
-            self.sync_port,
-            props,
-        ) {
-            Ok(info) => match self.mdns.register(info) {
+        let info = match self.advertise_at {
+            Some(ip) => ServiceInfo::new(SERVICE_TYPE, &instance_name, &hostname, IpAddr::V4(ip), self.sync_port, props),
+            None => ServiceInfo::new(SERVICE_TYPE, &instance_name, &hostname, (), self.sync_port, props)
+                .map(ServiceInfo::enable_addr_auto),
+        };
+        match info {
+            Ok(info) => match self.mdns.register(info.clone()) {
                 Ok(()) => {
+                    self.session_advert = Some(info);
                     info!("[session] advertising session {session_id}");
                     self.state.is_advertising = true;
                     self.state.session_id = Some(session_id);
@@ -359,6 +943,9 @@ impl SessionManager {
 
     async fn handle_mdns_event(&mut self, event: ServiceEvent) {
         match event {
+            ServiceEvent::ServiceResolved(info) if info.get_fullname().ends_with(STATION_SERVICE) => {
+                self.station_resolved(&info).await;
+            }
             ServiceEvent::ServiceResolved(info) => {
                 let props = info.get_properties();
                 let session_id = props.get("session_id").and_then(|v| v.val_str().parse::<Uuid>().ok());
@@ -366,6 +953,7 @@ impl SessionManager {
                 let show_name = props.get("show_name").map(|v| v.val_str().to_string()).unwrap_or_default();
                 let node_id = props.get("node_id").and_then(|v| v.val_str().parse::<Uuid>().ok()).map(NodeId);
                 let leader_node_id = props.get("leader_node_id").and_then(|v| v.val_str().parse::<Uuid>().ok()).map(NodeId);
+                let generation = props.get("generation").and_then(|v| v.val_str().parse::<i64>().ok());
 
                 if let (Some(session_id), Some(show_id), Some(node_id), Some(leader_node_id)) =
                     (session_id, show_id, node_id, leader_node_id)
@@ -375,7 +963,7 @@ impl SessionManager {
                     let reachable =
                         reachable_at(info.get_addresses().iter().copied(), info.get_port());
                     let Some(sync_addr) = reachable.first().copied() else {
-                        // Nothing it advertised can be dialled from here. Not listed,
+                        // Nothing it advertised can be dialed from here. Not listed,
                         // because a session in the list is one an operator can press
                         // Join on — but said out loud, because a station that is
                         // plainly there and cannot be reached is worth a line in the
@@ -396,6 +984,7 @@ impl SessionManager {
                         }
                     );
 
+                    self.advert_names.insert(info.get_fullname().to_string(), Advert::Session(session_id));
                     self.discovered_addrs.insert(session_id, reachable);
                     self.discovered_show_ids.insert(session_id, show_id);
                     self.discovered_leader_ids.insert(session_id, leader_node_id);
@@ -404,29 +993,35 @@ impl SessionManager {
                     if let Some(existing) = self.state.discovered.iter_mut().find(|d| d.session_id == session_id) {
                         existing.show_name = show_name;
                         existing.sync_addr = sync_addr.to_string();
+                        existing.generation = generation;
                     } else {
                         self.state.discovered.push(DiscoveredSession {
                             session_id,
                             show_id,
                             show_name,
                             sync_addr: sync_addr.to_string(),
+                            generation,
                         });
                     }
                     self.push_state().await;
                 }
             }
 
-            ServiceEvent::ServiceRemoved(_ty, fullname) => {
-                let before = self.state.discovered.len();
-                self.state.discovered.retain(|d| {
-                    let instance = format!("pult-{}", &d.session_id.to_string()[..8]);
-                    !fullname.contains(&instance)
-                });
-                if self.state.discovered.len() != before {
-                    debug!("[session] removed session from discovered list");
+            ServiceEvent::ServiceRemoved(_ty, fullname) => match self.advert_names.remove(&fullname) {
+                Some(Advert::Session(id)) => {
+                    self.state.discovered.retain(|d| d.session_id != id);
+                    self.discovered_addrs.remove(&id);
+                    debug!("[session] session {id} went away");
                     self.push_state().await;
                 }
-            }
+                Some(Advert::Station(node)) => {
+                    self.candidates.remove(&node);
+                    self.state.nearby.retain(|s| s.node_id != node);
+                    debug!("[session] station {} went away", node.0);
+                    self.push_state().await;
+                }
+                None => {}
+            },
 
             _ => {}
         }
@@ -435,7 +1030,7 @@ impl SessionManager {
 
 // ── Where a discovered station can actually be reached ────────────────────────
 
-/// The addresses a discovered station can be dialled at, best first.
+/// The addresses a discovered station can be dialed at, best first.
 ///
 /// mDNS hands over a `HashSet`, so "the first address" is not the first the other
 /// station advertised — it is whatever the hash order happens to give, and it can be a
@@ -449,11 +1044,11 @@ impl SessionManager {
 /// this machine, which `scripts/demo.sh --two` is and a rig never is.
 ///
 /// IPv4 before IPv6 where both are offered, because a console advertises an IPv4
-/// address for itself ([`local_ipv4`]) and preferring the family it named keeps two
+/// address for itself and preferring the family it named keeps two
 /// stations agreeing about which path they are on.
 ///
 /// **An IPv6 link-local address is dropped rather than ranked last**, because it cannot
-/// be dialled at all: `fe80::/10` is only meaningful together with the interface it was
+/// be dialed at all: `fe80::/10` is only meaningful together with the interface it was
 /// learned on, and mDNS does not say which that was — so the `SocketAddr` built from it
 /// has no scope id and the connect fails with "No route to host". That is the bug this
 /// function exists for. Keeping it as a last resort would only spend a timeout before
@@ -462,13 +1057,13 @@ fn reachable_at(addresses: impl IntoIterator<Item = IpAddr>, port: u16) -> Vec<S
     let mut ranked: Vec<(u8, IpAddr)> =
         addresses.into_iter().filter_map(|ip| reach(&ip).map(|rank| (rank, ip))).collect();
     // By address as well as by rank, so a station with two equally good addresses is
-    // dialled at the same one every time and the log is worth reading.
+    // dialed at the same one every time and the log is worth reading.
     ranked.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
     ranked.dedup();
     ranked.into_iter().map(|(_, ip)| SocketAddr::new(ip, port)).collect()
 }
 
-/// How far an address reaches, lower being further. `None` cannot be dialled at all.
+/// How far an address reaches, lower being further. `None` cannot be dialed at all.
 fn reach(ip: &IpAddr) -> Option<u8> {
     match ip {
         // Not destinations: nothing is listening at "any address", and a console does
@@ -511,7 +1106,7 @@ mod tests {
     /// The bug, in one line. A station on macOS advertises an ordinary IPv4 address and
     /// a link-local IPv6 one; mDNS hands them over as a `HashSet`, so taking "the
     /// first" took whichever the hash order gave — and half the time that was the
-    /// `fe80::` one, which cannot be dialled without the interface it was learned on.
+    /// `fe80::` one, which cannot be dialed without the interface it was learned on.
     /// Two consoles found each other and never synced.
     #[test]
     fn a_link_local_ipv6_address_is_not_offered_at_all() {

@@ -61,7 +61,7 @@ jobs:
   # The GDTF and MVR readers, against real files rather than the small ones
   # checked in beside them. Everything here is `#[ignore]` in the default suite,
   # because the corpus is not in the repository — it is other people's work under
-  # other people's licences.
+  # other people's licenses.
   interop-corpus:
     runs-on: ubuntu-24.04
     timeout-minutes: 20

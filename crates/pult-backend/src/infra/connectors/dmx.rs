@@ -9,11 +9,12 @@ use pult_render::color::EmitterSpec;
 use pult_schema::types::{
     dmx_mode::DmxChannelLayout,
     fixture::{
-        driving, emitters_of, Emitter, Fixture, FixtureAddress, FixtureType, ParameterDirection,
+        driving, emitters_of, Emitter, Fixture, FixtureType,
         ParameterValue,
     },
-    output::{UniverseFrame, UniverseSummary, UniverseTraffic},
+    output::{ChannelTest, UniverseFrame, UniverseSummary, UniverseTraffic},
     programmer::ProgrammerValue,
+    sequence::Masters,
 };
 use uuid::Uuid;
 
@@ -74,8 +75,8 @@ pub struct Patch {
     /// name — it walks a flat list and writes bytes.
     ///
     /// Grouped by *parameter* rather than by channel, and that is the whole point of
-    /// the shape: an RGBW head's colour is four bytes and one value, and a flat list
-    /// of channels would evaluate the same colour four times a frame.
+    /// the shape: an RGBW head's color is four bytes and one value, and a flat list
+    /// of channels would evaluate the same color four times a frame.
     placed: Vec<PlacedParameter>,
     /// Every universe this patch occupies, ascending.
     ///
@@ -88,6 +89,11 @@ pub struct Patch {
     /// recording is not the show: a cue taken in the middle of a song must not cost a
     /// re-decode of the song.
     tracks: Vec<(std::sync::Arc<pult_render::Track>, pult_render::Transport)>,
+    /// The sequences' playback faders. Beside the patch rather than folded into the
+    /// fades, because a fader moving must not rewrite a fade a node is running.
+    masters: Masters,
+    /// Whether a playing take records a sequence's level, so a frame has to sample it.
+    recorded_levels: bool,
     /// Where each driven parameter is in `tracks`, so a frame does not scan every key
     /// of every playing recording once per fixture.
     ///
@@ -115,11 +121,11 @@ struct PlacedParameter {
     default: ParameterValue,
     /// Every emitter of this parameter, in the order the type lists them.
     ///
-    /// On the parameter rather than only on the channels, because *decoding* a colour
+    /// On the parameter rather than only on the channels, because *decoding* a color
     /// is a question about the whole parameter: `unmix` is handed one level per
     /// emitter at once and picks the primaries out of that list, so it has to see the
     /// list the mixer saw and in the same order. Empty for everything that is not a
-    /// colour.
+    /// color.
     emitters: Vec<EmitterSpec>,
     channels: Vec<PlacedChannel>,
 }
@@ -130,13 +136,13 @@ struct PlacedChannel {
     /// The break's 1-based start address in that universe.
     address: u16,
     layout: DmxChannelLayout,
-    /// The one emitter this channel drives, for a colour. `None` on everything else —
-    /// and on a colour channel whose mode named an emitter the type does not have,
+    /// The one emitter this channel drives, for a color. `None` on everything else —
+    /// and on a color channel whose mode named an emitter the type does not have,
     /// which is a channel there is nothing honest to write into.
     ///
     /// Resolved here rather than per frame: the mixer wants a spec, the schema holds
     /// an `Emitter`, and converting between them per channel per frame was measurably
-    /// the whole cost of colour on a rig of five hundred.
+    /// the whole cost of color on a rig of five hundred.
     emitter: Option<EmitterSpec>,
 }
 
@@ -161,6 +167,8 @@ impl Patch {
             universes: Vec::new(),
             tracks: Vec::new(),
             track_index: HashMap::new(),
+            masters: Masters::default(),
+            recorded_levels: false,
         };
         patch.settles_at = patch.work_out_when_it_settles();
         (patch.placed, patch.universes) = patch.place_channels();
@@ -190,8 +198,54 @@ impl Patch {
                 }
             }
         }
+        self.recorded_levels = index
+            .values()
+            .any(|keys| keys.contains_key(pult_schema::types::sequence::LEVEL_KEY));
         self.tracks = tracks;
         self.track_index = index;
+        self
+    }
+
+    /// The sequences' levels at `now_ms`: the faders, with whatever a playing take
+    /// recorded put over them. Sampled per frame, because a recorded fade moves between
+    /// the pushes that bring the faders.
+    pub fn masters_at(&self, now_ms: u64) -> std::borrow::Cow<'_, Masters> {
+        if !self.recorded_levels {
+            return std::borrow::Cow::Borrowed(&self.masters);
+        }
+        std::borrow::Cow::Owned(self.masters.with_recorded(|sequence| {
+            match self.track_at(sequence, pult_schema::types::sequence::LEVEL_KEY)?.value_at(now_ms)? {
+                ParameterValue::Float(level) => Some(*level),
+                _ => None,
+            }
+        }))
+    }
+
+    /// The sequences' faders, taken after construction the way the playing tracks are.
+    /// What one parameter of one fixture is doing at `now_ms`, by every layer a frame
+    /// uses — programmer, recording, effect, fade, home — and the masters over them.
+    ///
+    /// For something that needs one number rather than a wire: the motor of a wing fader
+    /// following the show, on the station the wing hangs off. `None` for a fixture this
+    /// patch has not got.
+    pub fn value_of(&self, fixture_id: Uuid, key: &str, now_ms: u64) -> Option<ParameterValue> {
+        let fixture = self.fixtures.iter().find(|f| f.id == fixture_id)?;
+        let masters = self.masters_at(now_ms);
+        let held = self.held.get(&(fixture_id, key.to_string())).and_then(|at| self.programmer.get(*at));
+        let driving = pult_render::Driving {
+            track: self.track_at(fixture_id, key),
+            ..driving(fixture, self.fixture_type(fixture), held, key, &masters)
+        };
+        pult_render::value_at(&driving, now_ms)
+    }
+
+    /// How many recordings this patch is playing.
+    pub fn tracks_len(&self) -> usize {
+        self.tracks.len()
+    }
+
+    pub fn mastered(mut self, masters: Masters) -> Self {
+        self.masters = masters;
         self
     }
 
@@ -213,15 +267,19 @@ impl Patch {
         let mut warned: HashSet<(Uuid, String)> = HashSet::new();
 
         for (index, fixture) in self.fixtures.iter().enumerate() {
-            let FixtureAddress::Dmx { mode: mode_name, breaks } = &fixture.address else {
+            // A DMX fixture, or a node's strip drawn by the console: both say where
+            // their bytes go, and nothing below needs to know which it is.
+            let Some((mode_name, breaks)) = fixture.address.dmx_placement() else {
                 continue;
             };
+            let mode_name = mode_name.to_string();
+            let breaks = breaks.into_owned();
             let Some(fixture_type) = self.fixture_type(fixture) else {
                 // Patched to a type that is not in the show. Nothing sensible to send.
                 continue;
             };
             if !fixture_type.dmx_modes.is_empty()
-                && !fixture_type.has_mode(mode_name)
+                && !fixture_type.has_mode(&mode_name)
                 && warned.insert((fixture_type.id, mode_name.clone()))
             {
                 tracing::warn!(
@@ -230,25 +288,25 @@ impl Patch {
                     "no such mode on this type; falling back to its first"
                 );
             }
-            let mode = fixture_type.mode(mode_name);
+            let mode = fixture_type.mode(&mode_name);
 
             // Every break this unit occupies, so a universe exists for it even when
             // nothing in it is driven. A patched fixture's universe is on the wire
             // whether or not the show is doing anything to it, which is what keeps a
             // rig of sensors from silently dropping its universe off the network.
-            for entry in breaks {
+            for entry in &breaks {
                 if !universes.contains(&entry.universe) {
                     universes.push(entry.universe);
                 }
             }
 
             // What the type says about each parameter, by key, so the loop below does
-            // one lookup rather than a scan per channel.
+            // one lookup rather than a scan per channel. Every control rather than every
+            // definition: a strip's thousand pixel keys all read back to one color.
             let by_key: HashMap<String, (&ParameterValue, Vec<Emitter>)> = fixture_type
-                .parameters
-                .iter()
-                .filter(|p| p.direction == ParameterDirection::Output)
-                .map(|p| (parameter_key(&p.kind), (&p.default_value, emitters_of(p))))
+                .controls()
+                .into_iter()
+                .map(|(kind, p)| (parameter_key(&kind), (&p.default_value, emitters_of(p))))
                 .collect();
 
             for layout in &mode.channels {
@@ -277,7 +335,7 @@ impl Patch {
                 };
 
                 // Beside the other bytes of the same parameter where there are any,
-                // so the frame evaluates a colour once and writes four bytes from it.
+                // so the frame evaluates a color once and writes four bytes from it.
                 match placed.iter_mut().rev().find(|each| {
                     each.fixture == index && each.key == layout.parameter_key
                 }) {
@@ -305,20 +363,20 @@ impl Patch {
     }
 
     /// What is acting on one parameter of one fixture, highest priority first.
-    pub fn driving<'a>(&'a self, fixture: &'a Fixture, key: &str) -> pult_render::Driving<'a> {
+    pub fn driving<'a>(&'a self, fixture: &'a Fixture, key: &str, now_ms: u64) -> pult_render::Driving<'a> {
         let held = self
             .held
             .get(&(fixture.id, key.to_string()))
             .and_then(|at| self.programmer.get(*at));
         pult_render::Driving {
             track: self.track_at(fixture.id, key),
-            ..driving(fixture, self.fixture_type(fixture), held, key)
+            ..driving(fixture, self.fixture_type(fixture), held, key, &self.masters_at(now_ms))
         }
     }
 
     /// What one parameter is putting out at `now_ms`.
     pub fn value_at(&self, fixture: &Fixture, key: &str, now_ms: u64) -> Option<ParameterValue> {
-        pult_render::value_at(&self.driving(fixture, key), now_ms)
+        pult_render::value_at(&self.driving(fixture, key, now_ms), now_ms)
     }
 
     /// Read a set of received universes back into parameter values.
@@ -459,6 +517,7 @@ pub fn render_carried(patch: &Patch, now_ms: u64, carried: &[u16]) -> Vec<Univer
         .map(|number| (*number, Universe::new(*number)))
         .collect();
 
+    let masters = patch.masters_at(now_ms);
     for parameter in &patch.placed {
         // Nowhere for any of this parameter's bytes to go, so it is never evaluated.
         // The map is the filter: every placed channel's universe came from a break
@@ -468,7 +527,7 @@ pub fn render_carried(patch: &Patch, now_ms: u64, carried: &[u16]) -> Vec<Univer
             continue;
         }
         let fixture = &patch.fixtures[parameter.fixture];
-        // Once, however many bytes it comes to: an RGBW head's colour is one
+        // Once, however many bytes it comes to: an RGBW head's color is one
         // evaluation and four writes, not four of each.
         let driving = pult_render::Driving {
             track: patch.track_at(fixture.id, &parameter.key),
@@ -477,6 +536,7 @@ pub fn render_carried(patch: &Patch, now_ms: u64, carried: &[u16]) -> Vec<Univer
                 patch.fixture_type(fixture),
                 parameter.held.and_then(|at| patch.programmer.get(at)),
                 &parameter.key,
+                &masters,
             )
         };
         let value = pult_render::value_at(&driving, now_ms);
@@ -499,6 +559,45 @@ pub fn render_carried(patch: &Patch, now_ms: u64, carried: &[u16]) -> Vec<Univer
     let mut out: Vec<Universe> = universes.into_values().collect();
     out.sort_by_key(|u| u.number);
     out
+}
+
+/// Put a hand-made test on top of what the show rendered.
+///
+/// After the render and before the dedup, which is the whole of where it belongs: the
+/// forced bytes must be what the cache compares and what the wire viewer reads back,
+/// or the sheet would describe a wire the receiver is not on.
+///
+/// **A universe the patch does not occupy is made**, because testing a line before
+/// anything is patched on it is the first use of this and not an edge case. It is
+/// made only if the output carries it — `carried` is the filter every connector
+/// obeys, and a test is not a way round it.
+///
+/// *Solo* blacks the universe first, so the named channels are the only light on that
+/// line; without it only the named channels are taken from the show and the rest
+/// goes on running.
+pub fn force(universes: &mut Vec<Universe>, test: &ChannelTest, carried: &[u16]) {
+    for each in &test.universes {
+        if !pult_schema::types::output::carries(carried, each.universe) {
+            continue;
+        }
+        let at = match universes.binary_search_by_key(&each.universe, |u| u.number) {
+            Ok(at) => at,
+            Err(at) => {
+                universes.insert(at, Universe::new(each.universe));
+                at
+            }
+        };
+        let universe = &mut universes[at];
+        if each.solo {
+            universe.channels = [0; UNIVERSE_SIZE];
+        }
+        for (channel, level) in &each.levels {
+            // Checked on the way in, so a miss here is a caller that skipped that.
+            if let Some(slot) = universe.channels.get_mut((*channel as usize).wrapping_sub(1)) {
+                *slot = *level;
+            }
+        }
+    }
 }
 
 // ── Not sending what has not changed ──────────────────────────────────────────

@@ -34,6 +34,10 @@ pub struct StationReporter {
     sync_addr: std::net::SocketAddr,
     /// Where this station serves HTTP, so a peer can fetch an asset from it.
     http_addr: String,
+    /// The port this station's OpenHaunt broker door opens on, were it to lead. The
+    /// addresses it is reachable at are worked out per report, because a cable plugged
+    /// in after the console came up is a door the nodes can use.
+    broker_port: Option<u16>,
     /// The latest reading of the machine and of this process, from the thread that
     /// takes them. `None` until the first one has landed.
     samples: watch::Receiver<Option<Sample>>,
@@ -65,6 +69,10 @@ pub struct StationReporter {
     /// in `preferences.toml`, so a console that reboots mid-show comes back at the
     /// priority the receivers last heard it at.
     sacn_slot: Option<u8>,
+    /// The wing plugged into this station, if `main` installed one.
+    wing: Option<crate::infra::wing::WingStation>,
+    /// The audio manager's decoded files, read for their figures.
+    audio_cache: Option<crate::infra::audio::decode::AudioCache>,
     /// What this station last said about the show clock, so a change of state is a
     /// line in the log and a steady state is not.
     ///
@@ -73,6 +81,8 @@ pub struct StationReporter {
     /// both findable later and quiet during a rehearsal. A warn per output frame
     /// would be forty a second into the ring task 48 built.
     clock_said: Option<ClockState>,
+    /// How many machine-clock jumps have been said in the log.
+    jumps_said: u64,
 }
 
 /// One reading of the machine and of this process, taken at one moment.
@@ -286,13 +296,36 @@ impl StationReporter {
             engine,
             sync_addr,
             http_addr,
+            broker_port: None,
+            wing: None,
+            audio_cache: None,
             samples: spawn_probe(absolute(showfile)),
             hostname: System::host_name().unwrap_or_else(|| "console".to_string()),
             started: std::time::Instant::now(),
             links,
             frames,
             clock_said: None,
+            jumps_said: 0,
         }
+    }
+
+    /// Say where this station's OpenHaunt broker door is, so the leader can list it
+    /// for its nodes. A station that never says has no entry in that list.
+    pub fn with_broker(mut self, port: u16) -> Self {
+        self.broker_port = Some(port);
+        self
+    }
+
+    /// Say that a wing is plugged in here, so a page on another station can find it.
+    pub fn with_wing(mut self, wing: Option<crate::infra::wing::WingStation>) -> Self {
+        self.wing = wing;
+        self
+    }
+
+    /// Say how much decoded sound this station holds.
+    pub fn with_audio_cache(mut self, cache: crate::infra::audio::decode::AudioCache) -> Self {
+        self.audio_cache = Some(cache);
+        self
     }
 
     pub async fn run(mut self) {
@@ -370,12 +403,19 @@ impl StationReporter {
         self.net.set_standing(crate::infra::net::Standing { is_leader, sacn_slot });
         self.publish_network(sample.interfaces.clone()).await;
 
+        let broker_doors = match self.broker_port {
+            Some(port) => crate::infra::devices::broker::doors(&self.net, port),
+            None => Vec::new(),
+        };
+
         Station {
             id: self.node_id.0,
             hostname: self.hostname.clone(),
             is_leader,
-            sync_addr: self.sync_addr.to_string(),
-            http_addr: self.http_addr.clone(),
+            sync_addr: dialable(&self.sync_addr.to_string(), &self.net),
+            http_addr: dialable(&self.http_addr, &self.net),
+            broker_addr: broker_doors.first().cloned().unwrap_or_default(),
+            broker_doors,
             cpu_percent: sample.cpu_percent,
             mem_used: sample.mem_used,
             mem_total: sample.mem_total,
@@ -395,11 +435,13 @@ impl StationReporter {
             // repeating whatever it last managed to measure.
             frame_costs: self.frames.borrow().clone(),
             machine: sample.machine,
+            audio_cache: self.audio_cache.as_ref().map(|cache| cache.stats()).unwrap_or_default(),
             net_received: sample.net_received,
             net_sent: sample.net_sent,
             net_window_ms: sample.net_window_ms,
             clock,
             sacn_slot,
+            wing: self.wing.as_ref().map(|wing| wing.state()),
             last_seen: Utc::now(),
         }
     }
@@ -419,6 +461,18 @@ impl StationReporter {
             (false, None) => ClockState::Uncorrected,
         };
         let offset_ms = pult_schema::clock::offset_ms() as f32;
+
+        // The machine's own clock turned out to be far ahead of the base this station
+        // took at start — it booted before it knew the time — and the show clock has
+        // jumped to it. Everything anchored in show time moved at once, so it is said.
+        let jumps = pult_schema::clock::machine_jumps();
+        if jumps > self.jumps_said {
+            warn!(
+                "[clock] this machine's clock was set forward while the station ran (it started with the wrong \
+                 time); the show clock jumped to it"
+            );
+            self.jumps_said = jumps;
+        }
 
         if self.clock_said != Some(state) {
             match state {
@@ -456,7 +510,13 @@ impl StationReporter {
     async fn publish_network(&mut self, interfaces: Vec<NetInterface>) {
         let bindings = self.net.bindings();
         let now = (interfaces, bindings);
-        if self.network_said.as_ref() == Some(&now) {
+        // Unchanged and still held. Joining a session replaces this station's state with
+        // the leader's, which never held this row, so it has to be said again — and a
+        // row said once and lost is a stage rack whose cabling nobody can read.
+        let held = vec![PathSegment::Key("station_networks".into()), PathSegment::Id(self.node_id.0)];
+        if self.network_said.as_ref() == Some(&now)
+            && self.engine.get(held).await.is_ok_and(|row| !row.is_null())
+        {
             return;
         }
         let row = pult_schema::types::network::StationNetwork {
@@ -572,7 +632,7 @@ fn is_loopback(name: &str) -> bool {
 ///
 /// Only the leader prunes, for the same reason only the leader publishes membership:
 /// two nodes deleting each other's rows on different schedules is a fight, not a
-/// cleanup. Kept generous — a station that is merely slow should go grey in the UI
+/// cleanup. Kept generous — a station that is merely slow should go gray in the UI
 /// long before anything removes it.
 pub async fn prune_stale(engine: &EngineHandle, keep_for: chrono::Duration) {
     let Ok(value) = engine.get(vec![PathSegment::Key("stations".into())]).await else { return };
@@ -590,10 +650,44 @@ pub async fn prune_stale(engine: &EngineHandle, keep_for: chrono::Duration) {
     }
 }
 
+/// An address as another machine should dial it: a listener bound on every interface
+/// says `0.0.0.0`, which from a peer is *that peer itself*, so the host is replaced by
+/// the first address this station is reachable at for the session
+/// ([`crate::infra::net::reachable`]). A peer fetching a clip from "0.0.0.0:7700" asks
+/// its own disk and gets nothing — the spare with no sound, on two real machines.
+fn dialable(addr: &str, net: &crate::infra::net::Network) -> String {
+    let Ok(parsed) = addr.parse::<std::net::SocketAddr>() else { return addr.to_string() };
+    if !parsed.ip().is_unspecified() {
+        return addr.to_string();
+    }
+    let here = crate::infra::net::reachable_for(net, &pult_schema::types::network::NetService::Session);
+    match here.first() {
+        Some(ip) => std::net::SocketAddr::new(std::net::IpAddr::V4(*ip), parsed.port()).to_string(),
+        None => addr.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use pult_schema::path::PathSegment;
+
+    #[test]
+    fn a_listener_on_every_interface_is_advertised_at_one_a_peer_can_dial() {
+        // `0.0.0.0` from another machine is that machine; on a lighting network with
+        // no route, the old fallback would have been loopback, which is the same.
+        let net = crate::infra::net::Network::unconfigured();
+        net.observe(vec![
+            pult_schema::types::network::NetInterface {
+                name: "lo0".into(), addresses: vec!["127.0.0.1".into()], up: true, loopback: true,
+            },
+            pult_schema::types::network::NetInterface {
+                name: "en5".into(), addresses: vec!["10.0.1.7".into()], up: true, loopback: false,
+            },
+        ]);
+        assert_eq!(dialable("0.0.0.0:7700", &net), "10.0.1.7:7700");
+        assert_eq!(dialable("127.0.0.1:7701", &net), "127.0.0.1:7701", "a bound address is what it is");
+    }
 
     fn a_cost(name: &str, frames: u32) -> FrameCost {
         FrameCost {
@@ -699,6 +793,27 @@ mod tests {
             assert!(row.is_leader, "nobody else is here");
             assert_eq!(row.clock.state, ClockState::Reference);
             assert!(!row.clock.converging, "with nothing to converge on");
+        }
+
+        /// A wing is a LOCAL row on its own station, so the replicated row is the only
+        /// way a page on another station learns there is one to drive — and who has it.
+        #[tokio::test]
+        async fn the_row_says_a_wing_is_plugged_in_here() {
+            let (engine, mut reporter, _frames) = a_reporter().await;
+            reporter.publish().await;
+            assert_eq!(published_row(&engine).await.wing, None, "no wing, nothing said");
+
+            let (wing, _report, _events) =
+                crate::wing::WingHandle::detached(pult_schema::types::wing::WingPhase::Running);
+            let wing = crate::infra::wing::WingStation::new(wing, engine.clone());
+            let mut reporter = reporter.with_wing(Some(wing.clone()));
+            let page = Uuid::new_v4();
+            wing.claim(page).await;
+            reporter.publish().await;
+
+            let said = published_row(&engine).await.wing.expect("a wing is here");
+            assert_eq!(said.phase, pult_schema::types::wing::WingPhase::Running);
+            assert_eq!(said.claimed_by, Some(crate::infra::clients::short_id(page)));
         }
 
         /// The machine half, against the machine actually running the test.

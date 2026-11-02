@@ -68,8 +68,8 @@ pub fn derive_fixture_type_with_thumbnail(
     let gdtf = &file.description.fixture_type;
     let mut warnings = pult_gdtf::validate::check(gdtf);
 
-    let (parameters, emitters) = derive_parameters(gdtf, &mut warnings);
-    let modes = derive_modes(gdtf, &emitters, &mut warnings);
+    let (parameters, emitters, cells) = derive_parameters(gdtf, &mut warnings);
+    let modes = derive_modes(gdtf, &emitters, &parameters, &mut warnings);
     // Before the physical data, which measures the fixture across it.
     let geometry = derive_geometry(gdtf, file);
 
@@ -113,6 +113,7 @@ pub fn derive_fixture_type_with_thumbnail(
         // Filled in by the caller, which is the half of this that can store bytes.
         plan_symbol: PlanSymbol::Auto,
         thumbnail: None,
+        cells,
     };
     (fixture_type, warnings, thumbnail(file))
 }
@@ -120,8 +121,9 @@ pub fn derive_fixture_type_with_thumbnail(
 /// The `Thumbnail` resource, as `(mime, bytes)`.
 ///
 /// GDTF names a thumbnail without an extension and the archive may carry a `.svg`, a
-/// `.png`, or both. The SVG is preferred: a plan head is drawn at whatever scale the
-/// sheet is at, and a 128-pixel PNG blown up to 20 mm of A3 is a smear. Neither is a
+/// `.png`, or both. The SVG would be preferred — a plan head is drawn at whatever scale
+/// the sheet is at, and a 128-pixel PNG blown up to 20 mm of A3 is a smear — where the
+/// asset store takes one, which it does not yet (see below). Neither is a
 /// failure — a type with no thumbnail draws from its geometry, which is what
 /// [`pult_schema::types::fixture::PlanSymbol::Auto`] tries first anyway.
 fn thumbnail(file: &GdtfFile) -> Option<(String, Vec<u8>)> {
@@ -130,6 +132,13 @@ fn thumbnail(file: &GdtfFile) -> Option<(String, Vec<u8>)> {
         return None;
     }
     for (extension, mime) in [("svg", "image/svg+xml"), ("png", "image/png")] {
+        // Only a kind the asset store takes. It does not take SVG — a drawing served
+        // from the console's own origin can carry script — and offering one made the
+        // store refuse it and the whole import with it, so a file whose thumbnail was
+        // an SVG could not be imported at all.
+        if crate::infra::assets::ceiling_for(mime).is_none() {
+            continue;
+        }
         let wanted = format!("{named}.{extension}");
         // Case-insensitively: a file written on Windows and read on Linux is the one
         // case where a resource name and its entry differ by nothing else.
@@ -150,11 +159,24 @@ fn thumbnail(file: &GdtfFile) -> Option<(String, Vec<u8>)> {
 ///
 /// Across *every* mode on purpose: the parameter list is what the light can do, and a
 /// head that has a zoom in one mode still has a zoom. Which of them a given unit can
-/// reach is its mode's business, and the programmer greys out the rest.
+/// reach is its mode's business, and the programmer grays out the rest.
+///
+/// **A channel on a referenced geometry is a cell's.** A bar that describes one pixel
+/// and points at it twelve times has twelve cells, and the attribute those channels
+/// carry is a per-cell parameter rather than one parameter twelve channels deep — which
+/// is what collapsing by kind used to make of it, a twelve-cell bar with one color.
+/// The cell count is the most references any mode expands.
+///
+/// **And one attribute can be both.** A bar's master dimmer sits on the bar and each
+/// cell's dimmer on the cell, and a one-color mode puts its RGB on the bar where the
+/// pixel mode puts it on each cell. So a kind is declared once per way it is reached:
+/// whole where some channel carries it on no reference, per cell where some channel
+/// carries it on one. Two definitions of one kind, told apart by `per_cell`, which is
+/// exactly what [`FixtureType::parameter_for_key`] already reads a key against.
 fn derive_parameters(
     gdtf: &GdtfType,
     warnings: &mut Vec<Warning>,
-) -> (Vec<ParameterDefinition>, Vec<Emitter>) {
+) -> (Vec<ParameterDefinition>, Vec<Emitter>, u16) {
     let by_name: BTreeMap<&str, &pult_gdtf::model::Attribute> = gdtf
         .attribute_definitions
         .attributes
@@ -163,13 +185,16 @@ fn derive_parameters(
         .map(|attribute| (attribute.name.as_str(), attribute))
         .collect();
 
+    let crowded = crowded_out(gdtf);
     let mut parameters: Vec<ParameterDefinition> = Vec::new();
     let mut emitters: Vec<Emitter> = Vec::new();
-    let mut seen: BTreeMap<String, usize> = BTreeMap::new();
+    let mut seen: BTreeMap<(String, bool), usize> = BTreeMap::new();
+    let mut cells: u16 = 0;
 
     for mode in &gdtf.dmx_modes.items {
         let (channels, mut mode_warnings) = resolve::expand_mode(gdtf, mode);
         warnings.append(&mut mode_warnings);
+        cells = cells.max(channels.iter().filter_map(|c| c.instance).max().unwrap_or(0));
 
         for channel in &channels {
             let Some(node) = channel.attribute else { continue };
@@ -184,11 +209,11 @@ fn derive_parameters(
                 }
             }
 
-            let Some(kind) = attributes::kind_for(attribute) else { continue };
+            let Some(kind) = kind_in(attribute, &crowded) else { continue };
             let key = parameter_key(&kind);
 
             if let Some(color) = attributes::color_channel(attribute) {
-                // The colour's emitters, gathered in the order the file's channels
+                // The color's emitters, gathered in the order the file's channels
                 // reach them, which is the order the mixer answers in.
                 if !emitters.iter().any(|e| e.name == color.emitter) {
                     emitters.push(Emitter {
@@ -199,7 +224,8 @@ fn derive_parameters(
                 }
             }
 
-            if let Some(at) = seen.get(&key) {
+            let per_cell = channel.instance.is_some();
+            if let Some(at) = seen.get(&(key.clone(), per_cell)) {
                 // A parameter reached from more than one mode: keep the richer
                 // description rather than the first one seen, so a head whose basic
                 // mode has an 8-bit pan and whose extended mode says the travel keeps
@@ -210,7 +236,7 @@ fn derive_parameters(
                 continue;
             }
 
-            seen.insert(key, parameters.len());
+            seen.insert((key, per_cell), parameters.len());
             parameters.push(ParameterDefinition {
                 physical: physical_range(gdtf, channel, attribute, &by_name),
                 slots: slots_of(gdtf, channel),
@@ -218,22 +244,91 @@ fn derive_parameters(
                     .get(attribute)
                     .and_then(|a| a.feature.as_ref())
                     .and_then(|feature| feature.0.first().cloned()),
-                ..ParameterDefinition::new(kind, resting_value_for(&kind_of(attribute)))
+                per_cell,
+                ..ParameterDefinition::new(kind.clone(), resting_value_for(&kind))
             });
         }
     }
 
-    // Every colour channel is the one colour parameter, so the emitter list belongs
+    // Every color channel is the one color parameter, so the emitter list belongs
     // to it and to nothing else.
-    if let Some(colour) = parameters.iter_mut().find(|p| p.kind == ParameterKind::ColorRgb) {
-        colour.emitters = emitters.clone();
+    for color in parameters.iter_mut().filter(|p| p.kind == ParameterKind::ColorRgb) {
+        color.emitters = emitters.clone();
     }
 
-    (parameters, emitters)
+    // A file with references but no channel on them has nothing per cell to set, and
+    // one reference is a fixture built out of a part, not a fixture of one cell: a par
+    // that references its single emitter has a color, not a color in cell 1.
+    if cells < 2 || !parameters.iter().any(|p| p.per_cell) {
+        cells = 0;
+        // With no cells a per-cell definition and a whole one of the same kind are
+        // one parameter, and the whole one is it.
+        let whole: std::collections::BTreeSet<String> =
+            parameters.iter().filter(|p| !p.per_cell).map(|p| parameter_key(&p.kind)).collect();
+        parameters.retain(|p| !(p.per_cell && whole.contains(&parameter_key(&p.kind))));
+        for parameter in &mut parameters {
+            parameter.per_cell = false;
+        }
+    }
+    (parameters, emitters, cells)
 }
 
-fn kind_of(attribute: &str) -> ParameterKind {
-    attributes::kind_for(attribute).unwrap_or(ParameterKind::Named(attribute.to_string()))
+/// The attributes that keep their own name because another attribute in the same mode
+/// has already taken the parameter they would map to.
+///
+/// [`attributes::kind_for`] folds several GDTF attributes onto one kind — a strobe has
+/// four spellings — which is right while a fixture uses one of them and loses a channel
+/// when it uses two: both land on one key, the type declares one parameter, and the
+/// one value is sent down both channels. The Martin Atomic 3000's flash length went
+/// that way under its rate. So the first attribute to reach a key keeps it and any
+/// other in the same mode is `Named`, controllable on its own the way any attribute
+/// nobody has thought about is. A color's channels are excepted: being one parameter is
+/// the point of them.
+fn crowded_out(gdtf: &GdtfType) -> std::collections::BTreeSet<String> {
+    let fine: std::collections::BTreeSet<&str> = gdtf
+        .attribute_definitions
+        .attributes
+        .items
+        .iter()
+        .filter(|a| a.main_attribute.as_ref().is_some_and(|m| !m.is_empty()))
+        .map(|a| a.name.as_str())
+        .collect();
+    let mut owner: BTreeMap<String, String> = BTreeMap::new();
+    let mut crowded = std::collections::BTreeSet::new();
+    for mode in &gdtf.dmx_modes.items {
+        let (channels, _) = resolve::expand_mode(gdtf, mode);
+        let mut here: BTreeMap<String, String> = BTreeMap::new();
+        for channel in &channels {
+            let Some(attribute) = channel.attribute.and_then(|node| node.last()) else { continue };
+            if fine.contains(&*attribute) || attributes::color_channel(attribute).is_some() {
+                continue;
+            }
+            let Some(kind) = attributes::kind_for(attribute) else { continue };
+            let key = parameter_key(&kind);
+            let first = here.entry(key.clone()).or_insert_with(|| attribute.to_string()).clone();
+            if first != *attribute {
+                // Whichever reached the key first in the whole file keeps it, so one
+                // mode cannot give it to one attribute and another to the other.
+                let keeper = owner.entry(key).or_insert_with(|| first.clone()).clone();
+                for each in [first, attribute.to_string()] {
+                    if each != keeper {
+                        crowded.insert(each);
+                    }
+                }
+            } else {
+                owner.entry(key).or_insert(first);
+            }
+        }
+    }
+    crowded
+}
+
+/// An attribute's kind once [`crowded_out`] has had its say.
+fn kind_in(attribute: &str, crowded: &std::collections::BTreeSet<String>) -> Option<ParameterKind> {
+    if crowded.contains(attribute) {
+        return Some(ParameterKind::Named(attribute.to_string()));
+    }
+    attributes::kind_for(attribute)
 }
 
 /// Where a parameter rests before anything drives it.
@@ -298,12 +393,12 @@ fn slots_of(gdtf: &GdtfType, channel: &resolve::ResolvedChannel<'_>) -> Vec<Slot
         .collect()
 }
 
-/// An emitter's colour, from the file's measured `<Emitter>` where it has one.
+/// An emitter's color, from the file's measured `<Emitter>` where it has one.
 fn emitter_rgb(gdtf: &GdtfType, emitter: &str, attribute: &str) -> Option<Vec3> {
     let physical = gdtf.physical_descriptions.as_ref()?;
-    // By the attribute's own colour first, which is what the file says this channel
+    // By the attribute's own color first, which is what the file says this channel
     // *is*; by a same-named emitter second.
-    let attribute_colour = gdtf
+    let attribute_color = gdtf
         .attribute_definitions
         .attributes
         .items
@@ -326,14 +421,20 @@ fn emitter_rgb(gdtf: &GdtfType, emitter: &str, attribute: &str) -> Option<Vec3> 
                     .and_then(|each| each.color)
             })
         });
-    let cie = measured.or(attribute_colour)?;
+    let cie = measured.or(attribute_color)?;
     let [r, g, b] = cie.to_linear_rgb();
     Some(Vec3 { x: r, y: g, z: b })
 }
 
 // ── Modes ────────────────────────────────────────────────────────────
 
-fn derive_modes(gdtf: &GdtfType, emitters: &[Emitter], warnings: &mut Vec<Warning>) -> Vec<DmxMode> {
+fn derive_modes(
+    gdtf: &GdtfType,
+    emitters: &[Emitter],
+    parameters: &[ParameterDefinition],
+    warnings: &mut Vec<Warning>,
+) -> Vec<DmxMode> {
+    let crowded = crowded_out(gdtf);
     gdtf.dmx_modes
         .items
         .iter()
@@ -342,7 +443,7 @@ fn derive_modes(gdtf: &GdtfType, emitters: &[Emitter], warnings: &mut Vec<Warnin
             let breaks = resolve::footprint(gdtf, mode);
             let layouts = channels
                 .iter()
-                .filter_map(|channel| layout_of(channel, emitters, warnings))
+                .filter_map(|channel| layout_of(channel, emitters, parameters, &crowded, warnings))
                 .collect();
             DmxMode { name: mode.name.clone(), breaks, channels: layouts }
         })
@@ -352,19 +453,29 @@ fn derive_modes(gdtf: &GdtfType, emitters: &[Emitter], warnings: &mut Vec<Warnin
 fn layout_of(
     channel: &resolve::ResolvedChannel<'_>,
     emitters: &[Emitter],
+    parameters: &[ParameterDefinition],
+    crowded: &std::collections::BTreeSet<String>,
     warnings: &mut Vec<Warning>,
 ) -> Option<DmxChannelLayout> {
     let attribute = channel.attribute?.last()?.to_string();
-    let kind = attributes::kind_for(&attribute)?;
+    let base = kind_in(&attribute, crowded)?;
+    // A cell's channel names its cell, and a channel on no reference is the whole
+    // fixture's: a bar's master, or the one color of a one-color mode. Both kinds are
+    // declared (see `derive_parameters`), so each channel reads the key it carries.
+    let per_cell = parameters.iter().any(|p| p.per_cell && p.kind == base);
+    let kind = match (channel.instance, per_cell) {
+        (Some(cell), true) => base.in_cell(cell),
+        _ => base,
+    };
     if channel.break_number == 0 {
         warnings.push(Warning::new(&attribute, "is in break 0, which does not exist"));
         return None;
     }
 
-    let emitter = attributes::color_channel(&attribute).and_then(|colour| {
+    let emitter = attributes::color_channel(&attribute).and_then(|color| {
         emitters
             .iter()
-            .find(|each| each.name == colour.emitter)
+            .find(|each| each.name == color.emitter)
             .map(|each| each.name.clone())
     });
 
@@ -435,10 +546,10 @@ fn derive_physical(gdtf: &GdtfType, geometry: &[FixtureGeometry]) -> FixturePhys
 ///
 /// The outermost geometry's own model is *not* the answer, which is the mistake this
 /// replaced: on a real moving head that model is the base plate, and reading it gave a
-/// MegaPointe a height of nine and a half centimetres. What a rider wants is the
+/// MegaPointe a height of nine and a half centimeters. What a rider wants is the
 /// envelope — every part's box, at the place its own geometry puts it, unioned.
 ///
-/// Each box is taken as centred on its node, which is what a `Model`'s dimensions mean
+/// Each box is taken as centered on its node, which is what a `Model`'s dimensions mean
 /// without a mesh to say otherwise. `None` where no part declared a size at all, which
 /// is honest: a file that never said how big it is has not said.
 fn envelope(geometry: &[FixtureGeometry]) -> Option<Vec3> {
@@ -464,11 +575,11 @@ fn envelope(geometry: &[FixtureGeometry]) -> Option<Vec3> {
 
         let Some(size) = node.size else { continue };
         any = true;
-        for (axis, (centre, extent)) in
+        for (axis, (center, extent)) in
             [(here.x, size.x), (here.y, size.y), (here.z, size.z)].into_iter().enumerate()
         {
-            low[axis] = low[axis].min(centre - extent / 2.0);
-            high[axis] = high[axis].max(centre + extent / 2.0);
+            low[axis] = low[axis].min(center - extent / 2.0);
+            high[axis] = high[axis].max(center + extent / 2.0);
         }
     }
 
@@ -510,7 +621,7 @@ pub fn plan_import(
     plan.write(
         "fixture_types",
         replaces,
-        serde_json::to_value(&fixture_type).expect("a fixture type serialises"),
+        serde_json::to_value(&fixture_type).expect("a fixture type serializes"),
     );
     Ok((plan, id))
 }
@@ -539,7 +650,7 @@ pub fn generate_gdtf(fixture_type: &FixtureType) -> GdtfFile {
             continue;
         }
         let Some(parameter) = by_key.get(&layout.parameter_key) else { continue };
-        // A colour is one parameter and several channels, and each channel is the
+        // A color is one parameter and several channels, and each channel is the
         // attribute of the die it drives — `ColorAdd_W` and not `ColorAdd_R` again.
         let attribute = match (&parameter.kind, layout.emitter.as_deref()) {
             (ParameterKind::ColorRgb, Some(emitter)) => attributes::color_attribute_for(emitter),
@@ -582,8 +693,8 @@ pub async fn export(
 ) -> anyhow::Result<(Vec<u8>, String)> {
     let name = format!(
         "{}@{}.gdtf",
-        sanitise(&fixture_type.manufacturer),
-        sanitise(&fixture_type.name)
+        sanitize(&fixture_type.manufacturer),
+        sanitize(&fixture_type.name)
     );
 
     if let FixtureTypeSource::Gdtf { asset, .. } = &fixture_type.source {
@@ -603,7 +714,7 @@ pub async fn export(
 }
 
 /// A filename somebody can save without an operating system objecting.
-fn sanitise(text: &str) -> String {
+fn sanitize(text: &str) -> String {
     let cleaned: String = text
         .chars()
         .map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' || c == '_' { c } else { '_' })
@@ -646,7 +757,7 @@ fn gdtf_unit(unit: PhysicalUnit) -> GdtfUnit {
         PhysicalUnit::Seconds => GdtfUnit::Time,
         PhysicalUnit::Hertz => GdtfUnit::Frequency,
         PhysicalUnit::Kelvin => GdtfUnit::Temperature,
-        PhysicalUnit::Metres => GdtfUnit::Length,
+        PhysicalUnit::Meters => GdtfUnit::Length,
         PhysicalUnit::Watts => GdtfUnit::Power,
         PhysicalUnit::None => GdtfUnit::None,
     }
@@ -654,7 +765,7 @@ fn gdtf_unit(unit: PhysicalUnit) -> GdtfUnit {
 
 // ── Geometry ─────────────────────────────────────────────────────────
 
-/// The fixture's parts, flattened, in console axes and metres.
+/// The fixture's parts, flattened, in console axes and meters.
 ///
 /// What makes a 3D body articulate. Only the tree of the *first* mode's geometry is
 /// walked: a mode is a way of addressing a fixture, not a different fixture.
@@ -694,8 +805,8 @@ fn walk_geometry(
             },
             offset: Vec3 { x, y, z },
             size: model.and_then(|model| {
-                // GDTF `Model` dimensions are metres while geometry translations are
-                // millimetres. That inconsistency is the spec's; it is written down
+                // GDTF `Model` dimensions are meters while geometry translations are
+                // millimeters. That inconsistency is the spec's; it is written down
                 // here because it is exactly what gets silently unified.
                 Some(Vec3 { x: model.length?, y: model.height?, z: model.width? })
             }),

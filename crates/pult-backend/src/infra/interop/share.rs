@@ -16,7 +16,7 @@
 //! a day old, or when somebody asks.
 //!
 //! **A session goes idle after about two hours.** A request that comes back
-//! unauthorised logs in again and retries, once. Twice would be a loop against
+//! unauthorized logs in again and retries, once. Twice would be a loop against
 //! somebody else's server.
 //!
 //! **Credentials live in the station's preferences and never in the show.** A showfile
@@ -300,7 +300,7 @@ impl ShareHandle {
 /// Whether a row answers a query.
 ///
 /// Every word has to be found, in the fixture's name or its manufacturer's — otherwise
-/// a two-word query matches half the catalogue.
+/// a two-word query matches half the catalog.
 ///
 /// Each word is looked for in the text *and* in the text with its spaces taken out, so
 /// "mega pointe" finds "MegaPointe" and "robe megapointe" finds "Robin MegaPointe" by
@@ -362,7 +362,7 @@ impl Share {
     /// Make a request, logging in first if we have not, and once more if the session
     /// has gone idle.
     ///
-    /// Once and not in a loop: a second unauthorised answer after a fresh login means
+    /// Once and not in a loop: a second unauthorized answer after a fresh login means
     /// something is wrong that retrying will not fix, and hammering somebody else's
     /// server is not this console's to do.
     async fn with_session<T, F, Fut>(&mut self, make: F) -> Result<T, ShareError>
@@ -376,7 +376,7 @@ impl Share {
         if let Some(answer) = make(self.client.clone(), self.base.clone()).await? {
             return Ok(answer);
         }
-        // Unauthorised: the two-hour idle timeout, almost certainly.
+        // Unauthorized: the two-hour idle timeout, almost certainly.
         self.signed_in = false;
         self.sign_in().await?;
         make(self.client.clone(), self.base.clone())
@@ -412,7 +412,7 @@ impl Share {
         }
 
         // Row by row, so one entry this console cannot read costs that entry and not
-        // the whole catalogue. The Share has tens of thousands of them and they are
+        // the whole catalog. The Share has tens of thousands of them and they are
         // not all the same shape; failing all of them over one is not a trade worth
         // making, and a row with no usable `rid` cannot be downloaded anyway.
         let rows = body.get("list").and_then(|list| list.as_array()).cloned().unwrap_or_default();

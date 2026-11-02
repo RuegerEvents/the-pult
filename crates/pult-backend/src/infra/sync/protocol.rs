@@ -26,7 +26,25 @@ use pult_schema::{
 // leader is on the wire for — is visible from, and drivable at, every station. The
 // state goes one way like a log line and the ask goes the other like a raise; neither
 // is show state, and neither is replicated, persisted or undone.
-pub const PROTOCOL_VERSION: u32 = 8;
+// 9 added OutputTest, so a console can force channels on a peer's wire. The one
+// message here that *drives* the rig rather than reports on it, which is why it lives
+// on the connection like an ask: a link that drops takes the test with it, and a light
+// is never left at full by a console that went away.
+// 10 added SnapshotRequest: a station that is not the session's leader takes the
+// leader's whole show on every link, after sending what it did while it was away. A
+// replay of the operations since a vector clock brought a joiner up to date on what
+// changed and never on what it had that the leader did not, so stations drifted apart
+// row by row (a wing binding on the Pi and in no other showfile, a show name that
+// differed between stations; the gig, 2026-10-25).
+// 11 added RunningState: a leader that has just restarted is sent what it missed and
+// what is running, never a whole show. A follower's whole show overwrote the leader's
+// own file with whatever that follower had happened to receive, and one that had not
+// been linked to every station took a rename and a flow edit back out of the show
+// (the gig, 2026-10-27).
+// 12 is no message at all: showfile generation 10 renamed `layouts` to `workspaces`
+// and made `layouts` the 2D drawings, so a station of each build would replicate one
+// collection into the other's.
+pub const PROTOCOL_VERSION: u32 = 12;
 
 const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024; // 8 MiB safety cap
 
@@ -41,6 +59,12 @@ pub enum SyncMessage {
         /// replaying the operations it missed and sending a whole snapshot.
         #[serde(default)]
         clock: VectorClock,
+        /// The joiner has just started and has not been linked since, so its clock is
+        /// a promise its state cannot keep: see [`super::peer::Freshness`]. Defaulted,
+        /// so a station that does not know the field reads it as `false` and behaves as
+        /// it always did.
+        #[serde(default)]
+        fresh: bool,
     },
     HelloAck {
         accepted: bool,
@@ -53,6 +77,9 @@ pub enum SyncMessage {
         #[serde(default)]
         clock: VectorClock,
         rejection_reason: Option<String>,
+        /// The responder has just started; the joiner sends it a snapshot.
+        #[serde(default)]
+        fresh: bool,
     },
     LeaderChanged {
         new_leader_node_id: NodeId,
@@ -69,6 +96,10 @@ pub enum SyncMessage {
     OperationRequest {
         known: VectorClock,
     },
+    /// Send me your whole show. The side of a link that is not the session's leader
+    /// asks the leader, after sending its own catch-up, so what it did while it was
+    /// away is in the answer.
+    SnapshotRequest,
     /// Operations the receiver was missing, oldest first. Replayed in order, they
     /// land on the same state the sender has.
     OperationBatch {
@@ -77,6 +108,13 @@ pub enum SyncMessage {
     /// Full ShowState snapshot sent by leader immediately after HelloAck.
     /// The joiner applies it so it starts with current data, not an empty slate.
     StateSnapshot {
+        state: serde_json::Value,
+    },
+    /// The SYNCED half of a whole show — what is running, the programmer, the
+    /// stations — for a leader that has just restarted and lost it. Its PERSISTED half
+    /// is left alone: the leader's own file is the show, and what it missed while it
+    /// was away arrives as an `OperationBatch` first.
+    RunningState {
         state: serde_json::Value,
     },
     /// Field/entity update — replicate to all nodes.
@@ -100,8 +138,9 @@ pub enum SyncMessage {
     /// One way and unacknowledged: a log that a peer must confirm having read is a
     /// log that can hold up the show. Lines carry the *sender's* `seq` and clock,
     /// which is what lets the receiving browser dedupe them exactly and notice a
-    /// gap, and they are never relayed onward — every station is connected to every
-    /// other, so a relay would only duplicate.
+    /// gap, and they are never relayed onward. Unlike a write, which the leader passes
+    /// on (`SyncCommand::Relay`): a session is a star in practice, so a follower sees
+    /// another follower's log only where the two happen to be linked.
     LogLines {
         node_id: NodeId,
         lines: Vec<pult_schema::ws::LogLine>,
@@ -124,6 +163,16 @@ pub enum SyncMessage {
     OutputWatch {
         output_id: Uuid,
         focuses: Vec<Option<String>>,
+    },
+    /// Force channels on one of the receiver's outputs, by hand.
+    ///
+    /// `test` is the whole of what the sender wants forced there and replaces what it
+    /// sent before, empty meaning "let go" — the shape of [`SyncMessage::OutputWatch`]
+    /// and for the same reason. It lives on this connection: the receiver forgets it
+    /// when the link goes, so nothing has to expire.
+    OutputTest {
+        output_id: Uuid,
+        test: pult_schema::types::output::ChannelTest,
     },
     /// What one of the sender's outputs is putting on the wire, for a station that
     /// asked. One way and unacknowledged, like a log line, and never relayed: the
@@ -341,7 +390,7 @@ mod tests {
 
     /// The hazard `run_peer_loop` is built around, demonstrated.
     ///
-    /// A cancelled `read_frame` has already taken the length prefix off the wire and
+    /// A canceled `read_frame` has already taken the length prefix off the wire and
     /// has nowhere to put it back, so the next read treats the body as a length and
     /// the stream never recovers. In the peer loop this looked like a connection that
     /// died for no reason, rarely, under load — a whole afternoon of "flaky tests".
@@ -349,7 +398,7 @@ mod tests {
     /// If someone moves the read back into the `select!`, this test still passes, but
     /// it is here so the next person finds out why the task exists.
     #[tokio::test]
-    async fn a_cancelled_read_desynchronises_the_stream() {
+    async fn a_canceled_read_desynchronizes_the_stream() {
         let (mut client, mut server) = tokio::io::duplex(1024);
 
         // Only the length prefix, so the read has to wait for a body that is not
@@ -358,12 +407,12 @@ mod tests {
         client.write_all(&(frame.len() as u32).to_be_bytes()).await.unwrap();
         client.flush().await.unwrap();
 
-        let cancelled = tokio::time::timeout(
+        let canceled = tokio::time::timeout(
             std::time::Duration::from_millis(50),
             read_frame(&mut server),
         )
         .await;
-        assert!(cancelled.is_err(), "the read has to be pending for this to prove anything");
+        assert!(canceled.is_err(), "the read has to be pending for this to prove anything");
 
         // The rest of the first frame, then a second, whole one.
         client.write_all(&frame).await.unwrap();
@@ -376,7 +425,7 @@ mod tests {
             next,
             Ok(SyncMessage::Heartbeat { seq: 1 }) | Ok(SyncMessage::HeartbeatAck { seq: 2 })
         );
-        assert!(!recovered, "a cancelled read cannot be resumed; got {next:?}");
+        assert!(!recovered, "a canceled read cannot be resumed; got {next:?}");
     }
 
     #[tokio::test]
@@ -400,6 +449,7 @@ mod tests {
                 session_id: uuid::Uuid::new_v4(),
                 show_id: uuid::Uuid::new_v4(),
                 clock: Default::default(),
+                fresh: false,
             },
         )
         .await

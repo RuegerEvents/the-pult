@@ -167,7 +167,7 @@ const SYNC: u16 = 0xBFFC;
 /// The eighty bits of one frame, in transmission order, ready to be biphase-marked.
 ///
 /// Only the fields this console acts on are written. Everything else — the user bits,
-/// the colour-frame flag, the binary group flags — goes out as zero, which is what a
+/// the color-frame flag, the binary group flags — goes out as zero, which is what a
 /// generator that has nothing to say in them does.
 pub fn frame_bits(hours: u8, minutes: u8, seconds: u8, frames: u8, drop_frame: bool) -> u128 {
     fn put(value: u8, at: u32, width: u32) -> u128 {
@@ -304,11 +304,11 @@ pub struct Decoder {
     bits_since_sync: u32,
     /// Running mean of the signal, which is what the crossings are found against —
     /// see the module header on level and DC.
-    centre: f32,
-    /// Which side of the centre the signal is on, with hysteresis, so a noisy zero
+    center: f32,
+    /// Which side of the center the signal is on, with hysteresis, so a noisy zero
     /// crossing is one transition rather than nine.
     high: bool,
-    /// How far above the centre the signal has been going, which is what the
+    /// How far above the center the signal has been going, which is what the
     /// hysteresis band is a fraction of. Decays, so a stream that gets quieter is
     /// followed rather than latched at its loudest.
     excursion: f32,
@@ -336,7 +336,7 @@ impl Decoder {
             sample_rate,
             register: 0,
             bits_since_sync: 0,
-            centre: 0.0,
+            center: 0.0,
             high: false,
             excursion: 0.0,
             run: 0,
@@ -393,8 +393,8 @@ impl Decoder {
             // frames of a chase that has not started yet; that was the first version,
             // and a quiet signal riding a large offset never decoded at all inside a
             // short buffer.
-            self.centre += (sample - self.centre) / (self.sample_rate as f32 / 50.0).max(1.0);
-            let above = sample - self.centre;
+            self.center += (sample - self.center) / (self.sample_rate as f32 / 50.0).max(1.0);
+            let above = sample - self.center;
             self.excursion = self.excursion.max(above.abs()) * 0.9999;
             // A tenth of the signal's own swing. Wide enough that dither and quiet
             // hiss do not cross it, narrow enough that a −20 dBu feed still does.
@@ -434,7 +434,7 @@ impl Decoder {
             }
         } else {
             // Neither: noise, a dropout, or the tape stopping. The register is left
-            // alone rather than cleared — the sync word is what re-synchronises, and
+            // alone rather than cleared — the sync word is what re-synchronizes, and
             // clearing would only delay it — but a half that never got its other half
             // must not pair with the next frame's first transition.
             self.half_pending = false;

@@ -100,7 +100,7 @@ pub struct Detected {
 /// A loaded detector: two models, ready to be run.
 ///
 /// Loading is the expensive part — the small model is ten megabytes of weights — so a
-/// caller that is going to analyse several files makes one of these and keeps it.
+/// caller that is going to analyze several files makes one of these and keeps it.
 pub struct Detector {
     mel: Loaded,
     beat: Loaded,
@@ -420,7 +420,7 @@ pub struct GridSegment {
 /// segment starts.
 ///
 /// **Five percent, and the figure is set by the measurement rather than by taste.** One
-/// bar holds three or four intervals and every beat is quantised to the model's 20 ms
+/// bar holds three or four intervals and every beat is quantized to the model's 20 ms
 /// frame, so a single bar's tempo is only good to about 1.5% — two bars of a *perfectly
 /// steady* song can therefore read 3% apart. A threshold below that would split a song
 /// that never changes tempo into a segment per bar, which is the failure this was
@@ -455,10 +455,10 @@ pub fn grid_from_beats(beats_ms: &[u32], downbeats_ms: &[u32]) -> Vec<GridSegmen
     };
 
     // **Two passes, and the second is what makes the tempo accurate.** One bar holds
-    // three or four intervals, each quantised to the model's own 20 ms frame, which is
+    // three or four intervals, each quantized to the model's own 20 ms frame, which is
     // enough to say whether the tempo *changed* and nowhere near enough to say what it
     // is. So the first pass groups the bars into runs at one tempo, and the second
-    // measures each run across its whole span — thirty bars of quantisation averaged
+    // measures each run across its whole span — thirty bars of quantization averaged
     // rather than three.
     let mut runs: Vec<(usize, usize)> = Vec::new();
     let mut coarse: Vec<Option<f32>> = Vec::with_capacity(anchors.len());
@@ -471,7 +471,7 @@ pub fn grid_from_beats(beats_ms: &[u32], downbeats_ms: &[u32]) -> Vec<GridSegmen
     for (i, tempo) in coarse.iter().enumerate() {
         let Some(tempo) = tempo else { continue };
         // Compared against the **median** of the run so far rather than against its
-        // first bar: the first bar carries its own quantisation error, and a run judged
+        // first bar: the first bar carries its own quantization error, and a run judged
         // against it inherits that error for its whole length.
         match runs.last_mut() {
             Some((first, last)) if same_tempo(&coarse[*first..=*last], *tempo) => *last = i,
@@ -505,21 +505,21 @@ fn same_tempo(run: &[Option<f32>], bar: f32) -> bool {
 /// The tempo of a stretch of beats: the median interval, corrected by the span.
 ///
 /// **A single interval cannot answer this accurately**, and it took a real song to see
-/// why: the model works at 50 frames a second, so every beat it reports is quantised to
+/// why: the model works at 50 frames a second, so every beat it reports is quantized to
 /// the nearest 20 ms. At 128 bpm a beat is 468.75 ms, which lands on 460 or 480 — and a
 /// median of those is 130.4 bpm or 125, either of which walks a whole bar out of step
 /// inside a minute.
 ///
 /// So the median is only used to say *how many beats apart* the ends of the stretch
 /// are, and the tempo comes from the **span between the first and last beat divided by
-/// that count** — which averages the quantisation over the whole stretch and is exact to
+/// that count** — which averages the quantization over the whole stretch and is exact to
 /// well under a bpm across thirty bars. The median still does the rejecting, because a
 /// beat the detector missed doubles one interval and a span alone cannot see that.
 fn tempo_of(within: &[u32], all: &[u32], anchor: u32) -> Option<f32> {
     let mut gaps: Vec<u32> = within.windows(2).map(|w| w[1] - w[0]).collect();
     if gaps.is_empty() {
         // A stretch with one beat in it: the interval to the next beat anywhere is the
-        // only evidence there is, quantisation and all.
+        // only evidence there is, quantization and all.
         let next = all.iter().find(|b| **b > anchor)?;
         return match next - anchor {
             0 => None,
@@ -538,7 +538,7 @@ fn tempo_of(within: &[u32], all: &[u32], anchor: u32) -> Option<f32> {
         return Some(60_000.0 / median as f32);
     }
     // How many beats the span *holds*, which is not `span / median`: the median of
-    // quantised intervals is itself biased — at 128 bpm the intervals land on 460 and
+    // quantized intervals is itself biased — at 128 bpm the intervals land on 460 and
     // 480 and the median is 460, so dividing the span by it invents two extra beats and
     // reads 130. The count is the number of intervals, with each one asked how many
     // beats it covers so that a beat the detector missed counts as the two it stands

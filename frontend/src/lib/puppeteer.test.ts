@@ -16,7 +16,7 @@ const head: FixtureType = aFixtureType({
 	]
 });
 
-/** Hung six metres up, facing straight down, pan and tilt centred. */
+/** Hung six meters up, facing straight down, pan and tilt centered. */
 const hung = (): Fixture =>
 	aFixture({
 		id: 'f',
@@ -31,7 +31,7 @@ const hung = (): Fixture =>
  * Passed in rather than read off the fixture: nothing stores what a parameter is
  * doing, so every one of these functions takes the reading it is working against.
  */
-const centred = (over: Record<string, ParameterValue> = {}) =>
+const centered = (over: Record<string, ParameterValue> = {}) =>
 	readingOf({
 		'f/Pan': { type: 'Float', value: 0.5 },
 		'f/Tilt': { type: 'Float', value: 0.5 },
@@ -92,29 +92,29 @@ describe('reading a bearing off a drag', () => {
 
 describe('reading an elevation off a drag', () => {
 	it('measures up from level with the fixture', () => {
-		// Hung six metres up and pointing straight down, so its own plane is downstage.
-		expect(elevationFromPoint(hung(), head, { x: 0, y: 6, z: 4 }, centred())).toBeCloseTo(0, 6);
-		expect(elevationFromPoint(hung(), head, { x: 0, y: 2, z: 4 }, centred())).toBeCloseTo(-45, 6);
-		expect(elevationFromPoint(hung(), head, { x: 0, y: 10, z: 4 }, centred())).toBeCloseTo(45, 6);
+		// Hung six meters up and pointing straight down, so its own plane is downstage.
+		expect(elevationFromPoint(hung(), head, { x: 0, y: 6, z: 4 }, centered())).toBeCloseTo(0, 6);
+		expect(elevationFromPoint(hung(), head, { x: 0, y: 2, z: 4 }, centered())).toBeCloseTo(-45, 6);
+		expect(elevationFromPoint(hung(), head, { x: 0, y: 10, z: 4 }, centered())).toBeCloseTo(45, 6);
 	});
 
 	it('reads a sideways wander as the nod it was meant to be', () => {
-		const inPlane = elevationFromPoint(hung(), head, { x: 0, y: 3, z: 3 }, centred());
-		const wandered = elevationFromPoint(hung(), head, { x: 3, y: 3, z: 3 }, centred());
+		const inPlane = elevationFromPoint(hung(), head, { x: 0, y: 3, z: 3 }, centered());
+		const wandered = elevationFromPoint(hung(), head, { x: 3, y: 3, z: 3 }, centered());
 		expect(wandered).toBeCloseTo(inPlane!, 9);
 	});
 
 	it('keeps counting the same way round behind the fixture', () => {
 		// Level with the head but the other side of it: the reach is negative, so the
 		// angle carries on past a right angle rather than mirroring back.
-		expect(elevationFromPoint(hung(), head, { x: 0, y: 6, z: -4 }, centred())).toBeCloseTo(180, 6);
+		expect(elevationFromPoint(hung(), head, { x: 0, y: 6, z: -4 }, centered())).toBeCloseTo(180, 6);
 	});
 
 	it('has nothing to read from a grab on the fixture itself', () => {
-		expect(elevationFromPoint(hung(), head, { x: 0, y: 6, z: 0 }, centred())).toBeNull();
+		expect(elevationFromPoint(hung(), head, { x: 0, y: 6, z: 0 }, centered())).toBeNull();
 	});
 
 	it('has nothing to read for a head that has never been placed', () => {
-		expect(elevationFromPoint({ ...hung(), position: null }, head, { x: 0, y: 0, z: 4 }, centred())).toBeNull();
+		expect(elevationFromPoint({ ...hung(), position: null }, head, { x: 0, y: 0, z: 4 }, centered())).toBeNull();
 	});
 });

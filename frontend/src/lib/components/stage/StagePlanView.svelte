@@ -10,8 +10,10 @@
 		fixtureTint,
 		pixelToPlan,
 		planExtent,
-		planToPixel
+		planToPixel,
+		stripPixels
 	} from '$lib/stage.js';
+	import { pixelEffect } from '$lib/evaluator.js';
 	import { selected, select, toggle } from '$lib/stores/selection.js';
 	import {
 		fixtureIsVisible,
@@ -27,7 +29,7 @@
 	import Quicksheet from '$lib/components/programmer/Quicksheet.svelte';
 	import { asOneGesture } from '$lib/stores/gesture.js';
 	import { output, watching } from '$lib/stores/output.js';
-	import { parameterKey } from '$lib/patch.js';
+	import { controls, parameterKey } from '$lib/patch.js';
 
 	type Mode = 'move' | 'program' | 'scale' | 'origin';
 
@@ -53,7 +55,7 @@
 
 	let svg = $state<SVGSVGElement | null>(null);
 
-	// The viewport, in metres. Panning and zooming move this rather than a transform,
+	// The viewport, in meters. Panning and zooming move this rather than a transform,
 	// so a fixture's coordinates are always the room's and never the screen's.
 	let view = $state({ x: -12, z: -8, width: 24 });
 	let box = $state({ w: 1, h: 1 });
@@ -107,9 +109,12 @@
 	/// doing, so a panel that does not say what it is showing is a panel that shows
 	/// nothing — and one that says too much only pays for parameters nobody looks at.
 	$effect(() => {
-		const keys = placed.flatMap((fixture) =>
-			(typeOf(fixture)?.parameters ?? []).map((p) => `${fixture.id}/${parameterKey(p.kind)}`)
-		);
+		// Every control, not every definition: a strip in sacn mode is a cell per
+		// pixel, and its cells are what the plan draws.
+		const keys = placed.flatMap((fixture) => {
+			const type = typeOf(fixture);
+			return type ? controls(type).map((c) => `${fixture.id}/${parameterKey(c.kind)}`) : [];
+		});
 		const registered = watching(keys);
 		return () => registered.stop();
 	});
@@ -118,9 +123,23 @@
 		placed.map((fixture) => {
 			const at = fixturePoint(fixture, $objectsById)!;
 			const spot = beamSpot(fixture, typeOf(fixture), $output, { maxThrow }, $objectsById);
+			// A strip is as long as its pixels, so it is drawn as them, along the way
+			// it was hung — the console's cells, or the node's own effect, moving.
+			const strip = stripPixels(fixture, typeOf(fixture), $output, $objectsById, pixelEffect);
+			const pitch = strip && strip.at.length > 1
+				? Math.hypot(strip.at[1].x - strip.at[0].x, strip.at[1].z - strip.at[0].z)
+				: 0.05;
 			return {
 				fixture,
 				at,
+				pixels: strip
+					? strip.at.map((point, i) => {
+							const { r, g, b, level } = strip.out[i];
+							const byte = (v: number) => Math.round(Math.min(1, Math.max(0, v * level)) * 255);
+							return { dx: point.x - at.x, dz: point.z - at.z, fill: `rgb(${byte(r)}, ${byte(g)}, ${byte(b)})` };
+						})
+					: null,
+				pixelSize: Math.max(0.006, pitch * 0.9),
 				tint: fixtureTint(fixture, $output),
 				level: fixtureOutput(fixture, $output).level,
 				/// Where the beam lands, in this symbol's own coordinates.
@@ -138,10 +157,10 @@
 	/// A beam being dragged by where it lands, and a level being dragged by its ring.
 	///
 	/// `offset` is how far the handle sat from the pointer when it was taken hold of,
-	/// kept for the length of the drag: grabbing the disc slightly off-centre should
+	/// kept for the length of the drag: grabbing the disc slightly off-center should
 	/// not tug the light sideways before the drag has begun.
 	let aiming = $state<{ id: string; offset: { x: number; z: number } } | null>(null);
-	let levelling = $state<{ id: string; clientY: number; from: number } | null>(null);
+	let leveling = $state<{ id: string; clientY: number; from: number } | null>(null);
 	let sheetFor = $state<string | null>(null);
 
 	const sheetFixture = $derived(fixtures.find((f) => f.id === sheetFor) ?? null);
@@ -156,7 +175,7 @@
 		};
 	});
 
-	/// Where a pointer is, in metres. `getScreenCTM` already knows about the viewBox,
+	/// Where a pointer is, in meters. `getScreenCTM` already knows about the viewBox,
 	/// the element's size and any page zoom, so nothing here has to.
 	function atPointer(event: PointerEvent | MouseEvent): { x: number; z: number } | null {
 		if (!svg) return null;
@@ -204,11 +223,11 @@
 			if (at) aim(aiming.id, { x: at.x + aiming.offset.x, z: at.z + aiming.offset.z });
 			return;
 		}
-		if (levelling) {
+		if (leveling) {
 			// Up is brighter, and 150 pixels is the whole travel: far enough to be
 			// controllable, close enough that a full fade is one gesture.
-			const next = levelling.from + (levelling.clientY - event.clientY) / 150;
-			setValue([levelling.id], 'Intensity', {
+			const next = leveling.from + (leveling.clientY - event.clientY) / 150;
+			setValue([leveling.id], 'Intensity', {
 				type: 'Float',
 				value: Math.min(1, Math.max(0, next))
 			});
@@ -256,7 +275,7 @@
 		dragging = null;
 		panning = null;
 		aiming = null;
-		levelling = null;
+		leveling = null;
 		svg?.releasePointerCapture?.(event.pointerId);
 	}
 
@@ -343,9 +362,9 @@
 	});
 
 	const planCorners = $derived(plan ? planExtent(plan) : null);
-	/// One grid line a metre, thinning out as the view widens so it never turns solid.
+	/// One grid line a meter, thinning out as the view widens so it never turns solid.
 	const gridStep = $derived(view.width > 60 ? 10 : view.width > 20 ? 5 : 1);
-	/// Handles are drawn in metres, so they have to be sized from the view or they
+	/// Handles are drawn in meters, so they have to be sized from the view or they
 	/// vanish when it is zoomed out and swamp the rig when it is zoomed in.
 	const handle = $derived(view.width / 90);
 
@@ -469,6 +488,22 @@
 						fill={symbol.tint}
 					/>
 				{/if}
+				{#if symbol.pixels}
+					<!-- A strip: its pixels in a row, each what it is putting out, on a
+					     dark band so an unlit run still reads as the strip it is. -->
+					{@const last = symbol.pixels[symbol.pixels.length - 1]}
+					<line class="strip" x1="0" y1="0" x2={last.dx} y2={last.dz} stroke-width={symbol.pixelSize * 1.6} />
+					{#each symbol.pixels as pixel, i (i)}
+						<rect
+							class="pixel"
+							x={pixel.dx - symbol.pixelSize / 2}
+							y={pixel.dz - symbol.pixelSize / 2}
+							width={symbol.pixelSize}
+							height={symbol.pixelSize}
+							fill={pixel.fill}
+						/>
+					{/each}
+				{/if}
 				<!-- The body is the symbol and the fill is what it is doing, so a
 				     fixture that is off still reads as a fixture rather than a hole. -->
 				<circle class="body" r="0.35" fill={symbol.tint} />
@@ -503,7 +538,7 @@
 						aria-valuenow={levelOf(id, symbol.level)}
 						onpointerdown={(e) => {
 							e.stopPropagation();
-							levelling = { id, clientY: e.clientY, from: levelOf(id, symbol.level) };
+							leveling = { id, clientY: e.clientY, from: levelOf(id, symbol.level) };
 							svg?.setPointerCapture(e.pointerId);
 						}}
 					/>
@@ -518,7 +553,7 @@
 						role="presentation"
 						onpointerdown={(e) => {
 							e.stopPropagation();
-							levelling = { id, clientY: e.clientY, from: levelOf(id, symbol.level) };
+							leveling = { id, clientY: e.clientY, from: levelOf(id, symbol.level) };
 							svg?.setPointerCapture(e.pointerId);
 						}}
 					/>
@@ -549,7 +584,7 @@
 						/>
 					{/if}
 
-					<!-- The colour, and the way into everything else this fixture has. -->
+					<!-- The color, and the way into everything else this fixture has. -->
 					<rect
 						class="swatch"
 						x={symbol.at.x + handle * 1.1}
@@ -606,7 +641,7 @@
 	/* An object of the drawing: an outline, not a fill. What matters is where the
 	   truss is and how long it is, and a solid block would hide the lights on it. */
 	.object {
-		/* An outline and nothing else. A hundred trusses at 8% fill is a grey wash
+		/* An outline and nothing else. A hundred trusses at 8% fill is a gray wash
 		   with the rig somewhere underneath it, which is what the first version of
 		   this was. */
 		fill: none;
@@ -629,7 +664,7 @@
 	svg.measuring { cursor: crosshair; }
 
 	/*
-	 * Every stroke in this view is measured in screen pixels, not in metres, so a
+	 * Every stroke in this view is measured in screen pixels, not in meters, so a
 	 * hairline stays a hairline however far the plan is zoomed. The alternative is
 	 * what was here before: a dozen widths each worked out as some fraction of the
 	 * view, all of them saying "about a pixel" the long way round.
@@ -640,8 +675,8 @@
 	 * And no focus ring drawn by the browser.
 	 *
 	 * A fixture is a focusable group, and Chrome rings a focused SVG element in the
-	 * element's own coordinates — which here are metres. A clicked fixture wore a
-	 * white-and-blue band several metres thick, shaped like the bounding box of its
+	 * element's own coordinates — which here are meters. A clicked fixture wore a
+	 * white-and-blue band several meters thick, shaped like the bounding box of its
 	 * beam, over most of the room. Keyboard focus is shown by the ring the symbol
 	 * already has, in units the view can make sense of.
 	 */
@@ -659,6 +694,9 @@
 	.fixture.on text { fill: #4a9eff; }
 	/* A beam is a hint about where the light lands, not a render of it. */
 	.beam { opacity: 0.16; pointer-events: none; }
+	/* In meters, unlike every other stroke here: a strip's band is as wide as it is. */
+	.strip { stroke: #1c1c1c; stroke-linecap: round; vector-effect: none; }
+	.pixel { pointer-events: none; }
 	.mark { fill: #fbbf24; }
 
 	/* Handles are amber when the programmer holds the parameter they move, which is

@@ -11,6 +11,11 @@
 	 * not replicate and it is not in the showfile — it decides what a *new* show
 	 * starts with and then stops mattering, which is what keeps two stations from
 	 * disagreeing about a show they are both holding.
+	 *
+	 * So the panel is a few topics, and each topic is a small table whose two columns
+	 * are those two kinds: *This show* and *New shows*. Which column a number is in says
+	 * what it is, where the panel used to say it in a paragraph under every row. The
+	 * reasoning is still one `?` away.
 	 */
 
 	import { onMount } from 'svelte';
@@ -19,43 +24,18 @@
 	import { CURVE_LABELS, CURVES } from '$lib/fade.js';
 	import { getDataContext } from '$lib/ws/context.js';
 	import { readPreferences, writePreferences, type Preferences } from '$lib/preferences.js';
-	import { editing } from '$lib/stores/editing.js';
-	import { getClientContext } from '$lib/ws/context.js';
+	import { canEdit } from '$lib/stores/showLock.js';
+	import { openSetup } from '$lib/stores/setup.js';
+	import Help from './Help.svelte';
+	import Undo2 from '@lucide/svelte/icons/undo-2';
+	import Spline from '@lucide/svelte/icons/spline';
+	import CloudFog from '@lucide/svelte/icons/cloud-fog';
+	import Volume2 from '@lucide/svelte/icons/volume-2';
 
 	const data = getDataContext();
-	const client = getClientContext();
-	const unlocked = editing('settings');
 
 	let show = $state<Show | null>(null);
 	let prefs = $state<Preferences | null>(null);
-	/** What this machine has, asked for once — enumerating devices blocks. */
-	let devices = $state<{ outputs: AudioDevice[]; inputs: AudioDevice[] } | null>(null);
-
-	type AudioDevice = {
-		name: string;
-		id: string;
-		is_default: boolean;
-		channels: number;
-		sample_rate: number;
-	};
-
-	/**
-	 * Which device a timeline plays through, and which one timecode arrives on.
-	 *
-	 * The whole `[audio]` section at once, for the reason `[network]` is written whole:
-	 * *absent* is a value — a device the operator cleared has to become "said nothing,
-	 * use the default" rather than keep what it had.
-	 */
-	async function setAudioDevice(which: 'output' | 'input', name: string) {
-		trouble = null;
-		const next = { ...(prefs?.audio ?? {}), [which]: name || null };
-		const stored = await writePreferences({ audio: next });
-		if (!stored) {
-			trouble = 'This console could not write its settings down.';
-			return;
-		}
-		prefs = stored;
-	}
 	/// Said out loud only when something went wrong, because a setting that took is
 	/// its own confirmation — the number is on screen.
 	let trouble = $state<string | null>(null);
@@ -129,7 +109,7 @@
 	const GROUPS: { key: keyof FadeCurves; label: string }[] = [
 		{ key: 'intensity', label: 'Intensity' },
 		{ key: 'position', label: 'Position' },
-		{ key: 'color', label: 'Colour' },
+		{ key: 'color', label: 'Color' },
 		{ key: 'beam', label: 'Beam' },
 		{ key: 'other', label: 'Everything else' }
 	];
@@ -164,313 +144,210 @@
 	/// itself around half way.
 	const presses = (depth: number) => Math.floor(depth / 2);
 
-	/**
-	 * The devices, in two groups: the host's own default first, then everything else.
-	 *
-	 * **Grouped and never filtered**, which is `NetworkPanel`'s rule for interfaces and
-	 * is right here for the same reason — an aggregate device, a virtual output, a card
-	 * the operating system has an odd name for, are all things somebody legitimately
-	 * wants to pick, and there is no rule that separates them from noise.
-	 */
-	function audioGroups(devices: AudioDevice[]) {
-		const groups = [
-			{ label: 'This machine uses this by default', devices: devices.filter((d) => d.is_default) },
-			{ label: 'Everything else', devices: devices.filter((d) => !d.is_default) }
-		];
-		return groups.filter((group) => group.devices.length > 0);
-	}
-
 	onMount(() => {
 		readPreferences().then((p) => (prefs = p));
-		// Asked for once rather than watched: enumerating a machine's audio devices
-		// blocks — the station does it on a thread of its own for that reason — and a
-		// settings panel that re-asked on a timer would be paying for it continuously.
-		client
-			.call('audio.devices', {})
-			.then((found) => {
-				devices = found as { outputs: AudioDevice[]; inputs: AudioDevice[] };
-			})
-			.catch(() => {
-				// A station with no audio manager, which is what a test builds. The
-				// pickers fall back to naming a device by hand.
-			});
 		return data.show.subscribe((v) => (show = v as Show | null));
 	});
 </script>
 
+{#snippet number(id: string, value: number, min: number, max: number, step: number, unit: string, change: (v: number) => void)}
+	{#if $canEdit}
+		<span class="cell">
+			<input
+				{id}
+				class="input narrow"
+				type="number"
+				{min}
+				{max}
+				{step}
+				{value}
+				onchange={(e) => change(e.currentTarget.valueAsNumber)}
+			/>
+			<span class="unit">{unit}</span>
+		</span>
+	{:else}
+		<span class="value">{value}</span> <span class="unit">{unit}</span>
+	{/if}
+{/snippet}
+
+{#snippet curve(value: Easing, change: (c: Easing) => void)}
+	{#if $canEdit}
+		<select class="select" {value} onchange={(e) => change(e.currentTarget.value as Easing)}>
+			{#each CURVES as c (c)}
+				<option value={c}>{CURVE_LABELS[c]}</option>
+			{/each}
+		</select>
+	{:else}
+		<span class="value">{CURVE_LABELS[value]}</span>
+	{/if}
+{/snippet}
+
+{#snippet absent()}
+	<span class="unit">—</span>
+{/snippet}
+
+{#snippet head()}
+	<thead>
+		<tr>
+			<th></th>
+			<th>
+				This show
+				<Help label="What a show setting is">
+					Kept in the showfile. Every station working this show sees the same value, and it is
+					still true when the file is opened next year on different hardware.
+				</Help>
+			</th>
+			<th>
+				New shows
+				<Help label="What a console setting is">
+					Kept on this machine, not in the show. It decides what a new show starts with and then
+					stops mattering, so two stations can never disagree about a show they are both holding.
+				</Help>
+			</th>
+		</tr>
+	</thead>
+{/snippet}
+
 <div class="settings">
+	{#if !show && !prefs}
+		<p class="empty">No show is open, and this console could not read its settings.</p>
+	{/if}
+
 	<section>
-		<header>
-			<h2>This show</h2>
-			<p>Kept in the showfile. Every station working this show sees the same values.</p>
-		</header>
-
-		{#if !show}
-			<p class="empty">No show is open.</p>
-		{:else}
-			<div class="row">
-				<label for="show-history">History kept</label>
-				{#if $unlocked}
-					<input
-						id="show-history"
-						class="input"
-						type="number"
-						min={prefs?.historyDepthMin ?? 10}
-						max={prefs?.historyDepthMax ?? 10_000}
-						step="10"
-						value={show.history_depth}
-						onchange={(e) => setShowDepth(e.currentTarget.valueAsNumber)}
-					/>
-				{:else}
-					<span class="value">{show.history_depth}</span>
-				{/if}
-				<span class="unit">changes</span>
-			</div>
-			<p class="note">
-				About {presses(show.history_depth)} presses of Ctrl-Z in a row. An undo is a change
-				too and shares the room with the ones it takes back, so the two numbers are not the
-				same.
-			</p>
-
-			<div class="row">
-				<label for="show-home-fade">Letting go takes</label>
-				{#if $unlocked}
-					<input
-						id="show-home-fade"
-						class="input"
-						type="number"
-						min="0"
-						max={(prefs?.homeFadeMsMax ?? 30_000) / 1000}
-						step="0.5"
-						value={show.home_fade_ms / 1000}
-						onchange={(e) => setShowHomeFade(e.currentTarget.valueAsNumber)}
-					/>
-				{:else}
-					<span class="value">{show.home_fade_ms / 1000}</span>
-				{/if}
-				<span class="unit">seconds</span>
-			</div>
-			<p class="note">
-				How long a parameter takes to reach where it rests when nothing is left driving it —
-				a sequence taken off, a selection sent home. Zero snaps. Show data rather than a
-				console setting, because two stations fading one rig home over different times is
-				not a preference but a disagreement the audience can watch.
-			</p>
-
-			<div class="row">
-				<label for="show-haze">Haze</label>
-				{#if $unlocked}
-					<input
-						id="show-haze"
-						class="input"
-						type="number"
-						min="0"
-						max="1"
-						step="0.05"
-						value={show.haze_density}
-						onchange={(e) => setShowHaze('haze_density', e.currentTarget.valueAsNumber)}
-					/>
-				{:else}
-					<span class="value">{show.haze_density}</span>
-				{/if}
-				<span class="unit">density</span>
-			</div>
-
-			<div class="row">
-				<label for="show-haze-turbulence">Haze moves</label>
-				{#if $unlocked}
-					<input
-						id="show-haze-turbulence"
-						class="input"
-						type="number"
-						min="0"
-						max="1"
-						step="0.05"
-						value={show.haze_turbulence}
-						onchange={(e) =>
-							setShowHaze('haze_turbulence', e.currentTarget.valueAsNumber)}
-					/>
-				{:else}
-					<span class="value">{show.haze_turbulence}</span>
-				{/if}
-				<span class="unit">turbulence</span>
-			</div>
-			<div class="row curves">
-				<span class="label">Fades take</span>
-				<div class="curve-grid">
-					{#each GROUPS as group (group.key)}
-						<label class="curve">
-							<span>{group.label}</span>
-							{#if $unlocked}
-								<select
-									class="input"
-									value={show.fade_curves[group.key]}
-									onchange={(e) => setShowCurve(group.key, e.currentTarget.value as Easing)}
-								>
-									{#each CURVES as curve (curve)}
-										<option value={curve}>{CURVE_LABELS[curve]}</option>
-									{/each}
-								</select>
-							{:else}
-								<span class="value">{CURVE_LABELS[show.fade_curves[group.key]]}</span>
-							{/if}
-						</label>
-					{/each}
-				</div>
-			</div>
-			<p class="note">
-				What shape a fade has when neither the cue nor the capture says one. A dimmer has
-				run linear since dimmers had handles; a head that runs linear into a mark and stops
-				dead reads as a fault rather than as a move, which is why position starts eased and
-				nothing else does. Show data, because two stations running one cue with different
-				curves is a disagreement the audience can watch rather than a preference.
-			</p>
-
-			<p class="note">
-				How much haze is in the room — at 0 the air is clear and no beam shows, at 1
-				every beam does — and how fast it drifts. Show data
-				because how hazy the room is is a fact about the room rather than about the screen
-				looking at it — a designer who lit a piece for a hazy house wants the next person
-				opening the file to see what they saw. It reaches no lamp.
-			</p>
-		{/if}
+		<h3><Undo2 size={14} />Undo history</h3>
+		<table class="rack">
+			{@render head()}
+			<tbody>
+				<tr>
+					<th scope="row">
+						<label for="show-history">History kept</label>
+						<Help label="How history is counted">
+							Counted in changes. An undo is a change too and shares the room with the ones it takes
+							back, so the number of Ctrl-Z presses in a row is about half of it.
+						</Help>
+					</th>
+					<td>
+						{#if show}
+							{@render number('show-history', show.history_depth, prefs?.historyDepthMin ?? 10, prefs?.historyDepthMax ?? 10_000, 10, 'changes', setShowDepth)}
+							<span class="state">≈ {presses(show.history_depth)} undos in a row</span>
+						{:else}{@render absent()}{/if}
+					</td>
+					<td>
+						{#if prefs}
+							{@render number('new-history', prefs.historyDepth, prefs.historyDepthMin, prefs.historyDepthMax, 10, 'changes', setConsoleDepth)}
+						{:else}{@render absent()}{/if}
+					</td>
+				</tr>
+			</tbody>
+		</table>
 	</section>
 
 	<section>
-		<header>
-			<h2>This console</h2>
-			<p>
-				Kept on this machine, not in the show. Decides what a new show starts with and then
-				stops mattering — so two stations can never disagree about a show they are both
-				holding.
-			</p>
-		</header>
-
-		{#if !prefs}
-			<p class="empty">This console could not read its settings.</p>
-		{:else}
-			<div class="row">
-				<label for="new-history">New shows keep</label>
-				{#if $unlocked}
-					<input
-						id="new-history"
-						class="input"
-						type="number"
-						min={prefs.historyDepthMin}
-						max={prefs.historyDepthMax}
-						step="10"
-						value={prefs.historyDepth}
-						onchange={(e) => setConsoleDepth(e.currentTarget.valueAsNumber)}
-					/>
-				{:else}
-					<span class="value">{prefs.historyDepth}</span>
-				{/if}
-				<span class="unit">changes</span>
-			</div>
-			<div class="row">
-				<label for="new-home-fade">New shows let go in</label>
-				{#if $unlocked}
-					<input
-						id="new-home-fade"
-						class="input"
-						type="number"
-						min="0"
-						max={prefs.homeFadeMsMax / 1000}
-						step="0.5"
-						value={prefs.homeFadeMs / 1000}
-						onchange={(e) => setConsoleHomeFade(e.currentTarget.valueAsNumber)}
-					/>
-				{:else}
-					<span class="value">{prefs.homeFadeMs / 1000}</span>
-				{/if}
-				<span class="unit">seconds</span>
-			</div>
-			<div class="row">
-				<label for="audio-out">Plays audio through</label>
-				{#if $unlocked}
-					<select
-						id="audio-out"
-						class="input wide"
-						value={prefs.audio?.output ?? ''}
-						onchange={(e) => setAudioDevice('output', e.currentTarget.value)}
-					>
-						<option value="">The system default</option>
-						<!--
-							Grouped and never filtered, which is the rule the interface
-							picker follows and for the same reason: the device somebody
-							wants to name is as likely to be the odd one as the obvious
-							one, and a picker that hid it would put the setting out of
-							reach of the UI.
-						-->
-						{#each audioGroups(devices?.outputs ?? []) as group (group.label)}
-							<optgroup label={group.label}>
-								{#each group.devices as device (device.id)}
-									<option value={device.name}>
-										{device.name} — {device.channels} ch, {device.sample_rate} Hz
-									</option>
-								{/each}
-							</optgroup>
-						{/each}
-					</select>
-				{:else}
-					<span class="value">{prefs.audio?.output ?? 'The system default'}</span>
-				{/if}
-			</div>
-			<div class="row">
-				<label for="audio-in">Hears timecode on</label>
-				{#if $unlocked}
-					<select
-						id="audio-in"
-						class="input wide"
-						value={prefs.audio?.input ?? ''}
-						onchange={(e) => setAudioDevice('input', e.currentTarget.value)}
-					>
-						<option value="">The system default</option>
-						{#each audioGroups(devices?.inputs ?? []) as group (group.label)}
-							<optgroup label={group.label}>
-								{#each group.devices as device (device.id)}
-									<option value={device.name}>
-										{device.name} — {device.channels} ch, {device.sample_rate} Hz
-									</option>
-								{/each}
-							</optgroup>
-						{/each}
-					</select>
-				{:else}
-					<span class="value">{prefs.audio?.input ?? 'The system default'}</span>
-				{/if}
-			</div>
-			<p class="note">
-				Which sound card is in which machine is a fact about the machine, so this never
-				travels with a show. A device this console has not got is <em>refused</em> and says
-				so on the timeline rather than quietly falling back to another one — the rule a
-				network interface follows, and for the same reason: from the desk, playing out of
-				the wrong output and playing out of nothing look identical.
-			</p>
-			<div class="row curves">
-				<span class="label">New shows fade</span>
-				<div class="curve-grid">
-					{#each GROUPS as group (group.key)}
-						<label class="curve">
-							<span>{group.label}</span>
-							{#if $unlocked}
-								<select
-									class="input"
-									value={prefs.fadeCurves[group.key]}
-									onchange={(e) => setConsoleCurve(group.key, e.currentTarget.value as Easing)}
+		<h3><Spline size={14} />Fades</h3>
+		<table class="rack">
+			{@render head()}
+			<tbody>
+				<tr>
+					<th scope="row">
+						<label for="show-home-fade">Letting go takes</label>
+						<Help label="What letting go is">
+							How long a parameter takes to reach where it rests when nothing is left driving it: a
+							sequence taken off, a selection sent home. Zero snaps. It is show data because two
+							stations fading one rig home over different times is a disagreement the audience can
+							watch.
+						</Help>
+					</th>
+					<td>
+						{#if show}
+							{@render number('show-home-fade', show.home_fade_ms / 1000, 0, (prefs?.homeFadeMsMax ?? 30_000) / 1000, 0.5, 's', setShowHomeFade)}
+						{:else}{@render absent()}{/if}
+					</td>
+					<td>
+						{#if prefs}
+							{@render number('new-home-fade', prefs.homeFadeMs / 1000, 0, prefs.homeFadeMsMax / 1000, 0.5, 's', setConsoleHomeFade)}
+						{:else}{@render absent()}{/if}
+					</td>
+				</tr>
+				{#each GROUPS as group, i (group.key)}
+					<tr>
+						<th scope="row">
+							{#if i === 0}
+								<span class="group-head"
+									>Curve
+									<Help label="What a fade curve is">
+										The shape a fade has when neither the cue nor the capture says one. A dimmer has
+										run linear since dimmers had handles; a head that runs linear into a mark and
+										stops dead reads as a fault, which is why position starts eased and nothing else
+										does.
+									</Help></span
 								>
-									{#each CURVES as curve (curve)}
-										<option value={curve}>{CURVE_LABELS[curve]}</option>
-									{/each}
-								</select>
-							{:else}
-								<span class="value">{CURVE_LABELS[prefs.fadeCurves[group.key]]}</span>
 							{/if}
-						</label>
-					{/each}
-				</div>
-			</div>
-		{/if}
+							<span class="sub">{group.label}</span>
+						</th>
+						<td>
+							{#if show}
+								{@render curve(show.fade_curves[group.key], (c) => setShowCurve(group.key, c))}
+							{:else}{@render absent()}{/if}
+						</td>
+						<td>
+							{#if prefs}
+								{@render curve(prefs.fadeCurves[group.key], (c) => setConsoleCurve(group.key, c))}
+							{:else}{@render absent()}{/if}
+						</td>
+					</tr>
+				{/each}
+			</tbody>
+		</table>
+	</section>
+
+	<section>
+		<h3>
+			<CloudFog size={14} />Haze
+			<Help label="What the haze is">
+				How much haze is in the room, for the rig view: at 0 the air is clear and no beam shows, at 1
+				every beam does. Turbulence is how fast it drifts. It is a fact about the room rather than
+				the screen, so a designer who lit a piece for a hazy house leaves it in the file. It reaches
+				no lamp.
+			</Help>
+		</h3>
+		<table class="rack">
+			{@render head()}
+			<tbody>
+				<tr>
+					<th scope="row"><label for="show-haze">Density</label></th>
+					<td>
+						{#if show}
+							{@render number('show-haze', show.haze_density, 0, 1, 0.05, '', (v) => setShowHaze('haze_density', v))}
+						{:else}{@render absent()}{/if}
+					</td>
+					<td>
+						{#if prefs}
+							{@render number('new-haze', prefs.hazeDensity, 0, 1, 0.05, '', (v) => setConsoleHaze('hazeDensity', v))}
+						{:else}{@render absent()}{/if}
+					</td>
+				</tr>
+				<tr>
+					<th scope="row"><label for="show-haze-turbulence">Turbulence</label></th>
+					<td>
+						{#if show}
+							{@render number('show-haze-turbulence', show.haze_turbulence, 0, 1, 0.05, '', (v) => setShowHaze('haze_turbulence', v))}
+						{:else}{@render absent()}{/if}
+					</td>
+					<td>
+						{#if prefs}
+							{@render number('new-haze-turbulence', prefs.hazeTurbulence, 0, 1, 0.05, '', (v) => setConsoleHaze('hazeTurbulence', v))}
+						{:else}{@render absent()}{/if}
+					</td>
+				</tr>
+			</tbody>
+		</table>
+	</section>
+
+	<section>
+		<h3><Volume2 size={14} />Audio</h3>
+		<div class="inline">
+			<button class="btn" onclick={() => openSetup('audio')}>Sound card, channels and zones…</button>
+		</div>
 	</section>
 
 	{#if trouble}
@@ -480,10 +357,10 @@
 
 <style>
 	.settings {
-		padding: 12px 14px;
 		display: flex;
 		flex-direction: column;
 		gap: 22px;
+		max-width: 760px;
 	}
 
 	section {
@@ -492,99 +369,99 @@
 		gap: 8px;
 	}
 
-	h2 {
-		font-size: 13px;
+	h3 {
+		display: flex;
+		align-items: center;
+		gap: 7px;
+		margin: 0;
+		font-size: 12px;
 		font-weight: 600;
 		text-transform: uppercase;
 		letter-spacing: 0.06em;
 		color: var(--text-dim);
 	}
-
-	header p {
+	h3 :global(svg) {
 		color: var(--text-faint);
-		font-size: var(--font-xs);
-		max-width: 62ch;
-		line-height: 1.5;
 	}
 
-	.row {
-		display: flex;
-		align-items: center;
-		gap: 10px;
-		min-height: var(--hit);
-	}
-
-	label {
-		color: var(--text);
+	.rack {
+		width: 100%;
+		border-collapse: collapse;
 		font-size: var(--font-sm);
-		min-width: 12ch;
+		table-layout: fixed;
 	}
-
-	.input.wide { min-width: 260px; }
-	.input {
-		width: 9ch;
+	.rack thead th {
+		text-align: left;
+		font-weight: 500;
+		font-size: 11px;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: var(--text-faint);
+		padding: 0 10px 6px 0;
 	}
-
-	/* Five pickers rather than one control, so the row stops being a row: the label
-	   goes to the top of it and the groups wrap on a tablet rather than scrolling. */
-	.curves {
-		align-items: flex-start;
-		flex-wrap: wrap;
+	.rack thead th:first-child {
+		width: 34%;
 	}
-
-	.curves .label {
+	.rack tbody th {
+		text-align: left;
+		font-weight: 400;
 		color: var(--text);
-		font-size: var(--font-sm);
-		min-width: 12ch;
-		padding-top: 4px;
+		padding: 6px 10px 6px 0;
+		border-top: 1px solid var(--line);
+	}
+	.rack td {
+		padding: 6px 10px 6px 0;
+		border-top: 1px solid var(--line);
+		vertical-align: middle;
+	}
+	.rack tbody th label {
+		color: inherit;
 	}
 
-	.curve-grid {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 6px 14px;
-	}
-
-	.curve {
-		display: flex;
+	.cell {
+		display: inline-flex;
 		align-items: center;
 		gap: 6px;
-		min-width: 0;
+	}
+	.cell .input {
+		width: 9ch;
+	}
+	.rack .select {
+		width: 100%;
+		max-width: 16ch;
 	}
 
-	.curve > span:first-child {
+	.group-head {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		margin-right: 8px;
+	}
+	.sub {
 		color: var(--text-dim);
-		font-size: var(--font-xs);
-		min-width: 9ch;
-	}
-
-	.curve .input {
-		width: 11ch;
 	}
 
 	.value {
 		color: var(--text-bright);
 		font-variant-numeric: tabular-nums;
-		font-size: var(--font-sm);
 	}
-
 	.unit,
-	.note {
+	.state {
 		color: var(--text-faint);
 		font-size: var(--font-xs);
 	}
-
-	.note {
-		max-width: 62ch;
-		line-height: 1.5;
+	.state {
+		display: block;
+		margin-top: 2px;
 	}
 
 	.empty {
+		margin: 0;
 		color: var(--text-dim);
 		font-size: var(--font-sm);
 	}
-
 	.trouble {
+		margin: 0;
 		color: var(--live);
 		font-size: var(--font-sm);
 	}

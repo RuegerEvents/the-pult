@@ -26,7 +26,7 @@ use pult_render::{
     effect::{RunningEffect, RunningFade},
     track::{Track, TrackAt, TrackPoint, Transport},
     value::ParameterValue,
-    Driving,
+    Beside, Driving, HtpLayer, MAX_BESIDE,
 };
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
@@ -56,6 +56,29 @@ pub struct DrivenBy {
     pub fade: Option<RunningFade>,
     #[serde(default)]
     pub home: Option<ParameterValue>,
+    /// The playing sequence's level, where it dims this parameter. See
+    /// [`Driving::master`].
+    #[serde(default)]
+    pub master: Option<f32>,
+    /// The sequence whose cue is driving this intensity, where one is: so a level a
+    /// playing take recorded for it can be put over `master` frame by frame, the way
+    /// the station's connectors do.
+    #[serde(default)]
+    pub sequence: Option<String>,
+    /// Other sequences playing this intensity beside the winner under an HTP merge,
+    /// each at its own level. See [`Driving::beside`].
+    #[serde(default)]
+    pub beside: Vec<BesideSpec>,
+}
+
+/// One HTP layer beside the winner, as the page describes it: the fixture's own
+/// `live_htp` entry and the level of its sequence.
+#[derive(Deserialize)]
+pub struct BesideSpec {
+    #[serde(flatten)]
+    pub layer: HtpLayer,
+    #[serde(default)]
+    pub master: Option<f32>,
 }
 
 /// One parameter's change points and where the playhead is, written out in full.
@@ -88,8 +111,39 @@ impl DrivenBy {
             effect: self.effect.as_ref(),
             fade: self.fade.as_ref(),
             home: self.home.as_ref(),
+            master: self.master,
+            beside: {
+                let mut out = [None; MAX_BESIDE];
+                for (slot, spec) in out.iter_mut().zip(&self.beside) {
+                    *slot = Some(Beside { layer: &spec.layer, master: spec.master });
+                }
+                out
+            },
         }
     }
+}
+
+/// One row of a timeline's recordings, as the page names it: the sha of a loaded
+/// recording and the row's own fields.
+#[derive(Deserialize)]
+struct PartSpec {
+    sha: String,
+    fixture_id: Option<uuid::Uuid>,
+    key: Option<String>,
+    from_ms: Option<u32>,
+    to_ms: Option<u32>,
+    #[serde(default)]
+    offset_ms: i32,
+}
+
+/// A flash on a timeline, as the page names it: `TimelineFlash`'s own fields.
+#[derive(Deserialize)]
+struct FlashSpec {
+    fixture_id: uuid::Uuid,
+    key: String,
+    value: pult_render::ParameterValue,
+    at_ms: u32,
+    duration_ms: u32,
 }
 
 /// A decoded recording, with an index from the key a page names to the points.
@@ -115,7 +169,7 @@ pub const TEXT: f32 = 5.0;
 /// Four floats per parameter: a tag and up to three components.
 ///
 /// Fixed width rather than variable, so the page indexes into the answer by position
-/// and never parses it. Four because a colour has three components and everything
+/// and never parses it. Four because a color has three components and everything
 /// else has one; the waste is a few kilobytes on a rig nobody is looking at all of.
 pub const STRIDE: usize = 4;
 
@@ -144,10 +198,10 @@ fn pack(value: Option<ParameterValue>, out: &mut [f32]) {
     }
 }
 
-/// What each of a fixture's emitters should be at, for one colour.
+/// What each of a fixture's emitters should be at, for one color.
 ///
 /// A free function rather than a method, because the question is about a *fixture* and
-/// a colour somebody is dragging, not about anything the show is driving: the colour
+/// a color somebody is dragging, not about anything the show is driving: the color
 /// control asks it as the picker moves, before any of it has been written.
 ///
 /// The same [`pult_render::color::mix`] the station's DMX connector calls, so the
@@ -157,6 +211,112 @@ pub fn emitter_levels(color: JsValue, emitters: JsValue) -> Result<JsValue, JsVa
     let color: pult_render::Color = serde_wasm_bindgen::from_value(color)?;
     let emitters: Vec<pult_render::EmitterSpec> = serde_wasm_bindgen::from_value(emitters)?;
     Ok(pult_render::mix(&color, &emitters).serialize(&plain_javascript())?)
+}
+
+/// What each of a list of effects is asserting at `now_ms`, packed like
+/// [`Evaluator::evaluate`]: [`STRIDE`] floats each, in the order given.
+///
+/// For the Effects panel's preview, which shows what an effect *will* do across a
+/// selection before anything is applied: nothing it draws is driving the rig, so it
+/// does not belong in the evaluator's own map. The arithmetic is the one the lamps
+/// take, which is the whole reason the preview asks here rather than working it out.
+#[wasm_bindgen]
+pub fn effect_values(effects: JsValue, now_ms: f64) -> Result<Vec<f32>, JsValue> {
+    let effects: Vec<RunningEffect> = serde_wasm_bindgen::from_value(effects)?;
+    let mut out = vec![0.0; effects.len() * STRIDE];
+    let now = now_ms.max(0.0) as u64;
+    for (i, effect) in effects.iter().enumerate() {
+        pack(
+            Some(pult_render::effect_value_at(effect, now)),
+            &mut out[i * STRIDE..(i + 1) * STRIDE],
+        );
+    }
+    Ok(out)
+}
+
+/// One frame of a strip the node draws itself, as the node draws it: three bytes a
+/// pixel, brightness applied. See `pult_render::pixfx` and its corpus.
+///
+/// Plain arguments rather than an object, because the rig view asks this per strip per
+/// animation frame and a deserialized struct would be the most expensive part of it.
+#[allow(clippy::too_many_arguments)]
+#[wasm_bindgen]
+pub fn pixel_effect(
+    effect: &str,
+    color: &[u8],
+    color2: &[u8],
+    brightness: f32,
+    speed: f32,
+    size: f32,
+    reverse: bool,
+    mirror: bool,
+    segments: i32,
+    now_ms: f64,
+    count: u16,
+) -> Vec<u8> {
+    let rgb = |c: &[u8]| [c.first().copied().unwrap_or(0), c.get(1).copied().unwrap_or(0), c.get(2).copied().unwrap_or(0)];
+    let params = pult_render::pixfx::PixelParams {
+        effect: pult_render::pixfx::PixelEffect::parse(effect),
+        color: rgb(color),
+        color2: rgb(color2),
+        brightness,
+        speed,
+        size,
+        reverse,
+        mirror,
+        segments,
+    };
+    let now = now_ms as i64;
+    pult_render::pixfx::render(&params, pult_render::pixfx::phase_at(speed, now), now, count)
+}
+
+/// A shape's level after `traveled` cycles, 0..1, for drawing its waveform.
+///
+/// Every shape, including the two that never repeat, which a drawing written in
+/// TypeScript would otherwise have to hash for itself.
+#[wasm_bindgen]
+pub fn shape_level(shape: JsValue, width: f32, traveled: f64, salt: u32) -> Result<f32, JsValue> {
+    let shape: pult_render::Shape = serde_wasm_bindgen::from_value(shape)?;
+    Ok(pult_render::shape_level(shape, width, traveled, salt))
+}
+
+/// A recording outlined for drawing: per key, where it starts and stops and its level
+/// along the way, at most `budget` levels each — [`pult_render::outline`] over the
+/// same parse the station plays from.
+///
+/// Free rather than on [`Evaluator`] because a lane draws takes whether or not their
+/// timeline is running, and the evaluator holds only what is driving the rig.
+#[wasm_bindgen]
+pub fn track_outline(bytes: &[u8], budget: u32) -> Result<JsValue, JsValue> {
+    let track = pult_render::track::decode(bytes).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    Ok(pult_render::outline(&track, budget as usize).serialize(&plain_javascript())?)
+}
+
+/// One key of a recording, every change point of it, for editing: `[{ ms, value,
+/// release? }]`. Empty where the recording does not hold the key.
+#[wasm_bindgen]
+pub fn track_points(bytes: &[u8], fixture_id: &str, key: &str) -> Result<JsValue, JsValue> {
+    let track = pult_render::track::decode(bytes).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let fixture_id: uuid::Uuid = fixture_id.parse().map_err(|_| JsValue::from_str("not a fixture id"))?;
+    let points: &[pult_render::TrackPoint] = track
+        .keys
+        .iter()
+        .find(|k| k.fixture_id == fixture_id && k.key == key)
+        .map_or(&[], |k| &k.points);
+    Ok(points.serialize(&plain_javascript())?)
+}
+
+/// A recording of one key with these change points, as the bytes a take is stored in —
+/// the one encoder, so an edited take is read back by the station exactly as written.
+/// The points are sorted by position, since a handle can be dragged past its neighbor.
+#[wasm_bindgen]
+pub fn encode_key(fixture_id: &str, key: &str, points: JsValue) -> Result<Vec<u8>, JsValue> {
+    let fixture_id: uuid::Uuid = fixture_id.parse().map_err(|_| JsValue::from_str("not a fixture id"))?;
+    let mut points: Vec<pult_render::TrackPoint> = serde_wasm_bindgen::from_value(points)?;
+    points.sort_by_key(|p| p.ms);
+    points.dedup_by(|later, earlier| later.ms == earlier.ms);
+    let track = pult_render::Track { keys: vec![pult_render::TrackKey { fixture_id, key: key.to_string(), points }] };
+    Ok(pult_render::track::encode(&track))
 }
 
 /// A serializer that answers with plain objects and arrays.
@@ -185,6 +345,9 @@ pub struct Evaluator {
     tracks: HashMap<String, Loaded>,
     /// Which of them are running, and where each playhead is.
     playing: HashMap<String, Transport>,
+    /// Running takes whose sequence levels do not play: their timeline is recording a
+    /// new pass, and the hand on the fader is what is being recorded.
+    levels_muted: std::collections::HashSet<String>,
     /// What the page is showing, in the order its answers come back.
     watching: Vec<String>,
     /// Reused between frames, so drawing does not allocate.
@@ -247,6 +410,58 @@ impl Evaluator {
         Ok(())
     }
 
+    /// A timeline's rows, composed into one recording under `id` — each row its
+    /// window of its parameter of an already-loaded recording, with its nudge — which
+    /// is then played with [`Evaluator::play_track`] like any other. The station's own
+    /// composition, `pult_render::compose`, so the screen and the lamps agree at the
+    /// edge of a slice. `flashes` (the timeline's `TimelineFlash`es, or nothing) are laid
+    /// over the rows the way the station lays them, `pult_render::compose_with`.
+    /// Answers whether every recording the rows name was loaded; what was is composed
+    /// either way.
+    pub fn compose_track(&mut self, id: &str, parts: JsValue, flashes: JsValue) -> Result<bool, JsValue> {
+        let specs: Vec<PartSpec> = serde_wasm_bindgen::from_value(parts)?;
+        let flashes: Vec<FlashSpec> = if flashes.is_undefined() || flashes.is_null() {
+            Vec::new()
+        } else {
+            serde_wasm_bindgen::from_value(flashes)?
+        };
+        let mut complete = true;
+        let parts: Vec<pult_render::Part<'_>> = specs
+            .iter()
+            .filter_map(|spec| {
+                let loaded = self.tracks.get(&spec.sha);
+                complete &= loaded.is_some();
+                Some(pult_render::Part {
+                    track: &loaded?.track,
+                    fixture_id: spec.fixture_id,
+                    key: spec.key.as_deref(),
+                    from_ms: spec.from_ms,
+                    to_ms: spec.to_ms,
+                    offset_ms: spec.offset_ms,
+                })
+            })
+            .collect();
+        let flashes: Vec<pult_render::Flash<'_>> = flashes
+            .iter()
+            .map(|f| pult_render::Flash {
+                fixture_id: f.fixture_id,
+                key: &f.key,
+                value: &f.value,
+                from_ms: f.at_ms,
+                to_ms: f.at_ms.saturating_add(f.duration_ms.max(1)),
+            })
+            .collect();
+        let track = pult_render::compose_with(&parts, &flashes);
+        let at = track
+            .keys
+            .iter()
+            .enumerate()
+            .map(|(index, key)| (format!("{}/{}", key.fixture_id, key.key), index))
+            .collect();
+        self.tracks.insert(id.to_string(), Loaded { track, at });
+        Ok(complete)
+    }
+
     /// This recording is running, anchored here.
     ///
     /// The transport is the timeline's own — `anchor_ms`, `position_at_anchor_ms` and
@@ -258,7 +473,13 @@ impl Evaluator {
         anchor_ms: f64,
         position_at_anchor_ms: f64,
         rate: f32,
+        levels: bool,
     ) {
+        if levels {
+            self.levels_muted.remove(sha);
+        } else {
+            self.levels_muted.insert(sha.to_string());
+        }
         self.playing.insert(
             sha.to_string(),
             Transport {
@@ -273,6 +494,7 @@ impl Evaluator {
     /// timeline and starting it again must not cost a download.
     pub fn stop_track(&mut self, sha: &str) {
         self.playing.remove(sha);
+        self.levels_muted.remove(sha);
     }
 
     /// Forget a recording entirely — the show no longer carries it.
@@ -291,22 +513,43 @@ impl Evaluator {
     /// A key can be in more than one playing recording — two takes of the same song,
     /// both armed — and the **latest anchor wins**, which is the take that was started
     /// most recently. Layering them would be a merge rule nothing has decided.
-    fn composed(&self, key: &str) -> Option<Driving<'_>> {
+    fn composed(&self, key: &str, now: u64) -> Option<Driving<'_>> {
         let driven = self.driving.get(key);
         let recorded = self.track_for(key);
-        match (driven, recorded) {
+        let mut composed = match (driven, recorded) {
             (None, None) => None,
             (Some(driven), None) => Some(driven.driving()),
             (driven, track) => Some(Driving {
                 track,
                 ..driven.map(DrivenBy::driving).unwrap_or_default()
             }),
+        }?;
+        // A level a playing take recorded for this parameter's sequence, over its fader.
+        if let Some(sequence) = driven.and_then(|d| d.sequence.as_deref()) {
+            let level = self.level_for(sequence).and_then(|at| at.value_at(now));
+            if let Some(ParameterValue::Float(level)) = level {
+                let level = level.clamp(0.0, 1.0);
+                composed.master = (level < 1.0).then_some(level);
+            }
         }
+        Some(composed)
+    }
+
+    /// A sequence's level as the playing takes record it, the latest started winning.
+    fn level_for(&self, sequence: &str) -> Option<TrackAt<'_>> {
+        self.track_among(&format!("{sequence}/{}", pult_render::SEQUENCE_LEVEL_KEY), true)
     }
 
     fn track_for(&self, key: &str) -> Option<TrackAt<'_>> {
+        self.track_among(key, false)
+    }
+
+    fn track_among(&self, key: &str, levels: bool) -> Option<TrackAt<'_>> {
         let mut best: Option<(u64, TrackAt<'_>)> = None;
         for (sha, transport) in &self.playing {
+            if levels && self.levels_muted.contains(sha) {
+                continue;
+            }
             let Some(loaded) = self.tracks.get(sha) else { continue };
             let Some(index) = loaded.at.get(key) else { continue };
             let at = TrackAt { points: &loaded.track.keys[*index].points, transport: *transport };
@@ -351,7 +594,7 @@ impl Evaluator {
             let slot = &mut packed[at * STRIDE..(at + 1) * STRIDE];
             slot.fill(0.0);
             let value =
-                self.composed(key).and_then(|driving| pult_render::value_at(&driving, now));
+                self.composed(key, now).and_then(|driving| pult_render::value_at(&driving, now));
             pack(value, slot);
         }
         self.packed = packed;
@@ -367,7 +610,7 @@ impl Evaluator {
     /// no second answer to when a recording is speaking.
     ///
     /// Which matters because **a track says nothing before its first point**: a key a
-    /// rolling take merely carries is not a key it is asserting, and colouring one
+    /// rolling take merely carries is not a key it is asserting, and coloring one
     /// green would be the sheet claiming a source the lamps do not have.
     ///
     /// Asked only while a sheet is open and a timeline is running, so a settled
@@ -381,15 +624,15 @@ impl Evaluator {
             .collect()
     }
 
-    /// One parameter's per-emitter overrides, for the colour control alone.
+    /// One parameter's per-emitter overrides, for the color control alone.
     ///
     /// Separate from [`Evaluator::evaluate`] for the reason [`Evaluator::text`] is: the
     /// packed answer is a fixed four floats, a map of names to levels does not fit in
     /// it, and widening the stride would make every frame of every rig pay for a panel
-    /// that is open on one screen. The colour control asks for this; nothing else does.
+    /// that is open on one screen. The color control asks for this; nothing else does.
     pub fn color_overrides(&self, key: &str, now_ms: f64) -> Result<JsValue, JsValue> {
         let now = now_ms.max(0.0) as u64;
-        let overrides = match self.composed(key).and_then(|d| pult_render::value_at(&d, now)) {
+        let overrides = match self.composed(key, now).and_then(|d| pult_render::value_at(&d, now)) {
             Some(ParameterValue::Color { overrides, .. }) => overrides,
             _ => Default::default(),
         };
@@ -403,7 +646,7 @@ impl Evaluator {
     /// happens on a handful of displays.
     pub fn text(&self, key: &str, now_ms: f64) -> Option<String> {
         let now = now_ms.max(0.0) as u64;
-        match self.composed(key).and_then(|d| pult_render::value_at(&d, now)) {
+        match self.composed(key, now).and_then(|d| pult_render::value_at(&d, now)) {
             Some(ParameterValue::Text(text)) => Some(text),
             _ => None,
         }
@@ -484,7 +727,7 @@ mod tests {
                 TrackKey {
                     fixture_id: Default::default(),
                     key: "Intensity".into(),
-                    points: vec![TrackPoint { ms: 2_000, value: ParameterValue::Float(0.6) }],
+                    points: vec![TrackPoint { release: false, ms: 2_000, value: ParameterValue::Float(0.6) }],
                 },
                 TrackKey { fixture_id: Default::default(), key: "Pan".into(), points: vec![] },
             ],
@@ -492,7 +735,7 @@ mod tests {
         let fixture = track.keys[0].fixture_id;
         let mut evaluator = Evaluator::default();
         evaluator.load_track("sha", &pult_render::track::encode(&track)).unwrap();
-        evaluator.play_track("sha", 10_000.0, 0.0, 1.0);
+        evaluator.play_track("sha", 10_000.0, 0.0, 1.0, true);
         evaluator.watching =
             vec![format!("{fixture}/Intensity"), format!("{fixture}/Pan"), "nobody/Tilt".into()];
 
@@ -505,5 +748,51 @@ mod tests {
             vec![format!("{fixture}/Intensity")],
             "and once past it, exactly the key it is asserting"
         );
+    }
+
+    /// A level a playing take recorded for a sequence dims the intensity that
+    /// sequence's cue is driving, frame by frame — and not while the timeline is
+    /// recording a new pass, when the fader is what is being recorded.
+    #[test]
+    fn a_recorded_sequence_level_dims_what_its_cue_is_driving() {
+        use pult_render::track::{Track, TrackKey, TrackPoint};
+
+        let track = Track {
+            keys: vec![TrackKey {
+                fixture_id: Default::default(),
+                key: pult_render::SEQUENCE_LEVEL_KEY.into(),
+                points: vec![TrackPoint { release: false, ms: 1_000, value: ParameterValue::Float(0.5) }],
+            }],
+        };
+        let sequence = track.keys[0].fixture_id.to_string();
+        let mut evaluator = Evaluator::default();
+        evaluator.load_track("sha", &pult_render::track::encode(&track)).unwrap();
+        evaluator.driving.insert(
+            "lamp/Intensity".into(),
+            DrivenBy {
+                home: Some(ParameterValue::Float(1.0)),
+                sequence: Some(sequence),
+                ..DrivenBy::default()
+            },
+        );
+        evaluator.watching = vec!["lamp/Intensity".into()];
+        evaluator.packed = vec![0.0; STRIDE];
+
+        evaluator.play_track("sha", 10_000.0, 0.0, 1.0, true);
+        assert_eq!(evaluator.evaluate(10_500.0)[1], 1.0, "before the take's first point, the fader");
+        assert_eq!(evaluator.evaluate(11_500.0)[1], 1.0, "home is not played by a sequence, so not dimmed");
+
+        evaluator.driving.get_mut("lamp/Intensity").unwrap().fade = Some(pult_render::RunningFade {
+            from: ParameterValue::Float(1.0),
+            to: ParameterValue::Float(1.0),
+            t0: 0,
+            duration_ms: 0,
+            easing: Default::default(),
+            cue_id: Default::default(),
+        });
+        assert_eq!(evaluator.evaluate(11_500.0)[1], 0.5, "a cue's fade, at the recorded level");
+
+        evaluator.play_track("sha", 10_000.0, 0.0, 1.0, false);
+        assert_eq!(evaluator.evaluate(11_500.0)[1], 1.0, "recording a new pass: the fader decides");
     }
 }

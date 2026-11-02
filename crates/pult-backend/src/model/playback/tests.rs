@@ -64,13 +64,13 @@ fn curves() -> FadeCurves {
 /// each of them carrying its own.
 const FIXTURE_TYPE: Uuid = Uuid::from_u128(0x5ea75ea7_0000_0000_0000_000000000001);
 
-/// A dimmer that can also colour, pan and tilt, resting dark and centred — which is
+/// A dimmer that can also color, pan and tilt, resting dark and centered — which is
 /// what an OpenHaunt node describes and what the console reads back.
 fn the_type() -> &'static [pult_schema::types::fixture::FixtureType] {
     use pult_schema::types::fixture::{FixtureType, ParameterDefinition};
     static TYPES: std::sync::OnceLock<Vec<FixtureType>> = std::sync::OnceLock::new();
     TYPES.get_or_init(|| {
-        // Intensity, then a colour across three, then pan and tilt: the implicit
+        // Intensity, then a color across three, then pan and tilt: the implicit
         // mode's own order, which is what these channels always were.
         let at = ParameterDefinition::new;
         vec![FixtureType {
@@ -97,8 +97,10 @@ fn a_fixture() -> Fixture {
         address: FixtureAddress::dmx(1, 1),
         position: None,
         sensed_values: HashMap::new(),
+        sensed_at: Default::default(),
         live_effects: Default::default(),
         live_fades: Default::default(),
+        live_htp: Default::default(),
         home_values: Default::default(),
         ..Fixture::default()
     }
@@ -152,12 +154,14 @@ fn intensity(fixture_id: Uuid, value: f32) -> ParameterCapture {
 }
 
 fn a_sequence(cues: &[&Cue], active: Option<usize>) -> Sequence {
-    Sequence {
+    Sequence { merge: None, wrap: None,
+        folder: None,
         id: Uuid::new_v4(),
         name: "Act 1".into(),
         cue_ids: cues.iter().map(|c| c.id).collect(),
         active_cue_index: active,
         went_at: None,
+        master: None,
     }
 }
 
@@ -187,6 +191,7 @@ fn live_under(
         the_type().iter().find(|t| t.id == fixture.fixture_type_id),
         held.get(fixture_id, key),
         key,
+        &Default::default(),
         WALL + after_ms,
     )
 }
@@ -201,6 +206,7 @@ fn live_at(fixtures: &[Fixture], fixture_id: Uuid, key: &str, at_ms: u64) -> Opt
         the_type().iter().find(|t| t.id == fixture.fixture_type_id),
         None,
         key,
+        &Default::default(),
         at_ms,
     )
 }
@@ -220,6 +226,7 @@ fn live_at_under(
         the_type().iter().find(|t| t.id == fixture.fixture_type_id),
         held.get(fixture_id, key),
         key,
+        &Default::default(),
         at_ms,
     )
 }
@@ -244,6 +251,11 @@ fn apply(fixtures: &mut [Fixture], effects: &[PlaybackEffect]) {
             PlaybackEffect::SetLiveEffects { fixture_id, effects } => {
                 if let Some(f) = fixtures.iter_mut().find(|f| f.id == *fixture_id) {
                     f.live_effects = effects.clone();
+                }
+            }
+            PlaybackEffect::SetLiveHtp { fixture_id, layers } => {
+                if let Some(f) = fixtures.iter_mut().find(|f| f.id == *fixture_id) {
+                    f.live_htp = layers.clone();
                 }
             }
             _ => {}
@@ -339,7 +351,7 @@ fn a_cue_is_the_stack_up_to_it() {
     // A tracking stack: cue 2 brings a second light in and cue 3 says nothing about
     // it. Going back to cue 1 has to let it go — no cue at or before cue 1 has it —
     // and jumping from cue 1 to cue 3 has to bring it back, cue 2 being on the way.
-    // The Theatre demo is where this was found: back from cue 5 to cue 1 left the
+    // The Theater demo is where this was found: back from cue 5 to cue 1 left the
     // side booms on, because nothing before cue 4 mentions them.
     let a = a_fixture();
     let b = a_fixture();
@@ -584,10 +596,10 @@ fn an_unchanged_fixture_is_not_written_again() {
 
 // ── Split fades ───────────────────────────────────────────────────────────────
 
-/// Two fixtures under one cue, one coming up and one going down, so a single tick
-/// shows both times at once — which is the whole of what an out time is for.
+/// Two fixtures under one cue, one coming up and one going down: both take the cue's
+/// in time, because the in time is how a cue starts. The out time is for its end.
 #[test]
-fn a_cue_with_an_out_time_takes_it_only_where_the_parameter_comes_down() {
+fn a_cue_starts_on_its_in_time_in_both_directions_whatever_its_out_time() {
     let rising = a_fixture();
     let mut falling = a_fixture();
     already_at(&mut falling, "Intensity", ParameterValue::Float(1.0));
@@ -604,10 +616,58 @@ fn a_cue_with_an_out_time_takes_it_only_where_the_parameter_comes_down() {
     pass(&mut playback, start, &mut fixtures, &sequences, &cues, &[], &[]);
     pass(&mut playback, start + 500, &mut fixtures, &sequences, &cues, &[], &[]);
 
-    // Halfway through a one-second in time.
     assert!((as_float(live(&fixtures, rising.id, "Intensity", start + 500)) - 0.5).abs() < 0.001);
-    // An eighth of the way through a four-second out time, from full.
-    assert!((as_float(live(&fixtures, falling.id, "Intensity", start + 500)) - 0.875).abs() < 0.001);
+    assert!((as_float(live(&fixtures, falling.id, "Intensity", start + 500)) - 0.5).abs() < 0.001);
+}
+
+/// Off ends the cue that is up, so what it set goes over that cue's out time.
+#[test]
+fn taking_a_sequence_off_lets_go_over_the_out_time_of_the_cue_that_was_up() {
+    let fixture = a_fixture();
+    let mut cue = a_cue(0, vec![intensity(fixture.id, 1.0)]);
+    cue.fade_out_ms = 2000;
+    let mut fixtures = vec![fixture.clone()];
+    let cues = [cue.clone()];
+    let mut sequences = [a_sequence(&[&cue], Some(0))];
+
+    let mut playback = Playback::default();
+    pass(&mut playback, 0, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert_eq!(level_of(&fixtures, &[], fixture.id, 0), 1.0, "in time 0: it snaps on");
+
+    sequences[0].active_cue_index = None;
+    pass(&mut playback, 1000, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert!((level_of(&fixtures, &[], fixture.id, 1500) - 0.75).abs() < 0.001, "a quarter of two seconds out");
+}
+
+/// Back from a cue to the one before it: what the earlier cue sets itself comes back
+/// on *its* in time — the case found at HHG, where going back to a cue with an out
+/// time faded every light that had been caught higher. What only the later cue set
+/// goes on the later cue's out time, and a capture's own out time wins over its cue's.
+#[test]
+fn going_back_takes_the_earlier_cue_in_and_lets_go_of_the_later_cue_out() {
+    let room = a_fixture();
+    let extra = a_fixture();
+    let other = a_fixture();
+    let mut stimmung = a_cue(0, vec![intensity(room.id, 0.4)]);
+    stimmung.fade_out_ms = 500;
+    let mut own = intensity(other.id, 1.0);
+    own.fade_out_ms = 1000;
+    let mut flicker = a_cue(0, vec![intensity(room.id, 1.0), intensity(extra.id, 1.0), own]);
+    flicker.fade_out_ms = 2000;
+    let mut fixtures = vec![room.clone(), extra.clone(), other.clone()];
+    let cues = [stimmung.clone(), flicker.clone()];
+    let mut sequences = [a_sequence(&[&stimmung, &flicker], Some(1))];
+
+    let mut playback = Playback::default();
+    pass(&mut playback, 0, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert_eq!(level_of(&fixtures, &[], room.id, 0), 1.0);
+
+    sequences[0].active_cue_index = Some(0);
+    sequences[0].went_at = Some(WALL + 1000);
+    pass(&mut playback, 1000, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert!((level_of(&fixtures, &[], room.id, 1000) - 0.4).abs() < 0.001, "Stimmung's in time is 0: a snap");
+    assert!((level_of(&fixtures, &[], extra.id, 1500) - 0.75).abs() < 0.001, "Flicker's out time, 2 s");
+    assert!((level_of(&fixtures, &[], other.id, 1500) - 0.5).abs() < 0.001, "the capture's own out time, 1 s");
 }
 
 /// The property every show written before this change relies on: an unset out time
@@ -633,33 +693,8 @@ fn a_cue_with_no_out_time_fades_one_way_in_both_directions() {
     );
 }
 
-#[test]
-fn a_captures_own_out_time_wins_over_the_cues() {
-    let mut fixture = a_fixture();
-    already_at(&mut fixture, "Intensity", ParameterValue::Float(1.0));
-
-    let mut capture = intensity(fixture.id, 0.0);
-    capture.fade_out_ms = 2000;
-    let mut cue = a_cue(1000, vec![capture]);
-    cue.fade_out_ms = 8000;
-
-    let mut fixtures = vec![fixture.clone()];
-    let cues = [cue.clone()];
-    let sequences = [a_sequence(&[&cue], Some(0))];
-
-    let mut playback = Playback::default();
-    let start = 0;
-    pass(&mut playback, start, &mut fixtures, &sequences, &cues, &[], &[]);
-    pass(&mut playback, start + 500, &mut fixtures, &sequences, &cues, &[], &[]);
-
-    assert!(
-        (as_float(live(&fixtures, fixture.id, "Intensity", start + 500)) - 0.75).abs() < 0.001,
-        "a quarter of the way through two seconds, not a sixteenth of eight",
-    );
-}
-
-/// A colour going to black *looks* like a fade out and is not treated as one. There
-/// is no agreed way to rank two colours, and a console that guessed at one would be
+/// A color going to black *looks* like a fade out and is not treated as one. There
+/// is no agreed way to rank two colors, and a console that guessed at one would be
 /// giving some cues a time nobody asked for.
 #[test]
 fn a_parameter_with_no_order_takes_the_in_time() {
@@ -692,14 +727,14 @@ fn a_parameter_with_no_order_takes_the_in_time() {
         Some(ParameterValue::Color { r, .. }) => {
             assert!((r - 0.5).abs() < 0.001, "half of one second, not of eight");
         }
-        other => panic!("expected a colour, got {other:?}"),
+        other => panic!("expected a color, got {other:?}"),
     }
 }
 
-// ── Colour and other parameter kinds ──────────────────────────────────────────
+// ── Color and other parameter kinds ──────────────────────────────────────────
 
 #[test]
-fn colour_fades_channel_by_channel() {
+fn color_fades_channel_by_channel() {
     let mut fixture = a_fixture();
     already_at(&mut fixture, "ColorRgb", ParameterValue::rgb(0.0, 0.0, 0.0));
     let capture = ParameterCapture {
@@ -729,7 +764,7 @@ fn colour_fades_channel_by_channel() {
             assert!((g - 0.25).abs() < 0.001);
             assert!(b.abs() < 0.001);
         }
-        other => panic!("expected a colour, got {other:?}"),
+        other => panic!("expected a color, got {other:?}"),
     }
 }
 
@@ -1031,7 +1066,7 @@ fn a_fixture_that_rests_on_releases_to_on() {
 }
 
 /// A fade on a parameter nothing has driven starts where that parameter rests, which
-/// is not necessarily where a dimmer rests. A mover's tilt sits centred, and a cue
+/// is not necessarily where a dimmer rests. A mover's tilt sits centered, and a cue
 /// tilting it should not swing it up from the floor first.
 #[test]
 fn a_first_fade_starts_from_where_the_parameter_rests() {
@@ -1060,7 +1095,7 @@ fn a_first_fade_starts_from_where_the_parameter_rests() {
     assert_eq!(
         as_float(live(&fixtures, fixture.id, "Tilt", 0)),
         0.5,
-        "centred, which is where the node said this port rests",
+        "centered, which is where the node said this port rests",
     );
 }
 
@@ -1128,6 +1163,27 @@ fn a_settled_programmer_is_not_re_emitted() {
 
     let again = pass(&mut playback, 0, &mut fixtures, &sequences, &cues, &programmer, &[]);
     assert!(again.is_empty(), "nothing changed, so nothing should be written");
+}
+
+/// An effect cleared out of the programmer stops. Its entry is gone, so nothing holds
+/// the key, and the shape it left on the fixture must not be carried forward as if some
+/// other layer had put it there — which is what kept a cleared chase running.
+#[test]
+fn an_effect_cleared_out_of_the_programmer_stops() {
+    let fixture = a_fixture();
+    let mut fixtures = vec![fixture.clone()];
+    let cues: [Cue; 0] = [];
+    let sequences: [Sequence; 0] = [];
+    let programmer = [held_effect(fixture.id, a_sine(0.0))];
+
+    let mut playback = Playback::default();
+    pass(&mut playback, 0, &mut fixtures, &sequences, &cues, &programmer, &[]);
+    assert!(!fixtures[0].live_effects.is_empty(), "the shape is published");
+
+    pass(&mut playback, 100, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert!(fixtures[0].live_effects.is_empty(), "and goes with its entry: {:?}", fixtures[0].live_effects);
+    let again = pass(&mut playback, 200, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert!(again.is_empty(), "and stays gone without being written again");
 }
 
 /// A plain held value is never published at all. It is a SYNCED programmer entry that
@@ -1198,7 +1254,7 @@ fn the_programmer_leaves_parameters_it_does_not_hold_alone() {
     assert_eq!(
         live(&fixtures, fixture.id, "ColorRgb", 0),
         Some(ParameterValue::rgb(1.0, 0.0, 0.0)),
-        "the colour was never in the programmer, so the cue still owns it",
+        "the color was never in the programmer, so the cue still owns it",
     );
 }
 
@@ -1226,6 +1282,7 @@ fn a_sine(phase: f32) -> EffectSpec {
         phase,
         spread: Spread::Even,
         t0: None,
+        template: None,
     }
 }
 
@@ -1925,6 +1982,7 @@ fn taking_a_sequence_off_stops_its_effects() {
         phase: 0.0,
         spread: Spread::Even,
         t0: None,
+        template: None,
     });
     let cue = a_cue(0, vec![capture]);
     let mut fixtures = vec![fixture.clone()];
@@ -2104,7 +2162,7 @@ fn going_home_takes_the_shows_curve_too() {
     let mut fixtures = vec![fixture.clone()];
 
     let mut playback = Playback::default();
-    let mut run = |playback: &mut Playback, at: u64, fixtures: &mut Vec<Fixture>, sequences: &[Sequence]| {
+    let run = |playback: &mut Playback, at: u64, fixtures: &mut Vec<Fixture>, sequences: &[Sequence]| {
         let effects = {
             let view = ShowView::new(
                 sequences,
@@ -2143,7 +2201,7 @@ fn going_home_takes_the_shows_curve_too() {
 
 /// The non-goal of the whole change, written as a test: the same fade produces the
 /// same number at the same instant. If a single frame differs, that is a bug in this
-/// change rather than a new behaviour.
+/// change rather than a new behavior.
 ///
 /// The figures below were taken from the console before values stopped being stored —
 /// a four-second ease-in-out from dark to full, sampled every half second, which is
@@ -2215,6 +2273,8 @@ mod presets {
 
     fn a_preset(fixture_id: Uuid, level: f32) -> Preset {
         Preset {
+            folder: None,
+            color: None,
             id: Uuid::new_v4(),
             name: "Warm".into(),
             values: vec![PresetValue {
@@ -2430,7 +2490,7 @@ mod editing_a_standing_cue {
     /// must move that lamp and no other. The first version of this indexed the captures
     /// by parameter alone, collapsed a whole system into whichever fixture came last,
     /// and restarted twenty fades to a value that was not theirs. `demo.sh --demo
-    /// theatre` is what found it; this is what would have.
+    /// theater` is what found it; this is what would have.
     #[test]
     fn editing_one_fixtures_capture_leaves_the_others_where_they_are() {
         let one = a_fixture();
@@ -2470,6 +2530,108 @@ mod editing_a_standing_cue {
         );
     }
 
+    /// A key stored into the cue on stage for the first time — the Store dialog Update
+    /// opens for what no cue was driving — goes live at once, with nobody taking the
+    /// sequence off and on again. Before this, nothing started it: repointing reaches
+    /// only a fade that already exists.
+    #[test]
+    fn a_key_stored_into_the_standing_cue_goes_live() {
+        let one = a_fixture();
+        let mut two = a_fixture();
+        two.name = "Spot 2".into();
+        let cue = a_cue(0, vec![intensity(one.id, 0.9)]);
+        let sequences = [a_sequence(&[&cue], Some(0))];
+        let mut cues = [cue];
+        let mut fixtures = vec![one.clone(), two.clone()];
+
+        let mut playback = Playback::default();
+        let effects = {
+            let view =
+                ShowView::new(&sequences, &cues, &fixtures, the_type(), &[], &[], 2_000, curves(), &[]);
+            playback.pass(WALL, &view)
+        };
+        apply(&mut fixtures, &effects);
+        assert_eq!(live(&fixtures, two.id, "Intensity", 0), Some(ParameterValue::Float(0.0)), "at home: nothing drives it yet");
+
+        cues[0].captures = vec![intensity(one.id, 0.9), intensity(two.id, 0.6)];
+        let effects = {
+            let view =
+                ShowView::new(&sequences, &cues, &fixtures, the_type(), &[], &[], 2_000, curves(), &[]);
+            playback.pass_after_edits(WALL + 5_000, &view, true)
+        };
+        apply(&mut fixtures, &effects);
+        assert_eq!(
+            live(&fixtures, two.id, "Intensity", 60_000),
+            Some(ParameterValue::Float(0.6)),
+            "the cue on stage now drives it"
+        );
+        assert_eq!(live(&fixtures, one.id, "Intensity", 60_000), Some(ParameterValue::Float(0.9)), "untouched");
+    }
+
+    /// The same for a key an *earlier* cue set: storing it into the cue that is up
+    /// makes that cue the one driving it, the way taking the cue would have.
+    #[test]
+    fn a_key_an_earlier_cue_set_follows_the_standing_cue_once_it_captures_it() {
+        let fixture = a_fixture();
+        let first = a_cue(0, vec![intensity(fixture.id, 0.9)]);
+        let second = a_cue(1, vec![]);
+        let mut cues = [first, second];
+        let sequences = [a_sequence(&[&cues[0], &cues[1]], Some(1))];
+        let mut fixtures = vec![fixture.clone()];
+
+        let mut playback = Playback::default();
+        let effects = {
+            let view =
+                ShowView::new(&sequences, &cues, &fixtures, the_type(), &[], &[], 2_000, curves(), &[]);
+            playback.pass(WALL, &view)
+        };
+        apply(&mut fixtures, &effects);
+        assert_eq!(live(&fixtures, fixture.id, "Intensity", 60_000), Some(ParameterValue::Float(0.9)), "tracked");
+
+        cues[1].captures = vec![intensity(fixture.id, 0.4)];
+        let effects = {
+            let view =
+                ShowView::new(&sequences, &cues, &fixtures, the_type(), &[], &[], 2_000, curves(), &[]);
+            playback.pass_after_edits(WALL + 5_000, &view, true)
+        };
+        apply(&mut fixtures, &effects);
+        assert_eq!(live(&fixtures, fixture.id, "Intensity", 60_000), Some(ParameterValue::Float(0.4)));
+    }
+
+    /// A value taken out of the cue on stage lets the light go: home where nothing
+    /// else says it, and back to an earlier cue's value where that one tracks it.
+    /// Before, the fade stayed and held a value no cue said until the next Go.
+    #[test]
+    fn a_value_taken_out_of_the_standing_cue_lets_the_light_go() {
+        let one = a_fixture();
+        let mut two = a_fixture();
+        two.name = "Spot 2".into();
+        let first = a_cue(0, vec![intensity(two.id, 0.3)]);
+        let second = a_cue(1, vec![intensity(one.id, 0.9), intensity(two.id, 0.7)]);
+        let mut cues = [first, second];
+        let sequences = [a_sequence(&[&cues[0], &cues[1]], Some(1))];
+        let mut fixtures = vec![one.clone(), two.clone()];
+
+        let mut playback = Playback::default();
+        let effects = {
+            let view =
+                ShowView::new(&sequences, &cues, &fixtures, the_type(), &[], &[], 2_000, curves(), &[]);
+            playback.pass(WALL, &view)
+        };
+        apply(&mut fixtures, &effects);
+        assert_eq!(live(&fixtures, one.id, "Intensity", 60_000), Some(ParameterValue::Float(0.9)));
+
+        cues[1].captures = vec![];
+        let effects = {
+            let view =
+                ShowView::new(&sequences, &cues, &fixtures, the_type(), &[], &[], 2_000, curves(), &[]);
+            playback.pass_after_edits(WALL + 5_000, &view, true)
+        };
+        apply(&mut fixtures, &effects);
+        assert_eq!(live(&fixtures, one.id, "Intensity", 60_000), Some(ParameterValue::Float(0.0)), "nothing says it: home");
+        assert_eq!(live(&fixtures, two.id, "Intensity", 60_000), Some(ParameterValue::Float(0.3)), "the earlier cue tracks it");
+    }
+
     /// A store that rewrites a cue's captures without changing any of their values —
     /// a merge, which rewrites the whole array — moves nothing.
     #[test]
@@ -2499,4 +2661,147 @@ mod editing_a_standing_cue {
         let fade = fixtures[0].live_fades.get("Intensity").expect("still driven by the cue");
         assert_eq!(fade.t0, WALL, "the fade was not restarted, because nothing changed");
     }
+}
+
+// ── A sequence's fader ────────────────────────────────────────────────────────
+
+/// What the rig shows with the sequences' faders where they are.
+fn live_mastered(
+    fixtures: &[Fixture],
+    sequences: &[Sequence],
+    fixture_id: Uuid,
+    key: &str,
+    after_ms: u64,
+) -> f32 {
+    let fixture = fixtures.iter().find(|f| f.id == fixture_id).unwrap();
+    as_float(pult_schema::types::fixture::value_at(
+        fixture,
+        the_type().iter().find(|t| t.id == fixture.fixture_type_id),
+        None,
+        key,
+        &Masters::of(sequences),
+        WALL + after_ms,
+    ))
+}
+
+/// A Go on a sequence whose fader is at half starts from what the audience can see.
+///
+/// The fade runs at the fader's level, so a fade starting from the *showing* value
+/// would start at half of it — every Go would dip and climb back. It starts from the
+/// showing value with the fader taken out, and the stage is continuous.
+#[test]
+fn a_go_under_a_lowered_master_starts_where_the_stage_is() {
+    let fixture = a_fixture();
+    let up = a_cue(0, vec![intensity(fixture.id, 1.0)]);
+    let down = a_cue(4000, vec![intensity(fixture.id, 0.0)]);
+    let mut fixtures = vec![fixture.clone()];
+    let cues = [up.clone(), down.clone()];
+    let mut sequences = [a_sequence(&[&up, &down], Some(0))];
+    sequences[0].master = Some(0.5);
+
+    let mut playback = Playback::default();
+    pass(&mut playback, 0, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert_eq!(live_mastered(&fixtures, &sequences, fixture.id, "Intensity", 10), 0.5);
+
+    sequences[0].active_cue_index = Some(1);
+    pass(&mut playback, 1000, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert_eq!(live_mastered(&fixtures, &sequences, fixture.id, "Intensity", 1000), 0.5, "no dip at the Go");
+    assert_eq!(live_mastered(&fixtures, &sequences, fixture.id, "Intensity", 3000), 0.25);
+    assert_eq!(live_mastered(&fixtures, &sequences, fixture.id, "Intensity", 5000), 0.0);
+}
+
+/// The fader dims intensity and nothing else: a cue's pan goes where it is sent.
+#[test]
+fn a_lowered_master_leaves_position_alone() {
+    let fixture = a_fixture();
+    let mut pan = intensity(fixture.id, 0.9);
+    pan.parameter_kind = ParameterKind::Pan;
+    let cue = a_cue(0, vec![intensity(fixture.id, 1.0), pan]);
+    let mut fixtures = vec![fixture.clone()];
+    let cues = [cue.clone()];
+    let mut sequences = [a_sequence(&[&cue], Some(0))];
+    sequences[0].master = Some(0.25);
+
+    let mut playback = Playback::default();
+    pass(&mut playback, 0, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert_eq!(live_mastered(&fixtures, &sequences, fixture.id, "Intensity", 10), 0.25);
+    assert_eq!(live_mastered(&fixtures, &sequences, fixture.id, "Pan", 10), 0.9);
+}
+
+// ── Handing back, and HTP ─────────────────────────────────────────────────────
+
+/// The base look, and a sequence that went over one of its lights later.
+fn base_and_over(over_merge: Option<Merge>, over_level: f32) -> (Fixture, Vec<Cue>, Vec<Sequence>) {
+    let fixture = a_fixture();
+    let base = a_cue(0, vec![intensity(fixture.id, 0.4)]);
+    let over = a_cue(0, vec![intensity(fixture.id, over_level)]);
+    let mut sequences = vec![a_sequence(&[&base], Some(0)), a_sequence(&[&over], None)];
+    sequences[1].merge = over_merge;
+    (fixture, vec![base, over], sequences)
+}
+
+#[test]
+fn taking_off_a_sequence_hands_a_light_back_to_the_one_still_on() {
+    // The scare's last cue is black over the room's look; taking the scare off gives
+    // the room its look back rather than leaving it dark.
+    let (fixture, cues, mut sequences) = base_and_over(None, 0.0);
+    let mut fixtures = vec![fixture.clone()];
+    let mut playback = Playback::default();
+    pass(&mut playback, 0, &mut fixtures, &sequences, &cues, &[], &[]);
+    sequences[1].active_cue_index = Some(0);
+    sequences[1].went_at = Some(WALL + 10);
+    pass(&mut playback, 10, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert_eq!(level_of(&fixtures, &[], fixture.id, 20), 0.0, "LTP: the later Go has it");
+
+    sequences[1].active_cue_index = None;
+    pass(&mut playback, 30, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert_eq!(level_of(&fixtures, &[], fixture.id, 40), 0.4, "back to the base look");
+}
+
+#[test]
+fn an_htp_sequence_shows_only_where_it_is_higher_at_its_own_fader() {
+    let (fixture, cues, mut sequences) = base_and_over(Some(Merge::Htp), 1.0);
+    let mut fixtures = vec![fixture.clone()];
+    let mut playback = Playback::default();
+    pass(&mut playback, 0, &mut fixtures, &sequences, &cues, &[], &[]);
+    sequences[1].active_cue_index = Some(0);
+    sequences[1].went_at = Some(WALL + 10);
+    sequences[1].master = Some(0.2);
+    pass(&mut playback, 10, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert_eq!(live_mastered(&fixtures, &sequences, fixture.id, "Intensity", 20), 0.4, "the base is higher");
+
+    sequences[1].master = Some(0.6);
+    pass(&mut playback, 30, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert_eq!(live_mastered(&fixtures, &sequences, fixture.id, "Intensity", 40), 0.6, "now the fader is");
+
+    sequences[1].active_cue_index = None;
+    pass(&mut playback, 50, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert_eq!(live_mastered(&fixtures, &sequences, fixture.id, "Intensity", 60), 0.4, "off: the base again");
+    assert!(fixtures[0].live_htp.is_empty(), "and nothing is left beside it");
+}
+
+#[test]
+fn an_ltp_sequence_takes_a_light_an_htp_one_shares() {
+    // An HTP layer kept beside the base, and then a third, LTP, sequence over both:
+    // it owns the light outright, and taking it off hands it to the HTP sequence.
+    let (fixture, mut cues, mut sequences) = base_and_over(Some(Merge::Htp), 0.8);
+    let last = a_cue(0, vec![intensity(fixture.id, 0.1)]);
+    sequences.push(a_sequence(&[&last], None));
+    cues.push(last);
+    let mut fixtures = vec![fixture.clone()];
+    let mut playback = Playback::default();
+    pass(&mut playback, 0, &mut fixtures, &sequences, &cues, &[], &[]);
+    sequences[1].active_cue_index = Some(0);
+    sequences[1].went_at = Some(WALL + 10);
+    pass(&mut playback, 10, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert_eq!(level_of(&fixtures, &[], fixture.id, 20), 0.8);
+
+    sequences[2].active_cue_index = Some(0);
+    sequences[2].went_at = Some(WALL + 30);
+    pass(&mut playback, 30, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert!((level_of(&fixtures, &[], fixture.id, 40) - 0.1).abs() < 1e-6, "LTP owns it");
+
+    sequences[2].active_cue_index = None;
+    pass(&mut playback, 50, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert_eq!(level_of(&fixtures, &[], fixture.id, 60), 0.8, "handed to the one that went last of those on");
 }

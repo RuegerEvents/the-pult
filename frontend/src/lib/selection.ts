@@ -38,6 +38,8 @@
  */
 
 import type {
+	CellSpan,
+	Element,
 	Fixture,
 	FixtureType,
 	SceneObject,
@@ -69,11 +71,141 @@ export type { SelectionQuery };
 export const NO_ORDER: SelectionOrder = { kind: 'Manual', order: [] };
 
 /** The query a fresh console has: nothing selected, in the order it was picked. */
-export const EMPTY_QUERY: SelectionQuery = { clauses: [], order: NO_ORDER };
+export const EMPTY_QUERY: SelectionQuery = { clauses: [], order: NO_ORDER, cells: [] };
 
 /** The query a plain click builds. Manual picking is a query like any other. */
-export function idsQuery(ids: string[], order: Order = NO_ORDER): SelectionQuery {
-	return { clauses: [{ combine: 'Add', term: { kind: 'Ids', ids } }], order };
+export function idsQuery(ids: string[], order: Order = NO_ORDER, cells: CellSpan[] = []): SelectionQuery {
+	return { clauses: [{ combine: 'Add', term: { kind: 'Ids', ids } }], order, cells };
+}
+
+/**
+ * The query with one fixture taken out, undoing it where it was put rather than
+ * adding to the question.
+ *
+ * Taking out a light that was picked by hand removes it from the hand-picked list,
+ * and a list left empty goes. Only a light something else still picks — a group, a
+ * box, a type — needs a `Drop`, because there is nothing of it to remove. Appending a
+ * Drop every time made one click and its undo into "1 picked" and "1 dropped", which
+ * reads as two selections and is none.
+ *
+ * `picks` answers what a query selects, so the rule can ask whether the light is still
+ * in after the hand-picked lists have let go of it.
+ */
+export function withoutId(query: SelectionQuery, id: string, picks: (query: SelectionQuery) => string[]): SelectionQuery {
+	const clauses = query.clauses
+		.map((c) =>
+			c.combine === 'Add' && c.term.kind === 'Ids'
+				? { ...c, term: { ...c.term, ids: c.term.ids.filter((x) => x !== id) } }
+				: c
+		)
+		.filter((c) => !(c.combine === 'Add' && c.term.kind === 'Ids' && c.term.ids.length === 0));
+	const next = { ...query, clauses };
+	if (!picks(next).includes(id)) return next;
+	return { ...next, clauses: [...clauses, { combine: 'Drop', term: { kind: 'Ids', ids: [id] } }] };
+}
+
+/**
+ * The query with one fixture put in, taking back a `Drop` of it first: a light that
+ * was dropped and is clicked again was never meant to be both.
+ */
+export function withId(query: SelectionQuery, id: string, picks: (query: SelectionQuery) => string[]): SelectionQuery {
+	const clauses = query.clauses
+		.map((c) =>
+			c.combine === 'Drop' && c.term.kind === 'Ids'
+				? { ...c, term: { ...c.term, ids: c.term.ids.filter((x) => x !== id) } }
+				: c
+		)
+		.filter((c) => !(c.combine === 'Drop' && c.term.kind === 'Ids' && c.term.ids.length === 0));
+	const undropped = { ...query, clauses };
+	if (picks(undropped).includes(id)) return undropped;
+	// Onto the trailing hand-picked list where there is one, rather than growing a
+	// chain of one-light clauses as somebody clicks their way across a truss.
+	const last = clauses[clauses.length - 1];
+	if (last?.combine === 'Add' && last.term.kind === 'Ids') {
+		return {
+			...undropped,
+			clauses: [...clauses.slice(0, -1), { combine: 'Add', term: { kind: 'Ids', ids: [...last.term.ids, id] } }]
+		};
+	}
+	return { ...undropped, clauses: [...clauses, { combine: 'Add', term: { kind: 'Ids', ids: [id] } }] };
+}
+
+/**
+ * The fixtures from `anchor` to `to` in `order`, both included, for a shift-click or a
+ * drag down a list. `null` when either is not in the list.
+ */
+export function rangeOf(order: string[], anchor: string, to: string): string[] | null {
+	const a = order.indexOf(anchor);
+	const b = order.indexOf(to);
+	if (a < 0 || b < 0) return null;
+	return a <= b ? order.slice(a, b + 1) : order.slice(b, a + 1).reverse();
+}
+
+// ── Cells ─────────────────────────────────────────────────────────────────────
+
+export type { CellSpan, Element };
+
+/**
+ * The elements of a selection, in order: each fixture in the order the query put
+ * them, and within a multi-cell fixture its cells in the order the spans list them.
+ * Empty spans are the whole fixture; a fixture with no cells is in whole whatever
+ * they say.
+ *
+ * `elements` in `group.rs`; `testdata/selection-queries.json` holds the two.
+ */
+export function elements(
+	picked: string[],
+	spans: CellSpan[],
+	cellsOf: (fixtureId: string) => number
+): Element[] {
+	const out: Element[] = [];
+	for (const fixture of picked) {
+		const count = cellsOf(fixture);
+		if (count === 0) {
+			out.push({ fixture, cell: null });
+			continue;
+		}
+		const seen = new Set<number>();
+		const push = (cell: number) => {
+			if (cell >= 1 && cell <= count && !seen.has(cell)) {
+				seen.add(cell);
+				out.push({ fixture, cell });
+			}
+		};
+		if (spans.length === 0) {
+			for (let cell = 1; cell <= count; cell++) push(cell);
+			continue;
+		}
+		for (const span of spans) {
+			if (span.from <= span.to) {
+				for (let cell = span.from; cell <= Math.min(span.to, count); cell++) push(cell);
+			} else {
+				for (let cell = Math.min(span.from, count); cell >= span.to; cell--) push(cell);
+			}
+		}
+	}
+	return out;
+}
+
+/** `1-20`, `5`, `20-1`, `1-4, 9`: what an operator types for a cell sub-selection. */
+export function parseCellSpans(text: string): CellSpan[] | null {
+	const trimmed = text.trim();
+	if (trimmed === '') return [];
+	const spans: CellSpan[] = [];
+	for (const part of trimmed.split(',')) {
+		const m = part.trim().match(/^(\d+)(?:\s*-\s*(\d+))?$/);
+		if (!m) return null;
+		const from = Number(m[1]);
+		const to = m[2] === undefined ? from : Number(m[2]);
+		if (from < 1 || to < 1 || from > 65535 || to > 65535) return null;
+		spans.push({ from, to });
+	}
+	return spans;
+}
+
+/** The spans as an operator would type them back. */
+export function cellSpansText(spans: CellSpan[]): string {
+	return spans.map((s) => (s.from === s.to ? `${s.from}` : `${s.from}-${s.to}`)).join(', ');
 }
 
 /** Whether this query is just a hand-picked list, which the panel says differently. */
@@ -88,7 +220,7 @@ const dot = (a: Vec3, b: Vec3): number => a.x * b.x + a.y * b.y + a.z * b.z;
 const length = (v: Vec3): number => Math.sqrt(dot(v, v));
 
 /** A unit vector, or null for one with no direction to speak of. */
-export function normalise(v: Vec3): Vec3 | null {
+export function normalize(v: Vec3): Vec3 | null {
 	const l = length(v);
 	return l > 1e-9 ? { x: v.x / l, y: v.y / l, z: v.z / l } : null;
 }
@@ -109,7 +241,7 @@ export function inCone(
 	angleDeg: number,
 	reach: number
 ): boolean {
-	const axis = normalise(direction);
+	const axis = normalize(direction);
 	if (!axis) return false;
 	const offset = sub(point, from);
 	const along = length(offset);
@@ -133,6 +265,19 @@ export function inBox(point: Vec3, from: Vec3, to: Vec3): boolean {
 
 // ── Evaluating ────────────────────────────────────────────────────────────────
 
+/** Whether a chain of parents starting at `parent` reaches `object`, however deep. */
+export function hangsOff(
+	parent: string | null,
+	object: string,
+	objects: Map<string, SceneObject>
+): boolean {
+	for (let depth = 0; depth < 64 && parent; depth++) {
+		if (parent === object) return true;
+		parent = objects.get(parent)?.parent ?? null;
+	}
+	return false;
+}
+
 function matches(term: Term, fixture: Fixture, objects: Map<string, SceneObject>): boolean {
 	switch (term.kind) {
 		case 'Everything':
@@ -143,6 +288,8 @@ function matches(term: Term, fixture: Fixture, objects: Map<string, SceneObject>
 			return fixture.fixture_type_id === term.typeId;
 		case 'Named':
 			return fixture.name.toLowerCase().includes(term.text.trim().toLowerCase());
+		case 'Hanging':
+			return hangsOff(fixture.parent, term.object, objects);
 		default:
 			break;
 	}
@@ -154,7 +301,7 @@ function matches(term: Term, fixture: Fixture, objects: Map<string, SceneObject>
 
 	switch (term.kind) {
 		case 'Sphere':
-			return distance(point, term.centre) <= term.radius;
+			return distance(point, term.center) <= term.radius;
 		case 'Box':
 			return inBox(point, term.from, term.to);
 		case 'Cone':
@@ -249,9 +396,14 @@ export function sortSelection(
 }
 
 /** A short account of what a query selects, for the panel to show. */
-export function describe(query: SelectionQuery, types: FixtureType[] = []): string {
+export function describe(
+	query: SelectionQuery,
+	types: FixtureType[] = [],
+	objects: SceneObject[] = []
+): string {
 	if (query.clauses.length === 0) return 'nothing';
 	const typeName = (id: string) => types.find((t) => t.id === id)?.name ?? 'a type';
+	const objectName = (id: string) => objects.find((o) => o.id === id)?.name ?? 'an object';
 
 	const parts = query.clauses.map(({ combine, term }, i) => {
 		const verb = i === 0 ? '' : combine === 'Add' ? 'plus ' : combine === 'Keep' ? 'of those, ' : 'except ';
@@ -270,6 +422,8 @@ export function describe(query: SelectionQuery, types: FixtureType[] = []): stri
 				return `${verb}in a region`;
 			case 'Cone':
 				return `${verb}in a ${term.angleDeg * 2}° beam`;
+			case 'Hanging':
+				return `${verb}hung off ${objectName(term.object)}`;
 		}
 	});
 	return parts.join(', ');

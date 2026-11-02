@@ -62,6 +62,7 @@ export const KIND_NEEDS_NAME = 'Named';
  */
 export function kindLabel(kind: ParameterKind): string {
 	if (typeof kind === 'string') return kind;
+	if ('Cell' in kind) return kindLabel(kind.Cell.of);
 	if ('Named' in kind) return kind.Named;
 	return Object.keys(kind)[0];
 }
@@ -107,22 +108,25 @@ export function defaultDirectionFor(kind: ParameterKind): ParameterDirection {
  * The third of three, and the console needed one: [`kindLabel`] answers "which of the
  * fixed options is this", which is what the type editor's selector round-trips through
  * and must not change, and [`parameterKindLabel`] answers "what is this called in
- * `live_fades`". Neither is a name to put in front of somebody — a colour column
+ * `live_fades`". Neither is a name to put in front of somebody — a color column
  * headed `ColorRgb`, and an inspector saying `Cyc 1 · ColorRgb`, are the map key
  * showing through.
  *
  * The schema spells it the way GDTF does and that stays; this is the label, and the
- * console's own English is British. A numbered kind reads as the number an operator
+ * console's own English is American. A numbered kind reads as the number an operator
  * counts from — `Gobo 1`, not `Gobo:1` — and a named one is whatever the device
  * called it, which is already the operator's word.
  */
 export function displayLabel(kind: ParameterKind): string {
+	if (typeof kind === 'object' && 'Cell' in kind) {
+		return `${displayLabel(kind.Cell.of)} ${kind.Cell.cell}`;
+	}
 	if (typeof kind === 'string') {
 		switch (kind) {
 			case 'ColorRgb':
-				return 'Colour';
+				return 'Color';
 			case 'ColorTemperature':
-				return 'Colour temp.';
+				return 'Color temp.';
 			case 'GoboIndex':
 				return 'Gobo';
 			default:
@@ -130,7 +134,7 @@ export function displayLabel(kind: ParameterKind): string {
 		}
 	}
 	if ('Named' in kind) return kind.Named;
-	if ('ColorWheel' in kind) return `Colour wheel ${kind.ColorWheel}`;
+	if ('ColorWheel' in kind) return `Color wheel ${kind.ColorWheel}`;
 	if ('GoboRotation' in kind) return `Gobo rotation ${kind.GoboRotation}`;
 	if ('Gobo' in kind) return `Gobo ${kind.Gobo}`;
 	if ('Prism' in kind) return `Prism ${kind.Prism}`;
@@ -140,9 +144,27 @@ export function displayLabel(kind: ParameterKind): string {
 	return `Contact ${kind.Contact}`;
 }
 
+/**
+ * What an operator calls one fixture's parameter: what somebody named it — "Ausgang
+ * PIR", kept on the fixture and, for an OpenHaunt node, on the node too — or else
+ * [`displayLabel`]. Wherever a parameter is shown *on a fixture*, this is the word; a
+ * parameter of a type, with no fixture to ask, is still `displayLabel`.
+ *
+ * A label is never the key. `Named:Sensor 1` is what cues and flows hold, and it stays
+ * that when somebody calls the port something else.
+ */
+export function parameterName(
+	fixture: { parameter_labels?: { [key in string]?: string } | null } | null | undefined,
+	kind: ParameterKind
+): string {
+	const label = fixture?.parameter_labels?.[parameterKey(kind)]?.trim();
+	return label ? label : displayLabel(kind);
+}
+
 /** A parameter kind as a string, including the tagged variants. */
 export function parameterKindLabel(kind: ParameterKind): string {
 	if (typeof kind === 'string') return kind;
+	if ('Cell' in kind) return `${parameterKindLabel(kindBase(kind))}${CELL_SEPARATOR}${kind.Cell.cell}`;
 	if ('Raw' in kind) return `Raw:${kind.Raw}`;
 	if ('Switch' in kind) return `Switch:${kind.Switch}`;
 	if ('Named' in kind) return `Named:${kind.Named}`;
@@ -152,6 +174,76 @@ export function parameterKindLabel(kind: ParameterKind): string {
 	if ('Prism' in kind) return `Prism:${kind.Prism}`;
 	if ('Frost' in kind) return `Frost:${kind.Frost}`;
 	return `Contact:${kind.Contact}`;
+}
+
+/** Between a key and its cell: `ColorRgb@7`. `CELL_SEPARATOR` in `fixture.rs`. */
+export const CELL_SEPARATOR = '@';
+
+/**
+ * A key split into the parameter it is of and the cell it is in, or `null` where it
+ * has none. `split_cell` in `fixture.rs`; `testdata/cell-keys.json` holds the two.
+ */
+export function splitCell(key: string): [string, number | null] {
+	const at = key.lastIndexOf(CELL_SEPARATOR);
+	if (at < 0) return [key, null];
+	const tail = key.slice(at + 1);
+	if (!/^[0-9]+$/.test(tail)) return [key, null];
+	const n = Number(tail);
+	if (n < 1 || n > 65535) return [key, null];
+	return [key.slice(0, at), n];
+}
+
+/** The kind without its cell. `ParameterKind::base`. */
+export function kindBase(kind: ParameterKind): ParameterKind {
+	return typeof kind === 'object' && 'Cell' in kind ? kindBase(kind.Cell.of) : kind;
+}
+
+/** Which cell a kind is in, for a per-cell kind. */
+export function kindCell(kind: ParameterKind): number | null {
+	return typeof kind === 'object' && 'Cell' in kind ? kind.Cell.cell : null;
+}
+
+/** A kind in one cell. `ParameterKind::in_cell`. */
+export function inCell(kind: ParameterKind, cell: number): ParameterKind {
+	return { Cell: { cell, of: kindBase(kind) } };
+}
+
+/**
+ * The definition a key reads back to: `FixtureType::parameter_for_key`. A cell key
+ * reads to its per-cell parameter on a type with that many cells, and a plain key to
+ * a parameter that is not per cell.
+ */
+export function parameterForKey(type: FixtureType, key: string): ParameterDefinition | null {
+	const [base, cell] = splitCell(key);
+	return (
+		type.parameters.find(
+			(p) =>
+				parameterKey(p.kind) === base &&
+				(cell !== null ? p.per_cell && cell <= type.cells : !p.per_cell || type.cells === 0)
+		) ?? null
+	);
+}
+
+/** Whether a type has cells to expand. `FixtureType::has_cells`. */
+export function hasCells(type: FixtureType | undefined | null): boolean {
+	return !!type && type.cells > 0 && type.parameters.some((p) => p.per_cell);
+}
+
+/**
+ * Every output an operator can set, as the kind it is held under: `FixtureType::controls`.
+ * A whole parameter once, a per-cell one once per cell, cell by cell.
+ */
+export function controls(type: FixtureType): { kind: ParameterKind; parameter: ParameterDefinition }[] {
+	const outputs = type.parameters.filter((p) => p.direction === 'Output');
+	const out = outputs
+		.filter((p) => !(p.per_cell && type.cells > 0))
+		.map((p) => ({ kind: p.kind, parameter: p }));
+	if (type.cells > 0) {
+		for (let cell = 1; cell <= type.cells; cell++) {
+			for (const p of outputs.filter((p) => p.per_cell)) out.push({ kind: inCell(p.kind, cell), parameter: p });
+		}
+	}
+	return out;
 }
 
 /** The live_values map key for a parameter. Must match parameter_key in the backend. */
@@ -254,7 +346,7 @@ export function addressLabel(fixture: Fixture): string {
 }
 
 /**
- * Where the implicit mode puts each parameter: one byte each, three for a colour, in
+ * Where the implicit mode puts each parameter: one byte each, one per emitter for a color, in
  * the order the type lists them. `null` for anything that takes no DMX channel — an
  * input, or a parameter on a module port.
  *
@@ -271,14 +363,19 @@ export function implicitChannels(parameters: ParameterDefinition[]): (number | n
 	return parameters.map((parameter) => {
 		if (parameter.direction === 'Input' || parameter.binding !== null) return null;
 		const start = next;
-		next += isColourValue(parameter.default_value) ? 3 : 1;
+		next += implicitWidth(parameter);
 		return start;
 	});
 }
 
-/** Whether a parameter's resting value is a colour, which is three bytes and not one. */
-function isColourValue(value: ParameterValue): boolean {
-	return value.type === 'Color';
+/**
+ * How many bytes a parameter takes in the implicit mode: one per emitter for a color,
+ * three where it names none, and one for anything else. `implicit_width` in the schema
+ * is the authority.
+ */
+export function implicitWidth(parameter: ParameterDefinition): number {
+	if (parameter.default_value.type !== 'Color') return 1;
+	return Math.max(1, parameter.emitters.length || 3);
 }
 
 // ── Modes ─────────────────────────────────────────────────────────────────────
@@ -314,7 +411,7 @@ export function footprint(fixtureType: FixtureType | undefined, address: Fixture
 /**
  * Whether a mode places a parameter at all.
  *
- * What the programmer greys a control out on: a head in its basic mode has no zoom,
+ * What the programmer grays a control out on: a head in its basic mode has no zoom,
  * and offering one that goes nowhere is worse than saying it is not there. A type with
  * no modes places everything, which is what it always did.
  */

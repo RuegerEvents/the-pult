@@ -715,3 +715,42 @@ async fn settles(
     }
     panic!("never {what}");
 }
+
+/// Wifi to ethernet with the exchange in TCP mode: it advertises again on a fresh
+/// daemon, and what it knew about the group is still true, so it is kept. A host it
+/// holds is a socket that needs nothing restarted.
+#[tokio::test]
+async fn moved_addresses_advertise_again_and_forget_nothing() {
+    let (mut manager, _handle, _engine) = a_manager(true).await;
+    manager.show = Some((Uuid::new_v4(), "Festival".into()));
+    manager.settings.mode = XchangeMode::Tcp;
+    manager.start_transport().await.expect("advertising");
+
+    let theirs = Uuid::new_v4();
+    incoming(
+        &mut manager,
+        Message::Join {
+            provider: "Vectorworks".into(),
+            ver_major: 1,
+            ver_minor: 6,
+            station_uuid: theirs,
+            station_name: "Design laptop".into(),
+            commits: vec![a_wire_commit(Uuid::from_u128(7), theirs, "first pass")],
+        },
+        Endpoint::WsClient(1),
+    )
+    .await;
+
+    manager.readvertise().await;
+    assert!(matches!(manager.transport, Some(Transport::Tcp(_))), "advertising again");
+    assert!(manager.idle.is_none());
+    assert!(manager.stations.contains_key(&theirs), "the group is still the group");
+    assert!(manager.commits.contains_key(&Uuid::from_u128(7)));
+    if let Some(Transport::Tcp(tcp)) = manager.transport.take() {
+        tcp.stop();
+    }
+
+    manager.transport = Some(Transport::Hosting);
+    manager.readvertise().await;
+    assert!(matches!(manager.transport, Some(Transport::Hosting)), "a host is left alone");
+}

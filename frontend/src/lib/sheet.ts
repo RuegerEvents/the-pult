@@ -1,12 +1,12 @@
 /**
- * What is driving one cell of the fixture sheet, and what colour that makes it.
+ * What is driving one cell of the fixture sheet, and what color that makes it.
  *
- * The sheet's whole claim is that a colour tells you *where a value came from*, and
+ * The sheet's whole claim is that a color tells you *where a value came from*, and
  * this console can make that claim honestly where other desks make it with a flag:
  * nothing here is stored or guessed, it is read off the same four layers the
  * evaluator is handed. `driving.ts` assembles them; this decides which one is on top.
  *
- * Pure, and tested, because the alternative is a table of colours built inside a
+ * Pure, and tested, because the alternative is a table of colors built inside a
  * component where nobody can ask it a question.
  */
 
@@ -39,7 +39,7 @@ export const NO_CUE = '00000000-0000-0000-0000-000000000000';
  * click a cue. Without one, every cue's fade is simply a cue's.
  *
  * A fade with no cue behind it is a release on its way home, and reads as `home`: it
- * is going exactly where `home` is, and colouring it as a cue's would name a cue that
+ * is going exactly where `home` is, and coloring it as a cue's would name a cue that
  * is no longer asserting anything.
  */
 export function source(

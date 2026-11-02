@@ -1,6 +1,9 @@
+import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 import type {
 	DmxMode,
+	ParameterKind,
 	Fixture,
 	FixtureAddress,
 	FixtureType,
@@ -10,6 +13,7 @@ import {
 	addressLabel,
 	channelRange,
 	clashingFixtures,
+	controls,
 	DEFAULT_MODE,
 	defaultDirectionFor,
 	defaultValueFor,
@@ -20,18 +24,25 @@ import {
 	fixtureMode,
 	footprint,
 	formatValue,
+	hasCells,
+	implicitChannels,
+	inCell,
 	isDmx,
+	kindBase,
+	kindCell,
 	kindFromLabel,
 	kindOption,
 	kindLabel,
 	modeHas,
 	modeOf,
 	nextFreeAddress,
+	parameterForKey,
 	parameterKey,
 	parameterKindLabel,
-	PARAMETER_KINDS
+	PARAMETER_KINDS,
+	splitCell
 } from './patch.js';
-import { aFixture } from './test-fixtures.js';
+import { aFixture, aFixtureType, aParameter } from './test-fixtures.js';
 
 function aTestFixture(partial: Partial<Fixture> = {}): Fixture {
 	return aFixture({
@@ -138,7 +149,7 @@ describe('picking a kind', () => {
 });
 
 describe('defaults for a kind', () => {
-	it('gives colour a colour and intensity a number', () => {
+	it('gives color a color and intensity a number', () => {
 		expect(defaultValueFor('ColorRgb')).toEqual({ type: 'Color', value: { r: 0, g: 0, b: 0, overrides: {} } });
 		expect(defaultValueFor('Intensity')).toEqual({ type: 'Float', value: 0 });
 		expect(defaultValueFor('GoboIndex')).toEqual({ type: 'Int', value: 0 });
@@ -158,11 +169,11 @@ describe('formatting a live value', () => {
 		expect(formatValue({ type: 'Float', value: 0 })).toBe('0%');
 	});
 
-	it('shows a colour as hex', () => {
+	it('shows a color as hex', () => {
 		expect(formatValue({ type: 'Color', value: { r: 1, g: 0.5, b: 0, overrides: {} } })).toBe('#ff8000');
 	});
 
-	it('clamps a colour rather than producing nonsense hex', () => {
+	it('clamps a color rather than producing nonsense hex', () => {
 		expect(formatValue({ type: 'Color', value: { r: 4, g: -1, b: 0, overrides: {} } })).toBe('#ff0000');
 	});
 
@@ -286,7 +297,7 @@ describe('address clashes', () => {
 	});
 
 	it('flags every fixture in a long chain of overlaps', () => {
-		// Each overlaps only its neighbours, so nothing is caught by a single
+		// Each overlaps only its neighbors, so nothing is caught by a single
 		// far-reaching fixture — the sweep has to carry the right one forward.
 		const fixtures = Array.from({ length: 20 }, (_, i) => atDmx(1, 1 + i * 2));
 		expect(clashingFixtures(fixtures, () => 3).size).toBe(20);
@@ -357,7 +368,8 @@ describe('the mode a fixture is patched in', () => {
 		geometry: [],
 		source: 'Manual',
 		plan_symbol: 'Auto',
-		thumbnail: null
+		thumbnail: null,
+		cells: 0
 	});
 
 	const inMode = (name: string): FixtureAddress => ({
@@ -441,10 +453,10 @@ describe('what an operator calls a parameter', () => {
 	 * the type editor's selector and `parameterKindLabel` is the `live_fades` key.
 	 * Neither is a name to put in front of somebody.
 	 */
-	it('says colour rather than the map key', () => {
-		expect(displayLabel('ColorRgb')).toBe('Colour');
-		expect(displayLabel('ColorTemperature')).toBe('Colour temp.');
-		expect(displayLabel({ ColorWheel: 1 })).toBe('Colour wheel 1');
+	it('says color rather than the map key', () => {
+		expect(displayLabel('ColorRgb')).toBe('Color');
+		expect(displayLabel('ColorTemperature')).toBe('Color temp.');
+		expect(displayLabel({ ColorWheel: 1 })).toBe('Color wheel 1');
 	});
 
 	/** A number an operator counts from, not a tagged variant. */
@@ -466,5 +478,76 @@ describe('what an operator calls a parameter', () => {
 	it('is not the map key', () => {
 		expect(parameterKey({ Gobo: 2 })).toBe('Gobo:2');
 		expect(displayLabel({ Gobo: 2 })).not.toBe(parameterKey({ Gobo: 2 }));
+	});
+});
+
+/**
+ * How a cell is spelled as a key: `testdata/cell-keys.json`, read here and by
+ * `crates/pult-schema/tests/cell_keys.rs`. Every map in the console is keyed by that
+ * string, so a pixel spelled one way here and another on the station is lost.
+ */
+describe('the cell keys the station agrees with', () => {
+	type Corpus = {
+		kinds: { name: string; kind: ParameterKind; key: string }[];
+		keys: { name: string; key: string; base: string; cell: number | null }[];
+	};
+	const corpus: Corpus = JSON.parse(
+		readFileSync(new URL('../../../testdata/cell-keys.json', import.meta.url), 'utf8')
+	);
+	for (const c of corpus.kinds) {
+		it(`spells ${c.name}`, () => expect(parameterKey(c.kind)).toBe(c.key));
+	}
+	for (const c of corpus.keys) {
+		it(`reads ${c.name}`, () => expect(splitCell(c.key)).toEqual([c.base, c.cell]));
+	}
+});
+
+describe('a type with cells', () => {
+	const bar = aFixtureType({
+		cells: 3,
+		parameters: [
+			aParameter({ kind: 'Intensity', default_value: { type: 'Float', value: 0 } }),
+			aParameter({
+				kind: 'ColorRgb',
+				default_value: { type: 'Color', value: { r: 0, g: 0, b: 0, overrides: {} } },
+				per_cell: true
+			})
+		]
+	});
+	it('lists its master and then each cell', () => {
+		expect(controls(bar).map((c) => parameterKey(c.kind))).toEqual([
+			'Intensity',
+			'ColorRgb@1',
+			'ColorRgb@2',
+			'ColorRgb@3'
+		]);
+	});
+	it('reads a cell key back to its parameter and no further', () => {
+		expect(parameterForKey(bar, 'ColorRgb@2')?.kind).toBe('ColorRgb');
+		expect(parameterForKey(bar, 'ColorRgb@4')).toBeNull();
+		expect(parameterForKey(bar, 'ColorRgb')).toBeNull();
+		expect(parameterForKey(bar, 'Intensity')?.kind).toBe('Intensity');
+		expect(hasCells(bar)).toBe(true);
+	});
+	it('labels a cell the way an operator counts', () => {
+		expect(displayLabel(inCell('ColorRgb', 7))).toBe('Color 7');
+		expect(kindBase(inCell({ Gobo: 2 }, 3))).toEqual({ Gobo: 2 });
+		expect(kindCell(inCell('Pan', 3))).toBe(3);
+	});
+});
+
+describe('the implicit layout', () => {
+	const rgb = (emitters: string[]) =>
+		aParameter({
+			kind: 'ColorRgb',
+			default_value: { type: 'Color', value: { r: 1, g: 1, b: 1, overrides: {} } } as never,
+			emitters: emitters.map((name) => ({ name, rgb: null, subtractive: false }))
+		});
+	const dimmer = aParameter({ kind: 'Intensity', default_value: { type: 'Float', value: 0 } as never });
+
+	// The schema's `implicit_width` is the authority; this is the editor's copy of it.
+	it('gives a color a byte per emitter, and three where it names none', () => {
+		expect(implicitChannels([dimmer, rgb(['Red', 'Green', 'Blue', 'White']), dimmer])).toEqual([1, 2, 6]);
+		expect(implicitChannels([rgb([]), dimmer])).toEqual([1, 4]);
 	});
 });

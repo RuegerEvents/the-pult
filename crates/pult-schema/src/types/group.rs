@@ -35,7 +35,9 @@ use uuid::Uuid;
 
 use std::collections::HashMap;
 
-use super::fixture::{Fixture, Vec3};
+use super::fixture::{
+    parameter_key, Fixture, FixtureType, ParameterDirection, ParameterKind, Vec3,
+};
 use super::scene::{self, SceneObject};
 use crate::PultSchema;
 
@@ -60,8 +62,8 @@ pub enum SelectionTerm {
     OfType { type_id: Uuid },
     /// Case-insensitive substring of the fixture's name.
     Named { text: String },
-    /// Within `radius` metres of a point.
-    Sphere { centre: Vec3, radius: f32 },
+    /// Within `radius` meters of a point.
+    Sphere { center: Vec3, radius: f32 },
     /// Inside an axis-aligned region. The two corners may be given either way round.
     Box { from: Vec3, to: Vec3 },
     /// The spec's radial selection: a cone from a point, opening along a direction.
@@ -73,6 +75,10 @@ pub enum SelectionTerm {
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
     Cone { from: Vec3, direction: Vec3, angle_deg: f32, reach: f32 },
+    /// Everything hung off one object, however deep: a truss and its group handles, or
+    /// the handle a pixel strip's cells hang off. Not geometric, so a fixture hung off
+    /// it that has not been placed yet is still in it.
+    Hanging { object: Uuid },
 }
 
 /// What a clause does to the running set. Read left to right.
@@ -130,7 +136,7 @@ pub enum SelectionOrder {
         #[ts(optional = nullable)]
         descending: Option<bool>,
     },
-    /// Outwards from a point, which is what makes a centre-out chase possible.
+    /// Outwards from a point, which is what makes a center-out chase possible.
     ByDistance { from: Vec3 },
 }
 
@@ -143,13 +149,167 @@ pub enum SelectionOrder {
 pub struct SelectionQuery {
     pub clauses: Vec<SelectionClause>,
     pub order: SelectionOrder,
+    /// Which cells of every multi-cell fixture the query answers: MA's `.`, so "these
+    /// three strips, cells 1 to 20" is one query. Empty is the whole fixture. Applied
+    /// after the clauses and the order, by [`elements`]; a fixture with no cells is in
+    /// whole whatever this says, since there is nothing of it to cut.
+    ///
+    /// One list for the query rather than one per fixture, deliberately: a
+    /// sub-selection is a question about a kind of place *on* a fixture, and two
+    /// strips cut differently are two selections.
+    #[serde(default)]
+    pub cells: Vec<CellSpan>,
 }
 
 impl SelectionQuery {
     /// The query a fresh console has: nothing selected, in the order it was picked.
     pub fn empty() -> Self {
-        SelectionQuery { clauses: Vec::new(), order: SelectionOrder::Manual { order: Vec::new() } }
+        SelectionQuery {
+            clauses: Vec::new(),
+            order: SelectionOrder::Manual { order: Vec::new() },
+            cells: Vec::new(),
+        }
     }
+}
+
+/// A run of cells, both ends included, counted from 1. `from` past `to` runs backwards,
+/// which is how a chase along a strip is made to start at its far end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CellSpan {
+    pub from: u16,
+    pub to: u16,
+}
+
+/// One thing a selection acts on: a fixture, or one cell of one.
+///
+/// What everything downstream of a selection walks — setting a value, spreading an
+/// effect, storing a cue — so that a chase over three strips runs along their cells
+/// and a par beside them is one step of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Element {
+    pub fixture: Uuid,
+    /// `None` for a fixture with no cells.
+    pub cell: Option<u16>,
+}
+
+/// The elements of a selection, in order: each fixture in the order the query put
+/// them, and within a multi-cell fixture its cells in the order the spans list them.
+///
+/// `cells_of` says how many cells a fixture has (0 for none). Given rather than worked
+/// out here because the browser and the station hold the types differently, and this
+/// is the half of the rule that has to be the same on both: `selection.ts`'s
+/// `elements` is the other, held to this by `testdata/selection-queries.json`.
+pub fn elements(picked: &[Uuid], spans: &[CellSpan], cells_of: impl Fn(&Uuid) -> u16) -> Vec<Element> {
+    let mut out = Vec::new();
+    for fixture in picked {
+        let count = cells_of(fixture);
+        if count == 0 {
+            out.push(Element { fixture: *fixture, cell: None });
+            continue;
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut push = |cell: u16, out: &mut Vec<Element>| {
+            if (1..=count).contains(&cell) && seen.insert(cell) {
+                out.push(Element { fixture: *fixture, cell: Some(cell) });
+            }
+        };
+        if spans.is_empty() {
+            for cell in 1..=count {
+                push(cell, &mut out);
+            }
+            continue;
+        }
+        for span in spans {
+            if span.from <= span.to {
+                for cell in span.from..=span.to.min(count) {
+                    push(cell, &mut out);
+                }
+            } else {
+                for cell in (span.to..=span.from.min(count)).rev() {
+                    push(cell, &mut out);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// One parameter of one fixture that a value set on a selection lands on.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ParameterTarget {
+    pub fixture_id: Uuid,
+    pub parameter_kind: ParameterKind,
+}
+
+/// Where a value of `kind` set on these elements lands.
+///
+/// A cell takes a per-cell parameter as itself; a fixture with cells selected whole
+/// takes it on every cell; a parameter that is the whole fixture's (a bar's master
+/// dimmer) is set once per fixture however many of its cells are selected. A fixture
+/// whose type has no such output parameter is skipped; one whose type is not here at
+/// all takes the kind as itself, the way `__by` treats it.
+///
+/// Where a type declares the kind both ways — a master and a dimmer per cell, or a
+/// one-color mode beside a pixel mode — the mode the unit is patched in decides:
+/// `reaches(fixture, key)` says whether that mode carries a key. A fixture selected
+/// whole takes the whole one where its mode carries it, and every cell otherwise; a
+/// cell takes its own where its mode carries it, and the whole one otherwise, because
+/// in a one-color mode the bar has no cells to set and its one color is all there is.
+///
+/// `programmer.ts`'s `rowTargets` is the browser's half, held to this by
+/// `testdata/cell-targets.json`.
+pub fn targets<'t>(
+    kind: &ParameterKind,
+    elements: &[Element],
+    type_of: impl Fn(&Uuid) -> Option<&'t FixtureType>,
+    reaches: impl Fn(&Uuid, &str) -> bool,
+) -> Vec<ParameterTarget> {
+    let base = kind.base();
+    let key = parameter_key(base);
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut add = |fixture: Uuid, kind: ParameterKind, out: &mut Vec<ParameterTarget>| {
+        if seen.insert((fixture, parameter_key(&kind))) {
+            out.push(ParameterTarget { fixture_id: fixture, parameter_kind: kind });
+        }
+    };
+    for element in elements {
+        let fixture = element.fixture;
+        // A fixture patched to a type this station has not received is still a
+        // fixture: the kind goes on it as itself.
+        let Some(fixture_type) = type_of(&fixture) else {
+            add(fixture, base.clone(), &mut out);
+            continue;
+        };
+        let (mut whole, mut per_cell) = (false, false);
+        for p in fixture_type.parameters.iter().filter(|p| {
+            p.direction == ParameterDirection::Output && parameter_key(&p.kind) == key
+        }) {
+            if p.per_cell && fixture_type.cells > 0 {
+                per_cell = true;
+            } else {
+                whole = true;
+            }
+        }
+        match element.cell {
+            Some(cell) if per_cell && (!whole || reaches(&fixture, &parameter_key(&base.in_cell(cell)))) => {
+                add(fixture, base.in_cell(cell), &mut out)
+            }
+            None if whole && (!per_cell || reaches(&fixture, &key)) => add(fixture, base.clone(), &mut out),
+            None if per_cell => {
+                for cell in 1..=fixture_type.cells {
+                    add(fixture, base.in_cell(cell), &mut out);
+                }
+            }
+            _ if whole => add(fixture, base.clone(), &mut out),
+            _ => {}
+        }
+    }
+    out
 }
 
 // ── The entity ────────────────────────────────────────────────────────────────
@@ -167,6 +327,17 @@ pub struct Group {
     /// those are worked out on demand, which is the whole point.
     #[pult(lifecycle = PERSISTED)]
     pub query: SelectionQuery,
+    /// The card's color, as `#rrggbb`, or `None` for its panel category's color.
+    /// What an operator paints a pool object to find it again; it means nothing to
+    /// the rig.
+    #[serde(default)]
+    #[pult(lifecycle = PERSISTED)]
+    pub color: Option<String>,
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    #[pult(lifecycle = PERSISTED)]
+    pub folder: Option<Uuid>,
 }
 
 // ── Geometry ──────────────────────────────────────────────────────────────────
@@ -184,7 +355,7 @@ fn length(v: Vec3) -> f32 {
 }
 
 /// A unit vector, or `None` for one with no direction to speak of.
-pub fn normalise(v: Vec3) -> Option<Vec3> {
+pub fn normalize(v: Vec3) -> Option<Vec3> {
     let l = length(v);
     (l > 1e-9).then(|| Vec3 { x: v.x / l, y: v.y / l, z: v.z / l })
 }
@@ -199,7 +370,7 @@ pub fn distance(a: Vec3, b: Vec3) -> f32 {
 /// exactly at the apex is inside: a cone drawn from a fixture should include that
 /// fixture rather than excluding it on a technicality.
 pub fn in_cone(point: Vec3, from: Vec3, direction: Vec3, angle_deg: f32, reach: f32) -> bool {
-    let Some(axis) = normalise(direction) else { return false };
+    let Some(axis) = normalize(direction) else { return false };
     let offset = sub(point, from);
     let along = length(offset);
     if along > reach {
@@ -237,6 +408,24 @@ pub fn world_position(
     Some(scene::world_transform(&local, fixture.parent, objects).position)
 }
 
+/// Whether a chain of parents starting at `parent` reaches `object`.
+///
+/// Bounded the way `world_transform` is, so a cycle somebody drew is not a hang.
+pub fn hangs_off(
+    mut parent: Option<Uuid>,
+    object: Uuid,
+    objects: &HashMap<Uuid, &SceneObject>,
+) -> bool {
+    for _ in 0..scene::MAX_DEPTH {
+        let Some(id) = parent else { return false };
+        if id == object {
+            return true;
+        }
+        parent = objects.get(&id).and_then(|o| o.parent);
+    }
+    false
+}
+
 fn matches(
     term: &SelectionTerm,
     fixture: &Fixture,
@@ -249,6 +438,7 @@ fn matches(
         SelectionTerm::Named { text } => {
             return fixture.name.to_lowercase().contains(text.trim().to_lowercase().as_str())
         }
+        SelectionTerm::Hanging { object } => return hangs_off(fixture.parent, *object, objects),
         _ => {}
     }
 
@@ -257,7 +447,7 @@ fn matches(
     let Some(point) = world_position(fixture, objects) else { return false };
 
     match term {
-        SelectionTerm::Sphere { centre, radius } => distance(point, *centre) <= *radius,
+        SelectionTerm::Sphere { center, radius } => distance(point, *center) <= *radius,
         SelectionTerm::Box { from, to } => in_box(point, *from, *to),
         SelectionTerm::Cone { from, direction, angle_deg, reach } => {
             in_cone(point, *from, *direction, *angle_deg, *reach)
@@ -395,7 +585,7 @@ mod tests {
             SelectionTerm::Ids { ids: vec![Uuid::nil()] },
             SelectionTerm::OfType { type_id: Uuid::nil() },
             SelectionTerm::Named { text: "x".into() },
-            SelectionTerm::Sphere { centre: v, radius: 2.0 },
+            SelectionTerm::Sphere { center: v, radius: 2.0 },
             SelectionTerm::Box { from: v, to: v },
             SelectionTerm::Cone { from: v, direction: v, angle_deg: 15.0, reach: 10.0 },
         ];

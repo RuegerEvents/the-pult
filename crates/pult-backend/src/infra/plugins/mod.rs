@@ -40,6 +40,7 @@ use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 
+pub mod builtin;
 pub mod bundle;
 pub mod cache;
 pub mod manifest;
@@ -1115,6 +1116,8 @@ fn info_for(manifest: &PluginManifest, status: PluginStatus) -> PluginInfo {
                 id: s.id.clone(),
                 kind: s.kind.as_str().to_string(),
                 title: s.title.clone(),
+                icon: s.icon.clone(),
+                category: s.category.clone(),
             })
             .collect(),
         panels: manifest
@@ -1126,6 +1129,8 @@ fn info_for(manifest: &PluginManifest, status: PluginStatus) -> PluginInfo {
                 element: p.element.clone(),
                 script: p.script.clone(),
                 fills: p.fills,
+                icon: p.icon.clone(),
+                category: p.category.clone(),
             })
             .collect(),
         // Filled in by the reconcile once it knows where this one came from.

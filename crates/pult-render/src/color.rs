@@ -1,6 +1,6 @@
-//! Turning a colour into levels for the lights that actually make it.
+//! Turning a color into levels for the lights that actually make it.
 //!
-//! A console holds one colour. A fixture has emitters — three of them on a plain RGB
+//! A console holds one color. A fixture has emitters — three of them on a plain RGB
 //! par, four on an RGBW head, seven on a good one, and three *subtractive* flags on
 //! anything with a CMY mixing system. Getting from the one to the other is arithmetic
 //! that has to be the same on the station and in the browser, or the swatch and the
@@ -10,30 +10,30 @@
 //! # The rules, and why they are these
 //!
 //! **Red, green and blue pass through.** An RGB emitter takes the component it is
-//! named for, unchanged. Anything cleverer would mean a colour command not producing
-//! the colour that was asked for, which is the one thing an operator will not forgive.
+//! named for, unchanged. Anything cleverer would mean a color command not producing
+//! the color that was asked for, which is the one thing an operator will not forgive.
 //!
 //! **Every other additive emitter takes as much as fits.** White, amber, lime, UV:
-//! each takes the largest multiple of its own colour that stays under the target on
-//! every channel. For white that is `min(r, g, b)` — the neutral part of the colour,
+//! each takes the largest multiple of its own color that stays under the target on
+//! every channel. For white that is `min(r, g, b)` — the neutral part of the color,
 //! which is exactly what a white die is for — and for amber `(1, 0.5, 0)` it is
 //! `min(r, 2g)`, which is zero for pure red and zero for pure green and full for
-//! amber. An emitter whose colour the file never measured takes nothing, because
-//! guessing which channel a die called "Cyan-ish" belongs to is how a colour comes
+//! amber. An emitter whose color the file never measured takes nothing, because
+//! guessing which channel a die called "Cyan-ish" belongs to is how a color comes
 //! out wrong in a way nobody can trace.
 //!
 //! Note what this does *not* do: it does not take the extra emitter's contribution
 //! back off the primaries. An RGBW head told to go white lights all four, and is
 //! brighter than the arithmetic of a single luminaire would suggest. That is what
 //! nearly every console does and what an operator expects from the fader — and where
-//! it is not wanted, the colour carries a per-emitter override, which is what
+//! it is not wanted, the color carries a per-emitter override, which is what
 //! overrides are for.
 //!
 //! **A subtractive emitter is one minus the component it removes.** Cyan takes red
 //! out, so full cyan is `1 − r`. Which component it removes comes from the emitter's
-//! own colour: it is the channel that colour has least of.
+//! own color: it is the channel that color has least of.
 //!
-//! **An override wins, last.** A colour may name any emitter explicitly, and that
+//! **An override wins, last.** A color may name any emitter explicitly, and that
 //! number is used as it stands. This is the escape hatch for every fixture whose
 //! white is warmer than the file says and every operator who wants the amber off.
 
@@ -57,10 +57,10 @@ pub struct EmitterSpec {
     pub subtractive: bool,
 }
 
-/// The colour half of a [`crate::ParameterValue::Color`], on its own.
+/// The color half of a [`crate::ParameterValue::Color`], on its own.
 ///
-/// So that `mix` can be called with a colour that is not inside a parameter value —
-/// which is what the browser's colour control and the wasm export both want.
+/// So that `mix` can be called with a color that is not inside a parameter value —
+/// which is what the browser's color control and the wasm export both want.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Color {
     pub r: f32,
@@ -76,7 +76,7 @@ pub struct Color {
 /// The shape a caller wants when it is about to *show* the answer. A caller writing
 /// one byte wants [`level_of`], which is the same arithmetic without the allocation —
 /// and that matters: a DMX frame over a rig of thousands asks this question once per
-/// colour channel per fixture, forty times a second.
+/// color channel per fixture, forty times a second.
 pub fn mix(color: &Color, emitters: &[EmitterSpec]) -> Vec<(String, f32)> {
     emitters.iter().map(|emitter| (emitter.name.clone(), level_of(color, emitter))).collect()
 }
@@ -84,8 +84,8 @@ pub fn mix(color: &Color, emitters: &[EmitterSpec]) -> Vec<(String, f32)> {
 /// One emitter's level, and nothing else.
 ///
 /// Allocation-free on purpose. This is on the frame path — the DMX connector calls it
-/// once per colour channel per fixture per frame — and building a vector of cloned
-/// names per call was measurably the whole cost of a colour on a rig of five hundred.
+/// once per color channel per fixture per frame — and building a vector of cloned
+/// names per call was measurably the whole cost of a color on a rig of five hundred.
 pub fn level_of(color: &Color, emitter: &EmitterSpec) -> f32 {
     level_from([color.r, color.g, color.b], &color.overrides, emitter)
 }
@@ -106,9 +106,9 @@ pub fn level_from(
     derive(emitter, [rgb[0].clamp(0.0, 1.0), rgb[1].clamp(0.0, 1.0), rgb[2].clamp(0.0, 1.0)])
 }
 
-/// A colour from the levels its emitters are actually at: [`mix`] backwards.
+/// A color from the levels its emitters are actually at: [`mix`] backwards.
 ///
-/// What reading a fixture off a wire comes to. A console holds one colour and a
+/// What reading a fixture off a wire comes to. A console holds one color and a
 /// fixture has emitters, so decoding an incoming universe means going the other way —
 /// and the only answer that is exact on *every* fixture is the one that keeps what it
 /// cannot derive.
@@ -117,16 +117,16 @@ pub fn level_from(
 /// [`primary_channel`]'s own rule, which is the same rule [`derive`] passes them
 /// through going out — the first emitter matching each channel wins, and a channel no
 /// emitter is a primary for is zero. Then every emitter whose given level differs from
-/// what that colour would derive for it becomes an **override**. Which makes the round
+/// what that color would derive for it becomes an **override**. Which makes the round
 /// trip exact by construction rather than by luck: a CMY head has no primaries at all
 /// and comes back as three overrides over black; an RGBW head whose white is at
 /// something other than `min(r,g,b)` comes back with the white pinned; a plain RGB par
-/// comes back with no overrides at all, which is the colour somebody can then edit.
+/// comes back with no overrides at all, which is the color somebody can then edit.
 ///
 /// Half a byte of tolerance, because the levels being read back came off a wire as
 /// bytes and re-deriving them in floating point does not land on the same number
 /// twice. Tighter and every emitter of every fixture would be pinned, which would make
-/// an operator's next colour command do nothing.
+/// an operator's next color command do nothing.
 pub fn unmix(levels: &[(EmitterSpec, f32)]) -> Color {
     let mut rgb = [0.0f32; 3];
     let mut taken = [false; 3];
@@ -162,14 +162,14 @@ pub fn unmix(levels: &[(EmitterSpec, f32)]) -> Color {
 /// Half a byte at eight bits: the smallest difference a wire can actually carry.
 const TOLERANCE: f32 = 0.5 / 255.0;
 
-/// One emitter's level, from the colour alone.
+/// One emitter's level, from the color alone.
 fn derive(emitter: &EmitterSpec, target: [f32; 3]) -> f32 {
     let Some(rgb) = emitter.rgb.or_else(|| rgb_from_name(&emitter.name)) else {
         return 0.0;
     };
 
     if emitter.subtractive {
-        // The channel this flag takes out is the one its own colour has least of:
+        // The channel this flag takes out is the one its own color has least of:
         // cyan is (0, 1, 1) and removes red.
         let removes = (0..3)
             .min_by(|a, b| rgb[*a].total_cmp(&rgb[*b]))
@@ -200,7 +200,7 @@ fn derive(emitter: &EmitterSpec, target: [f32; 3]) -> f32 {
     }
 }
 
-/// Which single channel this colour is, if it is one.
+/// Which single channel this color is, if it is one.
 ///
 /// A tolerance rather than an equality, because a file's measured red is
 /// `(1, 0.02, 0.01)` and not `(1, 0, 0)`, and a red die that failed this test would
@@ -214,7 +214,7 @@ fn primary_channel(rgb: [f32; 3]) -> Option<usize> {
     others_dark.then_some(brightest)
 }
 
-/// A colour for an emitter the file never measured, from what it is called.
+/// A color for an emitter the file never measured, from what it is called.
 ///
 /// Only the names that are unambiguous. Anything else gets nothing rather than a
 /// guess: an emitter driven from a mistaken guess is worse than one left dark,
@@ -299,7 +299,7 @@ mod tests {
     }
 
     #[test]
-    fn an_amber_die_is_zero_on_a_primary_and_full_on_its_own_colour() {
+    fn an_amber_die_is_zero_on_a_primary_and_full_on_its_own_color() {
         let emitters = vec![additive("Amber", [1.0, 0.5, 0.0])];
         assert_eq!(
             levels(
@@ -446,7 +446,7 @@ mod tests {
     }
 
     /// The round trip is the whole point of [`unmix`], and it is asserted rather than
-    /// reasoned about: a decoder that came back with a colour mixing to *different*
+    /// reasoned about: a decoder that came back with a color mixing to *different*
     /// levels would repatch a guest console's rig on the way through this one.
     fn round_trips(name: &str, emitters: &[EmitterSpec], levels: &[f32]) {
         let given: Vec<(EmitterSpec, f32)> =
@@ -494,10 +494,10 @@ mod tests {
         round_trips("cmy, open", &cmy, &[0.0, 0.0, 0.0]);
     }
 
-    /// A plain RGB par pins nothing, which is what makes a grabbed colour something an
+    /// A plain RGB par pins nothing, which is what makes a grabbed color something an
     /// operator can then edit rather than three numbers welded to their emitters.
     #[test]
-    fn a_colour_the_mix_can_derive_carries_no_overrides() {
+    fn a_color_the_mix_can_derive_carries_no_overrides() {
         let rgb = vec![
             additive("Red", [1.0, 0.0, 0.0]),
             additive("Green", [0.0, 1.0, 0.0]),

@@ -1,77 +1,165 @@
-//! Workspace layouts: how the panels of the console are arranged on screen.
+//! Layouts: a drawing of somewhere, with what is happening there painted on it.
 //!
-//! A programming session needs the rig, the values and the cue list visible at once,
-//! which a fixed sidebar and a row of tabs can never give. So the workspace is a tree
-//! of splits and tab groups, and the tree is show data: an operator who arranged the
-//! screen for tech week should find it that way at the next call, on whichever console
-//! they sit down at.
+//! The rig view answers "where is everything"; a layout answers "where is it
+//! happening". A maze drawn as a few rectangles with every PIR and contact on it,
+//! each lit while somebody is standing on it and fading for half a minute after
+//! they have gone, so a glance says where the group is and which way it went. A
+//! timeline as a bar beside the room it plays in. Nothing about a maze is written
+//! here: a theater's stage door contact and its backstage temperatures are the same
+//! drawing with other targets — and like MA's 2D layout views, a show has as many as
+//! it has places worth looking at.
 //!
-//! # What is here and what is not
+//! **A layout's coordinates are its own.** An element sits at an `x`, `y`, `w`, `h`
+//! on a canvas of abstract units, not at the fixture's position in the room: a
+//! sensor needs no 3D placement to be on a map, the same contact can sit on two
+//! layouts in two places, and a schematic is allowed to be a schematic. The canvas
+//! scales to whatever screen it is drawn on.
 //!
-//! Panel ids are plain strings. The schema knows a layout holds panels; it does not
-//! know that one of them is called `rig` and draws a stage in three dimensions. That
-//! keeps the frontend's list of panels a frontend concern, and means adding one needs
-//! nothing here.
+//! **A layout shows; on the desk it may also press.** An element's `press` is the
+//! surface's idea — toggle a variable, play a timeline, press a flow's button.
+//! `/layout/<id>`, the page a phone is handed, draws the same layout and presses
+//! nothing. `/layout/<id>?key=<k>` is the same page, pressing — when `k` is the
+//! layout's [`Layout::operate_key`] — the desk's presses less making a selection,
+//! which a phone has no use for. Two links, so a read-only one and an operating one can
+//! be handed out at once, and a key rather than a flag in the address, so the
+//! read-only one cannot be turned into the other by editing it.
 //!
-//! Which layout a browser is *looking at*, and any rearranging not yet saved, are not
-//! here either. Those are one operator's, not the show's, and live in a store beside
-//! the selection.
+//! The elements are one JSON column, the way a surface's tiles are: a layout is
+//! drawn as a whole by one person between shows.
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::PultSchema;
+use crate::{
+    types::{fixture::ParameterKind, surface::ColorStop, variable::VariableOp},
+    PultSchema,
+};
 
-/// Which way a split divides its children.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
-pub enum SplitDirection {
-    /// Children side by side, divided by vertical gutters.
-    Row,
-    /// Children stacked, divided by horizontal gutters.
-    Column,
-}
+/// How long a contact stays warm after it lets go, when nobody said.
+pub const DEFAULT_DECAY_MS: u32 = 30_000;
+/// The color of a contact somebody is on, when nobody said.
+pub const DEFAULT_ACTIVE_COLOR: &str = "#ff9f1c";
+/// The color of one nobody has been near, when nobody said.
+pub const DEFAULT_IDLE_COLOR: &str = "#2b313a";
 
-/// One node of a workspace tree: either a division of the space, or panels in it.
+/// What an element is a drawing of.
 ///
-/// Tagged by `type` so the TypeScript side discriminates on a field rather than on
-/// the shape of an object — the layout operations in the frontend are written against
-/// that tag, and a bare externally-tagged enum would make every one of them a
-/// two-key lookup.
+/// Tagged by `kind`, as `TileTarget` is.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
-#[serde(tag = "type")]
-pub enum LayoutNode {
-    /// Space divided among children, each taking its share of `sizes`.
-    Split {
-        direction: SplitDirection,
-        /// One fraction per child, summing to 1.
-        sizes: Vec<f32>,
-        children: Vec<LayoutNode>,
-    },
-    /// Panels sharing one rectangle, one of them on top.
-    Tabs {
-        /// Panel ids, in tab order.
-        panels: Vec<String>,
-        /// Which of them is showing.
-        active: usize,
-    },
+#[serde(tag = "kind")]
+pub enum ElementTarget {
+    /// One parameter of one fixture: what a device reported (a contact, a PIR, a
+    /// temperature) or what the console is putting out (a traffic light's color).
+    /// An on/off reading decays; a number is colored by `stops` and printed.
+    Parameter { fixture_id: Uuid, parameter: ParameterKind },
+    /// What a variable holds: a flag decays like a contact, a number is colored by
+    /// `stops` and printed.
+    Variable { variable_id: Uuid },
+    /// A timeline: running or not, how far through, and how long is left.
+    Timeline { timeline_id: Uuid },
+    /// A flow's `Button` node, drawn as a button: pressing it presses the node, exactly
+    /// as the surface's `FlowButton` tile and the node's own Press do. Its press is
+    /// what it *is*, so it takes no `press` of its own.
+    FlowButton { node_id: Uuid },
+    /// A filled shape and nothing else — a room, a wall, a stage.
+    Shape,
+    /// A line through points, in canvas units, absolute rather than inside the
+    /// element's box: a wall that turns a corner. The box is the points' bounds.
+    Line { points: Vec<[f32; 2]> },
+    /// Words on the drawing, and nothing behind them.
+    Text,
 }
 
-impl LayoutNode {
-    /// Every panel this tree holds, in the order it holds them.
-    pub fn panels(&self) -> Vec<&str> {
-        match self {
-            LayoutNode::Split { children, .. } => {
-                children.iter().flat_map(|c| c.panels()).collect()
-            }
-            LayoutNode::Tabs { panels, .. } => panels.iter().map(String::as_str).collect(),
-        }
-    }
+/// The outline an element is drawn with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, Default)]
+#[ts(export)]
+pub enum ElementShape {
+    #[default]
+    Rect,
+    Ellipse,
 }
 
-/// One saved arrangement of the workspace.
+/// What pressing an element does, on the desk. Never on the shared page.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(tag = "kind")]
+pub enum ElementPress {
+    /// Change the element's variable, through the `variable.*` RPCs, unattributed —
+    /// exactly as a surface tile does.
+    Variable { op: VariableOp },
+    /// Play the element's timeline if it is stopped, stop it if it is running.
+    Timeline {
+        /// Play from the top rather than from where it stopped.
+        from_start: bool,
+    },
+    /// Make the element's fixture the selection.
+    Select,
+}
+
+/// How a reading that goes on and off is drawn: lit while on, then fading.
+///
+/// Every field is optional on an element, which falls back to its layout's.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS, Default)]
+#[ts(export)]
+pub struct Decay {
+    /// `#rrggbb` while on, and the color the fade starts from.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub active_color: Option<String>,
+    /// `#rrggbb` once the fade has finished, and for a reading that has never been on.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub idle_color: Option<String>,
+    /// How long the fade from active to idle takes, from the moment the reading went
+    /// off. Zero is a light that goes straight out.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub decay_ms: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct LayoutElement {
+    /// Stable across edits, so an element being dragged keeps its identity.
+    pub id: Uuid,
+    /// Where it is, in canvas units from the top left.
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    #[serde(default)]
+    pub shape: ElementShape,
+    /// What it says. Empty means the name of what it points at.
+    #[serde(default)]
+    pub label: String,
+    /// Whether the label is drawn at all.
+    #[serde(default = "yes")]
+    pub show_label: bool,
+    /// The fill of a `Shape`, the stroke of a `Line`, the ink of `Text`; ignored by
+    /// an element whose color comes from what it is showing.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub color: Option<String>,
+    pub target: ElementTarget,
+    /// This element's own answer to how it decays, over the layout's.
+    #[serde(default)]
+    pub decay: Decay,
+    /// The color for each value of a number, the highest stop not above it winning.
+    /// Empty means the layout's idle color with the figure printed on it.
+    #[serde(default)]
+    pub stops: Vec<ColorStop>,
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub press: Option<ElementPress>,
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// One drawing.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PultSchema)]
 #[ts(export)]
 #[pult(table = "layouts")]
@@ -80,39 +168,133 @@ pub struct Layout {
     pub id: Uuid,
     #[pult(lifecycle = PERSISTED)]
     pub name: String,
-    /// The whole arrangement, as one JSON column.
+    /// The canvas, in its own units. The drawing keeps this aspect on any screen.
     #[pult(lifecycle = PERSISTED)]
-    pub tree: LayoutNode,
+    pub width: f32,
+    #[pult(lifecycle = PERSISTED)]
+    pub height: f32,
+    /// What a dragged element snaps to, in canvas units. Zero is no snapping.
+    #[pult(lifecycle = PERSISTED)]
+    pub grid: f32,
+    /// A drawing somebody was handed, stretched over the canvas: the asset's sha256.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    #[pult(lifecycle = PERSISTED)]
+    pub backdrop: Option<String>,
+    /// The layout's answer to how a reading decays; an element may say otherwise.
+    #[pult(lifecycle = PERSISTED)]
+    pub decay: Decay,
+    /// The elements, back to front, as one JSON column.
+    #[pult(lifecycle = PERSISTED)]
+    pub elements: Vec<LayoutElement>,
+    /// The card's color, as `#rrggbb`, or `None` for its panel category's color.
+    #[serde(default)]
+    #[pult(lifecycle = PERSISTED)]
+    pub color: Option<String>,
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    #[pult(lifecycle = PERSISTED)]
+    pub folder: Option<Uuid>,
+    /// The key an operating link carries (`/layout/<id>?key=<k>`), or `None` while
+    /// there is none and every shared page only looks — which is what every layout
+    /// made before this was. Made fresh each time operating is allowed, so allowing it
+    /// again revokes the links handed out before. Not a password: anybody on the
+    /// network can open the desk itself. It keeps the read-only link read-only.
+    #[serde(default)]
+    #[pult(lifecycle = PERSISTED)]
+    pub operate_key: Option<String>,
+}
+
+impl Layout {
+    /// Whether a shared page opened with `key` presses.
+    pub fn shared_presses(&self, key: Option<&str>) -> bool {
+        matches!((self.operate_key.as_deref(), key), (Some(k), Some(given)) if !k.is_empty() && k == given)
+    }
+}
+
+impl Decay {
+    /// This answer, with anything it leaves out taken from `under`, and the
+    /// defaults under both.
+    pub fn over(&self, under: &Decay) -> (String, String, u32) {
+        (
+            self.active_color
+                .clone()
+                .or_else(|| under.active_color.clone())
+                .unwrap_or_else(|| DEFAULT_ACTIVE_COLOR.into()),
+            self.idle_color
+                .clone()
+                .or_else(|| under.idle_color.clone())
+                .unwrap_or_else(|| DEFAULT_IDLE_COLOR.into()),
+            self.decay_ms.or(under.decay_ms).unwrap_or(DEFAULT_DECAY_MS),
+        )
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn a_tree() -> LayoutNode {
-        LayoutNode::Split {
-            direction: SplitDirection::Row,
-            sizes: vec![0.6, 0.4],
-            children: vec![
-                LayoutNode::Tabs { panels: vec!["rig".into()], active: 0 },
-                LayoutNode::Tabs {
-                    panels: vec!["values".into(), "selection".into()],
-                    active: 1,
-                },
-            ],
-        }
+    #[test]
+    fn an_element_round_trips_with_its_target_as_a_field() {
+        let element = LayoutElement {
+            id: Uuid::nil(),
+            x: 10.0,
+            y: 20.0,
+            w: 40.0,
+            h: 40.0,
+            shape: ElementShape::Ellipse,
+            label: String::new(),
+            show_label: true,
+            color: None,
+            target: ElementTarget::Variable { variable_id: Uuid::nil() },
+            decay: Decay::default(),
+            stops: Vec::new(),
+            press: Some(ElementPress::Timeline { from_start: true }),
+        };
+        let json = serde_json::to_value(&element).unwrap();
+        assert_eq!(json["target"]["kind"], "Variable");
+        assert_eq!(json["press"]["kind"], "Timeline");
+        let back: LayoutElement = serde_json::from_value(json).unwrap();
+        assert_eq!(back, element);
     }
 
     #[test]
-    fn a_tree_lists_its_panels_left_to_right() {
-        assert_eq!(a_tree().panels(), ["rig", "values", "selection"]);
+    fn an_element_written_with_only_the_essentials_reads() {
+        let element: LayoutElement = serde_json::from_value(serde_json::json!({
+            "id": Uuid::nil(), "x": 0, "y": 0, "w": 1, "h": 1,
+            "target": { "kind": "Text" }
+        }))
+        .unwrap();
+        assert!(element.show_label, "a label is drawn unless somebody said not to");
+        assert_eq!(element.shape, ElementShape::Rect);
     }
 
     #[test]
-    fn a_tree_round_trips_through_json() {
-        let json = serde_json::to_value(a_tree()).unwrap();
-        assert_eq!(json["type"], "Split", "the tag is a field, not a wrapping key");
-        let back: LayoutNode = serde_json::from_value(json).unwrap();
-        assert_eq!(back, a_tree());
+    fn only_the_operating_key_presses() {
+        let mut layout: Layout = serde_json::from_value(serde_json::json!({
+            "id": Uuid::nil(), "name": "Maze", "width": 200.0, "height": 120.0, "grid": 5.0,
+            "decay": {}, "elements": []
+        }))
+        .expect("a layout written before operating links reads");
+        assert!(!layout.shared_presses(None));
+        assert!(!layout.shared_presses(Some("")));
+        layout.operate_key = Some("k1".into());
+        assert!(!layout.shared_presses(None), "the read-only link stays read-only");
+        assert!(!layout.shared_presses(Some("k0")), "a revoked key presses nothing");
+        assert!(layout.shared_presses(Some("k1")));
+        layout.operate_key = Some(String::new());
+        assert!(!layout.shared_presses(Some("")));
+    }
+
+    #[test]
+    fn an_element_says_what_it_says_and_the_layout_the_rest() {
+        let layout = Decay { active_color: Some("#ff0000".into()), idle_color: None, decay_ms: Some(5000) };
+        let element = Decay { decay_ms: Some(1000), ..Decay::default() };
+        assert_eq!(element.over(&layout), ("#ff0000".into(), DEFAULT_IDLE_COLOR.into(), 1000));
+        assert_eq!(
+            Decay::default().over(&Decay::default()),
+            (DEFAULT_ACTIVE_COLOR.into(), DEFAULT_IDLE_COLOR.into(), DEFAULT_DECAY_MS)
+        );
     }
 }

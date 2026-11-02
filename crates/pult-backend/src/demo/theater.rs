@@ -1,0 +1,339 @@
+//! Conventionals and a cue stack: what most of the world actually runs.
+//!
+//! No movers and no effects, deliberately. The interesting things here are the ones
+//! a rig of moving heads hides: systems of identical lanterns addressed and grouped
+//! by where they point rather than by what they are, a stack of cues that mostly
+//! changes a few of them at a time, and **split fade times** — the front coming up
+//! over five seconds while the previous state goes out over two is the ordinary
+//! shape of a theater cue and is invisible in a show that never sets one.
+//!
+//! Two universes, because forty lanterns is more than one holds once the cyc is in —
+//! which is also what makes the Patch panel's universe view worth looking at.
+
+use anyhow::Result;
+use pult_schema::types::{
+    fixture::{Fixture, FixtureType, ParameterKind, ParameterValue, Vec3},
+    mount::Mount,
+    group::{Group, SelectionClause, SelectionCombine, SelectionOrder, SelectionQuery,
+            SelectionTerm},
+    scene::Transform,
+    CueShot,
+};
+
+use super::{
+    id,
+    kit::{
+        a_clamped_fixture, a_cue, a_piece, a_preset, a_preset_value, a_stack, a_type, boom,
+        capture, color, facing, from_preset,
+        intensity, level, on, posed, production, sky, truss_run, under, weighing,
+        Addresses,
+    },
+    Seeder,
+};
+
+/// Where a system hangs: under a bar, or up a boom.
+enum Hang {
+    /// An index into the bars below.
+    Bar(usize),
+    /// An index into the booms below.
+    Boom(usize),
+}
+
+/// One lighting system: what it is called, what type it is made of, how many, and
+/// where they hang.
+struct System {
+    name: &'static str,
+    /// Index into the types below.
+    kind: usize,
+    count: u16,
+    hang: Hang,
+    /// The direction the whole system points.
+    aim: Vec3,
+}
+
+pub async fn seed(into: &Seeder) -> Result<()> {
+    into.name_the_show("Theater").await?;
+
+    // Three conventionals: a profile to shape, a fresnel to wash, and an LED batten
+    // for the cloth. Only the batten mixes, which is why it is the one with a color
+    // parameter — everything else is a lantern with gel in it, and a console that
+    // offered a color picker for one would be lying.
+    let profile =
+        weighing(a_type("Profile 26°", vec![intensity()]), 8.2, 750.0, (0.30, 0.35, 0.60));
+    let fresnel =
+        weighing(a_type("Fresnel 1kW", vec![intensity()]), 6.5, 1000.0, (0.28, 0.38, 0.32));
+    let cyc = weighing(
+        a_type("LED Cyc Batten", vec![intensity(), color()]),
+        9.0,
+        200.0,
+        (1.00, 0.25, 0.20),
+    );
+    let types: Vec<&FixtureType> = vec![&profile, &fresnel, &cyc];
+    for kind in &types {
+        into.create("fixture_types", *kind).await?;
+    }
+
+    // The room. A twelve-meter opening, three bars over it, a batten for the cloth,
+    // and a boom each side — three meters of truss stood on its end with its foot on
+    // the deck, which is what a boom is and what the first version of this demo drew
+    // as a fourth and fifth horizontal bar.
+    // Each bar with its length beside it, because a system is spread along the bar
+    // it hangs on and not along some other one: the first version spread the cyc
+    // batten's eight cells over ten meters of a nine-meter bar, and the outer ones
+    // hung in the air past its ends.
+    let bars = [
+        (truss_run(into, "FOH bar", None, Vec3 { x: 0.0, y: 6.0, z: 5.0 }, 12.0).await?, 12.0),
+        (truss_run(into, "LX 2", None, Vec3 { x: 0.0, y: 6.5, z: -1.0 }, 12.0).await?, 12.0),
+        (truss_run(into, "LX 4", None, Vec3 { x: 0.0, y: 6.5, z: -4.0 }, 12.0).await?, 12.0),
+        (truss_run(into, "Cyc batten", None, Vec3 { x: 0.0, y: 5.0, z: -6.0 }, 9.0).await?, 9.0),
+    ];
+    let booms = [
+        boom(into, "Boom SL", None, Vec3 { x: -7.0, y: 1.5, z: 0.0 }, 3.0).await?,
+        boom(into, "Boom SR", None, Vec3 { x: 7.0, y: 1.5, z: 0.0 }, 3.0).await?,
+    ];
+
+    // And something for the light to land on: a low rostrum upstage center, and a
+    // cloth to wash — three flats standing side by side across the back.
+    a_piece(into, "Rostrum", "deck-2x1", super::kit::at(0.0, 0.4, -3.0), None).await?;
+    for (n, x) in [-3.0f32, 0.0, 3.0].into_iter().enumerate() {
+        a_piece(
+            into,
+            &format!("Cloth {}", n + 1),
+            "wall-2x1",
+            Transform {
+                position: Vec3 { x, y: 0.0, z: -7.0 },
+                // Three meters of cloth out of a two-meter panel, and three high.
+                scale: Vec3 { x: 1.5, y: 3.0, z: 1.0 },
+                ..Transform::default()
+            },
+            None,
+        )
+        .await?;
+    }
+
+    let systems = [
+        System { name: "Front", kind: 0, count: 12, hang: Hang::Bar(0), aim: facing::DOWNSTAGE },
+        System { name: "Back", kind: 0, count: 10, hang: Hang::Bar(2), aim: facing::UPSTAGE },
+        System { name: "Side SL", kind: 1, count: 4, hang: Hang::Boom(0), aim: facing::FROM_LEFT },
+        System { name: "Side SR", kind: 1, count: 4, hang: Hang::Boom(1), aim: facing::FROM_RIGHT },
+        System { name: "Cyc", kind: 2, count: 8, hang: Hang::Bar(3), aim: facing::AT_THE_CLOTH },
+    ];
+
+    let mut addresses = Addresses::from(1);
+    for system in &systems {
+        let kind = types[system.kind];
+        for n in 0..system.count {
+            // Spread evenly along whatever they hang on, so the rig view shows a
+            // system rather than a heap.
+            let spread = |span: f32| {
+                if system.count > 1 {
+                    -span / 2.0 + span * (n as f32 / (system.count - 1) as f32)
+                } else {
+                    0.0
+                }
+            };
+            let (parent, mount, position) = match system.hang {
+                // Under the bar, on a clamp, spread over all but the last half meter
+                // at each end of it.
+                Hang::Bar(bar) => {
+                    let (id, meters) = bars[bar];
+                    let mount = Mount::along(spread(meters - 1.0));
+                    (id, mount, under(mount, system.aim))
+                }
+                // Up the boom, clamped to the chord that faces center stage rather
+                // than drawn inside it. A boom is a run stood on its end, so `along`
+                // is the height up it; the aim is a world term and `on` puts that in
+                // the boom's own turned frame.
+                Hang::Boom(index) => {
+                    let (id, handle) = &booms[index];
+                    // A boom is a run turned a quarter about Z, so its local −Y is
+                    // the world's +X. The clamp goes on the chord facing center
+                    // stage and the roll pushes the body out along it — which is
+                    // what keeps the lantern on the face of the boom instead of
+                    // inside it, the thing the first Theater demo got wrong twice.
+                    let (chord, roll) = if handle.position.x < 0.0 { (0, 0.0) } else { (2, 180.0) };
+                    let mount = Mount { chord, along: spread(2.2), roll };
+                    (*id, mount, on(handle, mount, system.aim))
+                }
+            };
+
+            let fixture = a_clamped_fixture(
+                &format!("{} {}", system.name, n + 1),
+                kind.id,
+                addresses.take(kind.channel_count),
+                parent,
+                position,
+                mount,
+            );
+            into.create("fixtures", &fixture).await?;
+        }
+    }
+
+    // A group per system, as a *question* rather than a list: "everything whose name
+    // has Front in it" stays true after somebody hangs a thirteenth.
+    for name in ["Front", "Back", "Side", "Cyc"] {
+        into.create(
+            "groups",
+            &Group {
+                folder: None,
+                color: None,
+                id: id(),
+                name: name.to_string(),
+                query: SelectionQuery {
+                    clauses: vec![SelectionClause {
+                        combine: SelectionCombine::Add,
+                        term: SelectionTerm::Named { text: name.to_string() },
+                    }],
+                    order: SelectionOrder::ByName,
+                    cells: Vec::new(),
+                },
+            },
+        )
+        .await?;
+    }
+
+    let rig = into.fixtures().await;
+    let system_of = |name: &str| -> Vec<&Fixture> {
+        rig.iter().filter(|fixture| fixture.name.starts_with(name)).collect()
+    };
+
+    // Twenty cues, each touching a few systems rather than the whole rig — which is
+    // what a stack actually looks like, and is why a console does not have to
+    // recompute every fixture on every Go.
+    //
+    // The split times are the point: a state that comes up over five seconds while
+    // the last one goes out over two is the ordinary shape of a theater cue.
+    type State = (&'static str, &'static [(&'static str, f32)], u32, u32);
+    let states: [State; 20] = [
+        ("Preset", &[("Cyc", 0.30)], 3_000, 3_000),
+        ("House to half", &[("Front", 0.50), ("Cyc", 0.30)], 2_000, 2_000),
+        ("Act 1 open", &[("Front", 0.90), ("Back", 0.70), ("Cyc", 0.60)], 5_000, 2_000),
+        ("Enter SL", &[("Front", 0.90), ("Side SL", 0.80), ("Back", 0.50)], 3_000, 2_500),
+        ("Downstage special", &[("Front", 1.00), ("Back", 0.20)], 2_500, 4_000),
+        ("Two-hander", &[("Front", 0.75), ("Side SL", 0.60), ("Side SR", 0.60)], 4_000, 3_000),
+        ("Storm builds", &[("Front", 0.30), ("Side SL", 1.00), ("Cyc", 0.15)], 1_000, 6_000),
+        ("Thunder", &[("Front", 0.10), ("Back", 1.00), ("Cyc", 0.05)], 250, 250),
+        ("After the storm", &[("Front", 0.45), ("Cyc", 0.20)], 6_000, 1_000),
+        ("Interior night", &[("Front", 0.40), ("Side SR", 0.60), ("Cyc", 0.00)], 4_000, 4_000),
+        ("Candle out", &[("Front", 0.15)], 9_000, 2_000),
+        ("Act 1 close", &[], 4_000, 4_000),
+        ("Act 2 preset", &[("Cyc", 0.40)], 3_000, 3_000),
+        ("Dawn", &[("Front", 0.60), ("Back", 0.90), ("Cyc", 1.00)], 8_000, 3_000),
+        ("Act 2 open", &[("Front", 0.90), ("Back", 0.80), ("Side SL", 0.50)], 4_000, 2_000),
+        ("The letter", &[("Front", 1.00), ("Side SR", 0.30)], 2_000, 5_000),
+        ("Exit SR", &[("Front", 0.60), ("Side SR", 0.90), ("Back", 0.40)], 3_000, 2_000),
+        ("Last light", &[("Back", 0.80), ("Cyc", 0.70)], 7_000, 5_000),
+        ("Curtain", &[("Front", 1.00), ("Back", 1.00), ("Side SL", 1.00), ("Side SR", 1.00),
+                      ("Cyc", 1.00)], 2_000, 2_000),
+        ("Blackout", &[], 0, 3_000),
+    ];
+
+    // Five presets, and a cue that references three of them.
+    //
+    // Three colors on the cyc and two states of the front wash, which is what this
+    // rig can actually hold: a theater of profiles, fresnels and a cyc batten has no
+    // pan or tilt in it, so there is no position to make a palette of. A preset is
+    // *any mix* — see `types/preset.rs` — so an intensity look is as much a preset as
+    // a color, and that is what the two front ones are.
+    let cyc = system_of("Cyc");
+    let front = system_of("Front");
+    let color_preset = |name: &str, step: usize| {
+        let values = cyc
+            .iter()
+            .map(|f| a_preset_value(f.id, ParameterKind::ColorRgb, sky(step)))
+            .collect::<Vec<_>>();
+        (name.to_string(), values)
+    };
+    let dawn_sky = a_preset(into, "Dawn sky", color_preset("Dawn sky", 8).1).await?;
+    a_preset(into, "Storm sky", color_preset("Storm sky", 5).1).await?;
+    a_preset(into, "Night sky", color_preset("Night sky", 0).1).await?;
+    let front_full = a_preset(
+        into,
+        "Front full",
+        front
+            .iter()
+            .map(|f| a_preset_value(f.id, ParameterKind::Intensity, ParameterValue::Float(0.90)))
+            .collect(),
+    )
+    .await?;
+    a_preset(
+        into,
+        "Front half",
+        front
+            .iter()
+            .map(|f| a_preset_value(f.id, ParameterKind::Intensity, ParameterValue::Float(0.45)))
+            .collect(),
+    )
+    .await?;
+
+    let mut cues = Vec::new();
+    for (index, (name, levels, fade_in, fade_out)) in states.iter().enumerate() {
+        let mut captures = Vec::new();
+        for (system, at) in levels.iter() {
+            for fixture in system_of(system) {
+                // "Dawn" is the cue that references its palettes, so editing *Dawn sky*
+                // while it is standing moves the cloth — which is the whole of what a
+                // preset is for, and is invisible until one cue uses one.
+                if *name == "Dawn" && *system == "Front" {
+                    captures.push(from_preset(
+                        fixture.id,
+                        ParameterKind::Intensity,
+                        ParameterValue::Float(0.90),
+                        front_full,
+                    ));
+                } else {
+                    captures.push(level(fixture.id, *at));
+                }
+                // The cyc mixes, so its color is part of the state rather than
+                // something somebody gelled in the morning.
+                if *system == "Cyc" {
+                    let color = sky(index);
+                    if *name == "Dawn" {
+                        captures.push(from_preset(
+                            fixture.id,
+                            ParameterKind::ColorRgb,
+                            sky(8),
+                            dawn_sky,
+                        ));
+                    } else {
+                        captures.push(capture(fixture.id, ParameterKind::ColorRgb, color));
+                    }
+                }
+            }
+        }
+        // A cue that names nothing says so about everything, or the systems it does
+        // not mention would simply stay where the last cue left them.
+        if levels.is_empty() {
+            captures.extend(rig.iter().map(|fixture| level(fixture.id, 0.0)));
+        }
+        let mut cue = a_cue(name, index as f64 + 1.0, captures);
+        cue.fade_in_ms = *fade_in;
+        cue.fade_out_ms = *fade_out;
+        cues.push(cue);
+    }
+
+    // "Dawn": front, back and the cyc at full, which is the one state in this stack
+    // where every system in the rig is doing something and the cyc has a color in it.
+    // Its fade is eight seconds, so the shot is taken at ten — five would have caught
+    // it most of the way up and drawn a rig that looks underlit rather than one that
+    // looks like dawn.
+    let dawn = cues
+        .iter()
+        .find(|cue| cue.name == "Dawn")
+        .map(|cue| CueShot::at(cue.id, 10_000));
+
+    a_stack(into, "Main", cues, false).await?;
+
+    into.describe_the_production(production(
+        "The Winter's Tale",
+        "The Corn Exchange",
+        "Market Square, Northgate",
+        "02.05.2026 - 05.05.2026",
+        "Halliwell Lighting Design",
+        "studio@halliwell-ld.example",
+    ))
+    .await?;
+    posed(into, dawn.into_iter().collect()).await?;
+
+    Ok(())
+}

@@ -107,3 +107,39 @@ export const show: Readable<Show | null> = readable<Show | null>(null, (set) => 
 	});
 	return () => stop?.();
 });
+
+/**
+ * One LOCAL path of the station this page is talking to — `audio_status`, `devices`,
+ * `takes` — live.
+ *
+ * Shared and reference-counted like the collections above, and asked again on every
+ * reconnect: a LOCAL value is this station's, and a reconnect may be to a station that
+ * has a different one. `null` until it has answered.
+ */
+export function localPath<T>(path: string): Readable<T | null> {
+	const key = `local:${path}`;
+	const cached = stores.get(key);
+	if (cached) return cached as unknown as Readable<T | null>;
+
+	const store = readable<T | null>(null, (set) => {
+		const stops: (() => void)[] = [];
+		let live = true;
+		const apply = (value: unknown) => {
+			if (live && value && typeof value === 'object') set(value as T);
+		};
+		whenReady(() => {
+			if (!live || !socket) return;
+			const ws = socket;
+			stops.push(ws.subscribe(path, apply));
+			const fetch = () => void ws.get([path]).then(apply);
+			fetch();
+			stops.push(ws.addConnectListener(fetch));
+		});
+		return () => {
+			live = false;
+			for (const stop of stops) stop();
+		};
+	});
+	stores.set(key, store as unknown as Readable<unknown[]>);
+	return store;
+}

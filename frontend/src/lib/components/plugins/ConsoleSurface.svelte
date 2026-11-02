@@ -27,8 +27,8 @@
 
 	import type { PluginStatus } from '$lib/generated/index.js';
 	import type { SelectionQuery } from '$lib/selection.js';
-	import { registerConsoleFocus } from '$lib/stores/plugins.js';
-	import { applySelectionEffect, selection } from '$lib/stores/selection.js';
+	import { registerConsoleFocus, registerConsoleLine } from '$lib/stores/plugins.js';
+	import { applySelectionEffect, query, selection } from '$lib/stores/selection.js';
 	import { showClient } from '$lib/stores/show.js';
 	import { userId } from '$lib/stores/user.js';
 
@@ -69,7 +69,7 @@
 	const choosable = $derived(items.filter((i) => i.text !== ''));
 
 	function ctx() {
-		return { selection: get(selection), userId: get(userId) };
+		return { selection: get(selection), cells: get(query).cells ?? [], userId: get(userId) };
 	}
 
 	function call(method: string, payload: unknown): Promise<unknown> {
@@ -201,9 +201,19 @@
 		// glance at another tab.
 		entries = [...session.entries];
 		const unregister = registerConsoleFocus(() => input?.focus());
+		// The wing's keypad types here and presses Enter here.
+		const unregisterLine = registerConsoleLine({
+			read: () => line,
+			write: (text) => {
+				line = text;
+				items = [];
+			},
+			submit
+		});
 		return () => {
 			session.entries = $state.snapshot(entries) as Entry[];
 			unregister();
+			unregisterLine();
 		};
 	});
 </script>
@@ -219,7 +229,10 @@
 				<p class="hello">Type <code>help</code> for how this works. Tab completes.</p>
 			{/if}
 			{#each entries as entry, i (i)}
-				<div class="entry {entry.kind}">
+				<!-- `kind-` because the bare kind names collide: `.input` is the shared
+				     text-field class, and an entry styled as one drew every typed line as
+				     an empty box. -->
+				<div class="entry kind-{entry.kind}">
 					{#if entry.kind === 'input'}<span class="prompt">›</span>{/if}
 					<pre>{entry.text}</pre>
 					{#if entry.caret}<pre class="caret">  {entry.caret}</pre>{/if}
@@ -302,23 +315,23 @@
 		word-break: break-word;
 		font: inherit;
 	}
-	.entry.input {
+	.entry.kind-input {
 		color: var(--text-bright);
 	}
-	.entry.result pre {
+	.entry.kind-result pre {
 		color: var(--text);
 	}
-	.entry.info pre {
+	.entry.kind-info pre {
 		color: var(--text-dim);
 	}
-	.entry.error {
+	.entry.kind-error {
 		flex-direction: column;
 		gap: 0;
 	}
-	.entry.error pre {
+	.entry.kind-error pre {
 		color: var(--bad);
 	}
-	.entry.error pre.caret {
+	.entry.kind-error pre.caret {
 		color: var(--accent-solid, var(--text-bright));
 	}
 

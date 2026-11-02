@@ -11,6 +11,8 @@
  */
 
 import type { Curve, EffectSpec, ParameterKind, ParameterValue, Shape, Spread, Step } from './generated/index.js';
+import { shapeLevel } from './evaluator.js';
+import { uuid } from '$lib/uuid.js';
 
 // ── Spreads ───────────────────────────────────────────────────────────────────
 
@@ -24,7 +26,15 @@ import type { Curve, EffectSpec, ParameterKind, ParameterValue, Shape, Spread, S
  *
  * A selection of one is always in phase with itself, whatever was asked for.
  */
-export function phases(spread: Spread, n: number): number[] {
+export function phases(spread: Spread, n: number, cycles = 1): number[] {
+	const base = spreadPhases(spread, n);
+	if (cycles === 1) return base;
+	// Covering more than one cycle across the selection is a chase that runs twice
+	// along a strip; less than one bunches it. Wrapped, so a phase stays 0..1.
+	return base.map((p) => (((p * cycles) % 1) + 1) % 1);
+}
+
+function spreadPhases(spread: Spread, n: number): number[] {
 	if (n <= 0) return [];
 	if (n === 1) return [0];
 
@@ -35,9 +45,9 @@ export function phases(spread: Spread, n: number): number[] {
 	// From the other end. Not the same as negating: a reversed four-fixture spread is
 	// still four evenly spaced phases, just handed out right to left.
 	if (spread === 'Reversed') return index.map((i) => (n - 1 - i) / n);
-	// Symmetric about the middle: the ends move together and the centre is opposite,
+	// Symmetric about the middle: the ends move together and the center is opposite,
 	// which is what makes a row of front light look like it is breathing outwards.
-	if (spread === 'Centre') return index.map((i) => Math.abs((2 * i) / (n - 1) - 1) / 2);
+	if (spread === 'Center') return index.map((i) => Math.abs((2 * i) / (n - 1) - 1) / 2);
 
 	if (typeof spread === 'object') {
 		if ('Wings' in spread) {
@@ -89,7 +99,7 @@ export const SPREADS: { label: string; make: (n: number) => Spread }[] = [
 	{ label: 'Together', make: () => 'Even' },
 	{ label: 'Chase', make: () => 'Linear' },
 	{ label: 'Reversed', make: () => 'Reversed' },
-	{ label: 'Centre out', make: () => 'Centre' },
+	{ label: 'Center out', make: () => 'Center' },
 	{ label: 'Wings', make: () => ({ Wings: 2 }) },
 	{ label: 'Groups', make: () => ({ Groups: 3 }) },
 	{ label: 'Random', make: () => ({ Random: { seed: (Math.random() * 2 ** 32) >>> 0 } }) }
@@ -98,7 +108,7 @@ export const SPREADS: { label: string; make: (n: number) => Spread }[] = [
 /** Which of the above a spread is, for the picker. */
 export function spreadLabel(spread: Spread): string {
 	if (typeof spread === 'string') {
-		return { Even: 'Together', Linear: 'Chase', Reversed: 'Reversed', Centre: 'Centre out' }[spread];
+		return { Even: 'Together', Linear: 'Chase', Reversed: 'Reversed', Center: 'Center out' }[spread];
 	}
 	if ('Wings' in spread) return 'Wings';
 	if ('Groups' in spread) return 'Groups';
@@ -120,23 +130,31 @@ export function curveLevel(shape: Shape, width: number, x: number): number {
 			return x;
 		case 'SawDown':
 			return 1 - x;
+		// The two that never repeat are hashed, and the hash is the evaluator's alone:
+		// a drawing asks it rather than keeping a third copy. The first cycle, unsalted,
+		// is what a waveform of one draws, and nothing at all until the wasm is here.
+		case 'Flicker':
+		case 'Lightning':
+			return shapeLevel(shape, width, x) ?? 0;
 		default:
 			return 0;
 	}
 }
 
-/** Where in its cycle an effect is at `nowMs`, 0..1. */
+/** Where in its cycle an effect is at `nowMs`: 0..1, or 0..`span` across several. */
 export function cyclePosition(
 	rateHz: number,
 	backward: boolean,
 	phase: number,
 	t0: number,
-	nowMs: number
+	nowMs: number,
+	/** How many cycles the answer wraps at: 1 for where in a cycle, 2 for a drawing of two. */
+	span = 1
 ): number {
-	if (rateHz <= 0) return ((phase % 1) + 1) % 1;
+	if (rateHz <= 0) return ((phase % span) + span) % span;
 	const cycles = ((nowMs - t0) / 1000) * rateHz;
-	const travelled = backward ? -cycles : cycles;
-	return (((travelled + phase) % 1) + 1) % 1;
+	const traveled = backward ? -cycles : cycles;
+	return (((traveled + phase) % span) + span) % span;
 }
 
 /** The value a step list is showing at a cycle position. */
@@ -152,9 +170,9 @@ export function stepValue(steps: Step[], x: number): ParameterValue | null {
 
 	let span = next.at - step.at;
 	if (span <= 0) span += 1;
-	let travelled = x - step.at;
-	if (travelled < 0) travelled += 1;
-	return blend(step.value, next.value, ease(step.easing, travelled / span));
+	let traveled = x - step.at;
+	if (traveled < 0) traveled += 1;
+	return blend(step.value, next.value, ease(step.easing, traveled / span));
 }
 
 /** The shape of a transition, 0..1 in, 0..1 out. */
@@ -193,7 +211,7 @@ export function blend(low: ParameterValue, high: ParameterValue, level: number):
 				g: low.value.g + (high.value.g - low.value.g) * t,
 				b: low.value.b + (high.value.b - low.value.b) * t,
 				// Not interpolated: an override is a fact about the head's own white,
-				// not a point on the way between two colours.
+				// not a point on the way between two colors.
 				overrides: low.value.overrides
 			}
 		};
@@ -214,7 +232,7 @@ export function valueAt(spec: EffectSpec, rateHz: number, t0: number, nowMs: num
 export function curveAt(curve: Curve, width: number, x: number): number {
 	if ('Steps' in curve) {
 		// A step list has no single level, so the outline is drawn from where the
-		// steps are rather than from a curve: this is the step index, normalised.
+		// steps are rather than from a curve: this is the step index, normalized.
 		const steps = curve.Steps;
 		if (steps.length === 0) return 0;
 		const order = [...steps].sort((a, b) => a.at - b.at);
@@ -237,7 +255,7 @@ export function specsFor(
 	base: Omit<EffectSpec, 'effect_id' | 'phase'>,
 	spread: Spread
 ): Record<string, EffectSpec> {
-	const effectId = crypto.randomUUID();
+	const effectId = uuid();
 	const offsets = phases(spread, fixtureIds.length);
 	const out: Record<string, EffectSpec> = {};
 	fixtureIds.forEach((id, i) => {
@@ -249,12 +267,12 @@ export function specsFor(
 /** Somewhere sensible to start, for whatever kind of parameter this is. */
 export function defaultSpec(kind: ParameterKind, fallback: ParameterValue): EffectSpec {
 	const numeric = fallback.type === 'Float' || fallback.type === 'Int';
-	const colour = fallback.type === 'Color';
+	const color = fallback.type === 'Color';
 	return {
-		effect_id: crypto.randomUUID(),
+		effect_id: uuid(),
 		// A boolean or a string has nothing between two values for a sine to trace, so
 		// it starts on the one shape that only ever asks for the ends.
-		curve: { Shape: numeric || colour ? 'Sine' : 'Square' },
+		curve: { Shape: numeric || color ? 'Sine' : 'Square' },
 		rate: { Hz: 0.5 },
 		low: zeroLike(fallback),
 		high: fullLike(fallback),
@@ -272,7 +290,7 @@ export function defaultSpec(kind: ParameterKind, fallback: ParameterValue): Effe
 export function shapesFor(value: ParameterValue): Shape[] {
 	if (value.type === 'Text') return [];
 	if (value.type === 'Bool') return ['Square'];
-	return ['Sine', 'Triangle', 'Square', 'SawUp', 'SawDown'];
+	return ['Sine', 'Triangle', 'Square', 'SawUp', 'SawDown', 'Flicker', 'Lightning'];
 }
 
 export function zeroLike(like: ParameterValue): ParameterValue {

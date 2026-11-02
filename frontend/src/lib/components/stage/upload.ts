@@ -3,7 +3,7 @@
  *
  * A designer is handed a PDF, so a PDF has to work — but a PDF in the render path
  * would mean shipping a document engine into both stage views. Page one is
- * rasterised here instead, and everything downstream only ever sees an image.
+ * rasterized here instead, and everything downstream only ever sees an image.
  */
 
 /** What the console will store, and what a PDF becomes on the way in. */
@@ -16,7 +16,7 @@ export type UploadedPlan = {
 };
 
 /** Render page one of a PDF to a PNG at roughly 150 dpi. */
-async function rasterisePdf(file: File): Promise<Blob> {
+async function rasterizePdf(file: File): Promise<Blob> {
 	// Loaded on demand: a document engine has no business in the main bundle for
 	// the sake of a file most shows will upload once.
 	const pdfjs = await import('pdfjs-dist');
@@ -47,7 +47,7 @@ async function rasterisePdf(file: File): Promise<Blob> {
 	);
 }
 
-/** How big an image is, which is what turns pixels into metres later. */
+/** How big an image is, which is what turns pixels into meters later. */
 function measure(blob: Blob): Promise<{ width: number; height: number }> {
 	return new Promise((resolve, reject) => {
 		const url = URL.createObjectURL(blob);
@@ -72,7 +72,7 @@ function measure(blob: Blob): Promise<{ width: number; height: number }> {
  */
 export async function uploadPlan(file: File, endpoint: string): Promise<UploadedPlan> {
 	const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
-	const blob = isPdf ? await rasterisePdf(file) : file;
+	const blob = isPdf ? await rasterizePdf(file) : file;
 	const mime = isPdf ? 'image/png' : file.type;
 
 	if (!IMAGE_TYPES.includes(mime)) {

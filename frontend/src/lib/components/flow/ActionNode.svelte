@@ -1,9 +1,26 @@
 <script lang="ts">
+	import Pick from '$lib/components/objects/Pick.svelte';
 	import type { NodeProps } from '@xyflow/svelte';
-	import type { FlowNode, TriggerAction } from '$lib/generated/index.js';
+	import type {
+		FlowNode,
+		IfRunning,
+		ParameterDefinition,
+		ParameterKind,
+		TriggerAction
+	} from '$lib/generated/index.js';
 	import { getDataContext } from '$lib/ws/context.js';
-	import { defaultValueFor, parameterKindLabel } from '$lib/patch.js';
-	import { actionOf } from '$lib/flow.js';
+	import { defaultValueFor, parameterKindLabel, parameterName } from '$lib/patch.js';
+	import {
+		actionOf,
+		currentValue,
+		flagOpFrom,
+		flagOpOf,
+		variableLabel,
+		variableOpFrom,
+		variableOpParts,
+		type FlagOp
+	} from '$lib/flow.js';
+	import HomeValue from '$lib/components/HomeValue.svelte';
 	import { getFlowContext } from './context.js';
 	import NodeShell from './NodeShell.svelte';
 
@@ -18,12 +35,40 @@
 
 	const set = (next: TriggerAction) => data.flow_nodes.byId(node.id).kind.set({ Action: next });
 
+	/**
+	 * What the thing it acts on is doing now: a variable's value, whether a timeline
+	 * runs, which cue a sequence is on.
+	 */
+	const live = $derived.by(() => {
+		if (!action) return null;
+		const a = action as Record<string, { variable_id?: string; timeline_id?: string; sequence_id?: string }>;
+		const target = Object.values(a)[0] ?? {};
+		if (target.variable_id) {
+			const v = show.variables.find((x) => x.id === target.variable_id);
+			return v ? { text: variableLabel(v), on: currentValue(v) !== 0 } : null;
+		}
+		if (target.timeline_id) {
+			const t = show.timelines.find((x) => x.id === target.timeline_id);
+			return t ? { text: t.running ? 'running' : 'stopped', on: t.running } : null;
+		}
+		if (target.sequence_id) {
+			const sq = show.sequences.find((x) => x.id === target.sequence_id);
+			if (!sq) return null;
+			if (sq.active_cue_index === null) return { text: 'off', on: false };
+			const cue = show.cues.find((c) => c.id === sq.cue_ids[sq.active_cue_index!]);
+			return { text: cue ? cue.name : 'on', on: true };
+		}
+		return null;
+	});
+
 	const sequenceId = $derived(
 		action && 'GoNext' in action
 			? action.GoNext.sequence_id
 			: action && 'GoToCue' in action
 				? action.GoToCue.sequence_id
-				: (show.sequences[0]?.id ?? '')
+				: action && 'Off' in action
+					? action.Off.sequence_id
+					: (show.sequences[0]?.id ?? '')
 	);
 	const cuesOf = (id: string) => {
 		const sequence = show.sequences.find((s) => s.id === id);
@@ -32,80 +77,216 @@
 			.filter((c) => c !== undefined);
 	};
 
-	/// Switching what an action does needs a whole new value, not a field edit —
-	/// the three shapes share no keys.
-	function retarget(nextTag: string) {
-		if (nextTag === 'GoNext') return set({ GoNext: { sequence_id: sequenceId } });
-		if (nextTag === 'GoToCue') {
-			const cue = cuesOf(sequenceId)[0];
-			if (!cue) return;
-			return set({ GoToCue: { sequence_id: sequenceId, cue_id: cue.id } });
-		}
-		const fixture = show.fixtures[0];
+	/// What an operator calls a parameter on one fixture: its label, or its kind.
+	const labelOn = (fixtureId: string, kind: ParameterKind) =>
+		parameterName(show.fixtures.find((f) => f.id === fixtureId), kind);
+
+	/// What an action can set on a fixture: what the console drives, never what the
+	/// fixture reports.
+	function outputsOf(fixtureId: string): ParameterDefinition[] {
+		const fixture = show.fixtures.find((f) => f.id === fixtureId);
 		const type = fixture && show.types.find((t) => t.id === fixture.fixture_type_id);
-		const parameter = type?.parameters.find((p) => p.direction === 'Output') ?? type?.parameters[0];
-		if (!fixture || !parameter) return;
+		return (type?.parameters ?? []).filter((p) => p.direction === 'Output');
+	}
+
+	function setParameter(fixtureId: string, label?: string) {
+		const parameters = outputsOf(fixtureId);
+		const parameter = parameters.find((p) => parameterKindLabel(p.kind) === label) ?? parameters[0];
+		if (!parameter) return;
 		return set({
 			SetParameter: {
-				fixture_id: fixture.id,
+				fixture_id: fixtureId,
 				parameter: parameter.kind,
 				value: defaultValueFor(parameter.kind)
 			}
 		});
 	}
+
+	/// Switching what an action does needs a whole new value, not a field edit —
+	/// the shapes share no keys.
+	function retarget(nextTag: string, sequence = sequenceId) {
+		switch (nextTag) {
+			case 'GoNext':
+				return set({ GoNext: { sequence_id: sequence } });
+			case 'GoToCue': {
+				const cue = cuesOf(sequence)[0];
+				if (!cue) return;
+				return set({ GoToCue: { sequence_id: sequence, cue_id: cue.id } });
+			}
+			case 'Off':
+				return set({ Off: { sequence_id: sequence } });
+			case 'SetVariable': {
+				const variable = show.variables[0];
+				if (!variable) return;
+				return set({ SetVariable: { variable_id: variable.id, op: { Add: 1 } } });
+			}
+			case 'PlayTimeline': {
+				const timeline = show.timelines[0];
+				if (!timeline) return;
+				return set({ PlayTimeline: { timeline_id: timeline.id, if_running: 'Ignore' } });
+			}
+			case 'StopTimeline': {
+				const timeline = show.timelines[0];
+				if (!timeline) return;
+				return set({ StopTimeline: { timeline_id: timeline.id } });
+			}
+			default: {
+				const fixture = show.fixtures.find((f) => outputsOf(f.id).length > 0);
+				if (fixture) return setParameter(fixture.id);
+			}
+		}
+	}
 </script>
 
-<NodeShell {node} title="Then">
+<NodeShell {node} {live} title="Then">
 	<select class="text-input nodrag" value={tag} onchange={(e) => retarget(e.currentTarget.value)}>
-		<option value="GoNext">go to the next cue</option>
-		<option value="GoToCue">go to a cue</option>
+		<option value="GoNext" disabled={show.sequences.length === 0}>go to the next cue</option>
+		<option value="GoToCue" disabled={show.sequences.length === 0}>go to a cue</option>
+		<option value="Off" disabled={show.sequences.length === 0}>take a sequence off</option>
 		<option value="SetParameter">set a parameter</option>
+		<option value="SetVariable" disabled={show.variables.length === 0}>change a variable</option>
+		<option value="PlayTimeline" disabled={show.timelines.length === 0}>play a timeline</option>
+		<option value="StopTimeline" disabled={show.timelines.length === 0}>stop a timeline</option>
 	</select>
 
-	{#if action && ('GoNext' in action || 'GoToCue' in action)}
-		<select
-			class="text-input nodrag"
-			value={sequenceId}
-			onchange={(e) =>
-				'GoToCue' in action
-					? retarget('GoToCue')
-					: set({ GoNext: { sequence_id: e.currentTarget.value } })}
-		>
-			{#each show.sequences as sequence (sequence.id)}
-				<option value={sequence.id}>{sequence.name}</option>
-			{/each}
-		</select>
+	{#if action && ('GoNext' in action || 'GoToCue' in action || 'Off' in action)}
+		<Pick class="text-input" rows={show.sequences} value={sequenceId} onpick={(id) => id && retarget(tag, id)} />
 	{/if}
 
 	{#if action && 'GoToCue' in action}
-		<select
-			class="text-input nodrag"
+		<Pick
+			class="text-input"
+			rows={cuesOf(sequenceId)}
 			value={action.GoToCue.cue_id}
-			onchange={(e) =>
-				set({ GoToCue: { sequence_id: sequenceId, cue_id: e.currentTarget.value } })}
-		>
-			{#each cuesOf(sequenceId) as cue (cue.id)}
-				<option value={cue.id}>{cue.number} · {cue.name}</option>
-			{/each}
-		</select>
+			label={(cue) => `${cue.number} · ${cue.name}`}
+			onpick={(id) => id && set({ GoToCue: { sequence_id: sequenceId, cue_id: id } })}
+		/>
 	{/if}
 
 	{#if action && 'SetParameter' in action}
 		{@const target = action.SetParameter}
+		<Pick
+			class="text-input"
+			rows={show.fixtures.filter((f) => outputsOf(f.id).length > 0)}
+			value={target.fixture_id}
+			onpick={(id) => id && setParameter(id)}
+		/>
 		<select
 			class="text-input nodrag"
-			value={target.fixture_id}
-			onchange={(e) => set({ SetParameter: { ...target, fixture_id: e.currentTarget.value } })}
+			value={parameterKindLabel(target.parameter)}
+			onchange={(e) => setParameter(target.fixture_id, e.currentTarget.value)}
 		>
-			{#each show.fixtures as fixture (fixture.id)}
-				<option value={fixture.id}>{fixture.name}</option>
+			{#each outputsOf(target.fixture_id) as param (parameterKindLabel(param.kind))}
+				<option value={parameterKindLabel(param.kind)}>{labelOn(target.fixture_id, param.kind)}</option>
 			{/each}
 		</select>
-		<span class="hint">{parameterKindLabel(target.parameter)} · a running fade wins over this.</span>
+		<div class="nodrag value">
+			<span class="unit">to</span>
+			<HomeValue
+				label={labelOn(target.fixture_id, target.parameter)}
+				value={target.value}
+				onchange={(value) => set({ SetParameter: { ...target, value } })}
+			/>
+		</div>
+		<span class="hint">Takes the parameter from any fade; the next cue takes it back.</span>
+	{/if}
+
+	{#if action && 'SetVariable' in action}
+		{@const target = action.SetVariable}
+		{@const parts = variableOpParts(target.op)}
+		{@const isFlag = show.variables.find((v) => v.id === target.variable_id)?.kind === 'Flag'}
+		<Pick
+			class="text-input"
+			rows={show.variables}
+			value={target.variable_id}
+			onpick={(id) => {
+				if (!id) return;
+				const next = show.variables.find((v) => v.id === id);
+				// A flag is told on, off or toggle; "add 1" carried over from a number
+				// would be a choice the flag's own menu cannot show.
+				const op = next?.kind === 'Flag' ? flagOpFrom(flagOpOf(target.op)) : target.op;
+				set({ SetVariable: { variable_id: id, op } });
+			}}
+		/>
+		{#if isFlag}
+			<select
+				class="text-input nodrag"
+				value={flagOpOf(target.op)}
+				onchange={(e) =>
+					set({ SetVariable: { ...target, op: flagOpFrom(e.currentTarget.value as FlagOp) } })}
+			>
+				<option value="On">turn on</option>
+				<option value="Off">turn off</option>
+				<option value="Toggle">toggle</option>
+			</select>
+		{:else}
+			<div class="row">
+				<select
+					class="text-input nodrag"
+					value={parts.tag}
+					onchange={(e) =>
+						set({
+							SetVariable: { ...target, op: variableOpFrom(e.currentTarget.value, parts.amount) }
+						})}
+				>
+					<option value="Add">add</option>
+					<option value="Subtract">subtract</option>
+					<option value="Set">set to</option>
+					<option value="Toggle">toggle</option>
+					<option value="Reset">reset</option>
+				</select>
+				{#if parts.tag === 'Add' || parts.tag === 'Subtract' || parts.tag === 'Set'}
+					<input
+						class="text-input nodrag amount"
+						type="number"
+						step="1"
+						value={parts.amount}
+						onchange={(e) =>
+							set({
+								SetVariable: {
+									...target,
+									op: variableOpFrom(parts.tag, e.currentTarget.valueAsNumber || 0)
+								}
+							})}
+					/>
+				{/if}
+			</div>
+		{/if}
+	{/if}
+
+	{#if action && ('PlayTimeline' in action || 'StopTimeline' in action)}
+		{@const timelineId =
+			'PlayTimeline' in action ? action.PlayTimeline.timeline_id : action.StopTimeline.timeline_id}
+		<Pick
+			class="text-input"
+			rows={show.timelines}
+			value={timelineId}
+			onpick={(id) =>
+				id &&
+				('PlayTimeline' in action
+					? set({ PlayTimeline: { ...action.PlayTimeline, timeline_id: id } })
+					: set({ StopTimeline: { timeline_id: id } }))}
+		/>
+		{#if 'PlayTimeline' in action}
+			{@const play = action.PlayTimeline}
+			<select
+				class="text-input nodrag"
+				value={play.if_running}
+				onchange={(e) =>
+					set({ PlayTimeline: { ...play, if_running: e.currentTarget.value as IfRunning } })}
+			>
+				<option value="Ignore">from the start, unless it is running</option>
+				<option value="Restart">from the start, even if running</option>
+			</select>
+		{/if}
 	{/if}
 </NodeShell>
 
 <style>
 	.text-input { background: #171717; border: 1px solid #3a3a3a; border-radius: 3px; color: #e0e0e0; padding: 3px 5px; font: inherit; font-size: 12px; width: 100%; }
+	.row { display: flex; gap: 4px; }
+	.amount { width: 56px; flex: none; }
+	.value { display: flex; align-items: center; gap: 5px; }
+	.unit { color: #777; font-size: 11px; }
 	.hint { color: #666; font-size: 10px; line-height: 1.3; }
 </style>

@@ -10,7 +10,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { barLength, chainFor, unitFor, zeroOf } from './dimensions.js';
-import { basisFor, mmPerMetre, type Camera } from './project.js';
+import { basisFor, mmPerMeter, type Camera } from './project.js';
 import type { Fixture, Vec3 } from '../generated/index.js';
 import type { Metrics } from './font.js';
 
@@ -24,12 +24,12 @@ const FLAT: Metrics = {
 
 const camera: Camera = {
 	basis: basisFor('plan'),
-	centre: { x: 0, y: 0, z: 0 },
-	scale: mmPerMetre(50),
+	center: { x: 0, y: 0, z: 0 },
+	scale: mmPerMeter(50),
 	rect: { x: 0, y: 0, w: 200, h: 200 }
 };
 
-/** A head at `x` metres along its bar. */
+/** A head at `x` meters along its bar. */
 function head(x: number): Fixture {
 	return {
 		id: `f${x}`,
@@ -63,8 +63,8 @@ describe('the datum', () => {
 		expect(zeroOf('Right', 12)).toBe(6);
 	});
 
-	it('measures from the centre line', () => {
-		expect(zeroOf('Centre', 12)).toBe(0);
+	it('measures from the center line', () => {
+		expect(zeroOf('Center', 12)).toBe(0);
 	});
 
 	it('reads the length of a bar off its own size', () => {
@@ -74,13 +74,13 @@ describe('the datum', () => {
 });
 
 describe('how a distance is written', () => {
-	it('is millimetres on a short bar, which is what a tape reads', () => {
+	it('is millimeters on a short bar, which is what a tape reads', () => {
 		const write = unitFor(6);
 		expect(write(1.5)).toBe('1500');
 		expect(write(0.325)).toBe('325');
 	});
 
-	it('is metres on a long one, so nobody counts digits', () => {
+	it('is meters on a long one, so nobody counts digits', () => {
 		expect(unitFor(14)(12.5)).toBe('12.50 m');
 	});
 
@@ -104,7 +104,7 @@ describe('a chain along a bar', () => {
 		const texts = textsOf(
 			chainFor(heads, SIZE, square, camera, { datum: 'Left', running: false, above: false }, FLAT)
 		);
-		// Three metres between each of the two pairs.
+		// Three meters between each of the two pairs.
 		expect(texts.filter((t) => t === '3000')).toHaveLength(2);
 	});
 
@@ -112,7 +112,7 @@ describe('a chain along a bar', () => {
 		const texts = textsOf(
 			chainFor(heads, SIZE, square, camera, { datum: 'Left', running: true, above: false }, FLAT)
 		);
-		// From the left end at −6 m: 2 m, 5 m, 8 m. Millimetres, because the longest
+		// From the left end at −6 m: 2 m, 5 m, 8 m. Millimeters, because the longest
 		// figure on this bar is 8 m.
 		expect(texts).toContain('2000');
 		expect(texts).toContain('5000');
@@ -123,7 +123,7 @@ describe('a chain along a bar', () => {
 		const texts = textsOf(
 			chainFor(heads, SIZE, square, camera, { datum: 'Right', running: true, above: false }, FLAT)
 		);
-		// From the right end at +6 m: 10 m, 7 m, 4 m — and the whole chain in metres,
+		// From the right end at +6 m: 10 m, 7 m, 4 m — and the whole chain in meters,
 		// because its longest figure is over ten.
 		expect(texts).toContain('10.00 m');
 		expect(texts).toContain('7.00 m');

@@ -31,6 +31,7 @@
 	import { onMount } from 'svelte';
 
 	import type {
+		ChannelTest,
 		InputConfig,
 		InputStatus,
 		OutputConfig,
@@ -39,7 +40,29 @@
 	} from '$lib/generated/index.js';
 	import { getClientContext, getDataContext } from '$lib/ws/context.js';
 	import { Wire, wireKey } from '$lib/wire.js';
-	import { viewFor } from './views.js';
+	import { emptyTest, forcedCount, isEmpty } from '$lib/dmxtest.js';
+	import { viewFor, type Tester } from './views.js';
+	import Help from '../Help.svelte';
+	import { collection } from '$lib/stores/show.js';
+	import { openSetup } from '$lib/stores/setup.js';
+
+	const fixtures = collection('fixtures');
+	/**
+	 * DMX universes the rig is patched on that no enabled Art-Net or sACN output
+	 * carries. Nothing goes out for them, so there is no wire to show — and saying so
+	 * by name beats a picker that simply does not offer them.
+	 */
+	const uncarried = $derived.by(() => {
+		const patched = new Set<number>();
+		for (const f of $fixtures) {
+			if ('Dmx' in f.address) for (const b of f.address.Dmx.breaks) patched.add(b.universe);
+		}
+		const dmx = outputs.filter((o) => o.enabled && (o.kind === 'Artnet' || o.kind === 'Sacn'));
+		// An output naming no universes carries every universe in the patch.
+		if (dmx.some((o) => o.universes.length === 0)) return [];
+		const carried = new Set(dmx.flatMap((o) => o.universes));
+		return [...patched].filter((u) => !carried.has(u)).sort((a, b) => a - b);
+	});
 
 	const client = getClientContext();
 	const data = getDataContext();
@@ -97,6 +120,55 @@
 	]);
 
 	const selected = $derived(offered.find((each) => each.key === watching) ?? null);
+
+	/**
+	 * What this browser is forcing on the wire it is looking at.
+	 *
+	 * **Held only while the page is here and on this wire.** The station keeps it per
+	 * session and lets go when the socket closes, and this lets go of everything the
+	 * moment the panel moves to another wire or unmounts — a tester that left a light
+	 * at full because somebody picked a different output in a dropdown would be a
+	 * diagnostic that outlived the person making it. Held in this component, not in a
+	 * store, for the same reason.
+	 */
+	let test = $state<ChannelTest>(emptyTest());
+	/** One send per animation frame however many times a slider fires. */
+	let sendQueued = false;
+
+	const forcing = $derived(!isEmpty(test));
+
+	function sendTest() {
+		sendQueued = false;
+		if (!watching) return;
+		const [nodeId, outputId] = watching.split(':');
+		client.call('output.test', { nodeId, outputId, test }).catch(() => {});
+	}
+
+	function setTest(next: ChannelTest) {
+		test = next;
+		// An empty test is a release and goes at once: it is the message that must not
+		// wait for the next frame, which a hidden tab never serves.
+		if (isEmpty(next)) return sendTest();
+		if (!sendQueued) {
+			sendQueued = true;
+			requestAnimationFrame(sendTest);
+			// And a timer behind it, because a backgrounded tab is served no frames.
+			setTimeout(() => sendQueued && sendTest(), 100);
+		}
+	}
+
+	/** Let go of whatever is forced on the wire being left, before leaving it. */
+	function releaseOn(key: string | null) {
+		if (!key || isEmpty(test)) return;
+		const [nodeId, outputId] = key.split(':');
+		client.call('output.test', { nodeId, outputId }).catch(() => {});
+		test = emptyTest();
+	}
+
+	/** Offered on an output's own wire; an input has nothing to put a level on. */
+	const tester = $derived<Tester | undefined>(
+		selected && !selected.incoming ? { test, set: setTest } : undefined
+	);
 	const view = $derived.by((): OutputView | undefined => {
 		version;
 		return watching ? wire.view(watching) : undefined;
@@ -121,6 +193,7 @@
 	async function watch(key: string | null, at: string | null) {
 		if (watching === key && focus === at) return;
 		if (watching && watching !== key) {
+			releaseOn(watching);
 			const [nodeId, outputId] = watching.split(':');
 			client.call('output.unwatch', { nodeId, outputId }).catch(() => {});
 			wire.forget(watching);
@@ -140,6 +213,14 @@
 	}
 
 	onMount(() => {
+		// While something is forced, say so again every few seconds. The station holds
+		// the test and keeps it until this page goes, so on a wire this station runs
+		// that is a no-op; on a peer's — or on one naming no station, which the station
+		// sends to every peer — it is what carries the test across a link that dropped
+		// and came back, which forgets everything on the far side.
+		const holding = setInterval(() => {
+			if (!isEmpty(test)) sendTest();
+		}, 3000);
 		const stopOutputs = data.outputs.subscribeDeep((v) => {
 			outputs = v;
 			// The first enabled output, so the panel opens on something rather than on
@@ -181,12 +262,18 @@
 				const [nodeId, outputId] = watching.split(':');
 				asked_at = Date.now();
 				client.call('output.watch', { nodeId, outputId, focus }).catch(() => {});
+				// The new session knows nothing of what the old one was forcing, and
+				// the station let go when the old socket closed. Say it again only if
+				// there is something to say; it is the operator's, not the station's.
+				if (!isEmpty(test)) sendTest();
 			}
 		};
 		fetchLocal();
 		const stopConnect = client.addConnectListener(fetchLocal);
 
 		return () => {
+			clearInterval(holding);
+			releaseOn(watching);
 			letGo();
 			stopOutputs();
 			stopInputs();
@@ -201,13 +288,26 @@
 
 <div class="wire">
 	<header>
-		<h2>On the wire</h2>
+		<h2>
+			On the wire
+			<Help label="About this panel">
+				<p>
+					What each output put on its cable, and what each input received. Drawn ten times a
+					second while you are looking, and not sent again when nothing has changed — so a
+					settled rig holds still rather than going blank.
+				</p>
+				<p>
+					An input shows the <em>merged</em> image: highest priority present, and the highest of
+					each slot among equals.
+				</p>
+			</Help>
+		</h2>
 		<select
 			class="picker"
 			value={watching ?? ''}
 			onchange={(e) => watch(e.currentTarget.value || null, null)}
 		>
-			<option value="">nothing</option>
+			<option value="" disabled hidden>Choose a wire…</option>
 			{#each offered as each (each.key)}
 				<option value={each.key}>
 					{each.incoming ? '← ' : ''}{each.name}
@@ -218,6 +318,25 @@
 			{/each}
 		</select>
 	</header>
+
+	{#if forcing}
+		<p class="forcing">
+			Forcing {forcedCount(test)} {forcedCount(test) === 1 ? 'channel' : 'channels'} on this wire.
+			The show is not in control of {forcedCount(test) === 1 ? 'it' : 'them'} until you let go.
+			<button class="btn btn-ghost btn-small" onclick={() => setTest(emptyTest())}>
+				Release all
+			</button>
+		</p>
+	{/if}
+
+	{#if uncarried.length > 0}
+		<p class="uncarried">
+			{uncarried.length === 1 ? 'Universe' : 'Universes'} {uncarried.join(', ')}
+			{uncarried.length === 1 ? 'is' : 'are'} patched, but no Art-Net or sACN output carries
+			{uncarried.length === 1 ? 'it' : 'them'}, so nothing goes out.
+			<button class="btn btn-ghost btn-small" onclick={() => openSetup('outputs')}>Add an output</button>
+		</p>
+	{/if}
 
 	{#if offered.length === 0}
 		<p class="empty">
@@ -232,22 +351,19 @@
 		{#each view.sections as section, at (at)}
 			{@const Section = viewFor(section.body.shape)}
 			<section class="block">
-				<h3>{section.title}</h3>
-				{#if section.note}<p class="note">{section.note}</p>{/if}
+				<h3>
+					{section.title}
+					{#if section.note}<Help label="About {section.title}">{section.note}</Help>{/if}
+				</h3>
 				<Section
 					shape={section.body.shape}
 					of={section.body.of}
 					focus={view.focus}
 					ask={(next: string | null) => watch(watching, next)}
+					{tester}
 				/>
 			</section>
 		{/each}
-		<p class="foot">
-			Drawn ten times a second while you are looking, and not sent again when nothing has
-			changed — so a settled rig holds still rather than going blank. An input shows the
-			<em>merged</em> image: highest priority present, and the highest of each slot among
-			equals.
-		</p>
 	{/if}
 </div>
 
@@ -255,10 +371,12 @@
 	.wire { padding: 16px 20px; }
 	header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
 	h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: #999; }
+	h2, h3 { display: flex; align-items: center; gap: 6px; }
 	h3 { font-size: 12px; font-weight: 600; color: #ccc; margin: 0 0 6px; }
+	.uncarried { color: #e0a060; font-size: 12px; margin: 0 0 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+	.forcing { color: #ffd58a; background: #2a2010; border: 1px solid #5a4416; border-radius: 4px; font-size: 12px; margin: 0 0 12px; padding: 6px 10px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+	.btn-small { min-height: 24px; padding: 0 10px; font-size: 12px; }
 	.picker { background: #171717; border: 1px solid #3a3a3a; border-radius: 3px; color: #e0e0e0; padding: 4px 6px; font: inherit; }
 	.block { margin-bottom: 20px; }
-	.note { color: #777; font-size: 12px; margin: 0 0 8px; }
 	.empty { color: #777; font-size: 13px; padding: 8px 0; }
-	.foot { color: #666; font-size: 12px; margin-top: 12px; font-style: italic; }
 </style>

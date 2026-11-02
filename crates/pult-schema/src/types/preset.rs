@@ -7,11 +7,11 @@
 //!
 //! # Any mix, one pool
 //!
-//! Other desks separate intensity, position, colour and beam palettes. This one keeps
+//! Other desks separate intensity, position, color and beam palettes. This one keeps
 //! a single flat pool of presets whose values may be any mixture — a preset *is* a
-//! look, and a look is usually a position and a colour together. The group tags an
+//! look, and a look is usually a position and a color together. The group tags an
 //! operator filters by (I / P / C / B / O) are **derived from the keys** it holds and
-//! never stored, so a preset that grows a colour is a colour preset from that moment
+//! never stored, so a preset that grows a color is a color preset from that moment
 //! and nobody has to reclassify it.
 //!
 //! # Reference first, literal beside it
@@ -65,6 +65,17 @@ pub struct Preset {
     /// is legal and does nothing — which is what one being built looks like.
     #[pult(lifecycle = PERSISTED)]
     pub values: Vec<PresetValue>,
+    /// The card's color, as `#rrggbb`, or `None` for its panel category's color.
+    /// What an operator paints a pool object to find it again; it means nothing to
+    /// the rig.
+    #[serde(default)]
+    #[pult(lifecycle = PERSISTED)]
+    pub color: Option<String>,
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    #[pult(lifecycle = PERSISTED)]
+    pub folder: Option<Uuid>,
 }
 
 impl Preset {
@@ -107,6 +118,8 @@ mod tests {
 
     fn preset() -> Preset {
         Preset {
+            folder: None,
+            color: None,
             id: Uuid::from_u128(1),
             name: "Warm".into(),
             values: vec![
@@ -145,6 +158,8 @@ mod tests {
     #[test]
     fn an_indexed_kind_matches_by_key() {
         let preset = Preset {
+            folder: None,
+            color: None,
             id: Uuid::from_u128(2),
             name: "Break-up".into(),
             values: vec![PresetValue {

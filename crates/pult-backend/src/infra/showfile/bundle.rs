@@ -24,7 +24,7 @@
 //! tie-break. A folder is far easier to copy than a file was, so the identity moved
 //! to the machine: see [`crate::infra::identity`].
 //!
-//! The travelling form is a `.pultz`, which is this folder zipped. See
+//! The traveling form is a `.pultz`, which is this folder zipped. See
 //! [`super::travel`].
 
 use std::path::{Path, PathBuf};
@@ -37,7 +37,7 @@ use tracing::{info, warn};
 /// thing and this console can tell a show from any other folder it is pointed at.
 pub const EXTENSION: &str = "pult";
 
-/// The travelling form: the same folder, zipped.
+/// The traveling form: the same folder, zipped.
 pub const TRAVEL_EXTENSION: &str = "pultz";
 
 /// The manifest at the root of a bundle. Tiny on purpose: everything a show knows
@@ -279,6 +279,8 @@ impl Bundle {
 
         let generation: i64 =
             sqlx::query_scalar("PRAGMA user_version").fetch_one(&pool).await.unwrap_or(0);
+        summary.generation = Some(generation);
+        summary.upgradable = super::upgrade::upgradable(generation);
         if generation != super::SCHEMA_GENERATION {
             summary.made_by_another_build = true;
             // Nothing below can be trusted to parse, but the counts are integers out
@@ -347,6 +349,11 @@ pub struct Summary {
     /// `PRAGMA user_version` disagrees with this build. Said rather than refused: a
     /// welcome screen listing ten shows must not fail because one of them is old.
     pub made_by_another_build: bool,
+    /// Which generation it is, where it could be read.
+    pub generation: Option<i64>,
+    /// Older than this build, and a step reaches it: opening it asks first. See
+    /// `infra::showfile::upgrade`.
+    pub upgradable: bool,
     /// Whatever went wrong reading it, where something did.
     pub problem: Option<String>,
 }
@@ -549,7 +556,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_show_that_was_never_opened_still_summarises() {
+    async fn a_show_that_was_never_opened_still_summarizes() {
         let dir = Dir::new();
         let bundle = Bundle::create(dir.path().join("Fresh.pult"), "Fresh").unwrap();
 

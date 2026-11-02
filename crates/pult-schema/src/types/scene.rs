@@ -24,7 +24,7 @@
 //! composing transforms needs a case there or it is only half implemented.
 //!
 //! The arithmetic is small and deliberately not shared with `pult-mvr`'s: that crate
-//! converts between MVR's millimetre Z-up space and this one, which is a different
+//! converts between MVR's millimeter Z-up space and this one, which is a different
 //! job from composing two placements in this one. What holds them together is a case
 //! in the same corpus that starts from a matrix as a file writes it.
 
@@ -39,7 +39,7 @@ use crate::PultSchema;
 
 /// Where something is, what it is turned to, and how big it is.
 ///
-/// Metres, and XYZ Euler degrees — three.js's default order, and so the console's,
+/// Meters, and XYZ Euler degrees — three.js's default order, and so the console's,
 /// stated here and assumed everywhere else.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -189,24 +189,24 @@ pub struct SceneObject {
     /// one mesh rather than forty.
     #[pult(lifecycle = PERSISTED)]
     pub symbol: Option<Uuid>,
-    /// Or none of the above: a piece out of the console's own catalogue, named
-    /// rather than modelled — `"f34-2m"` is two metres of box truss and the browser
+    /// Or none of the above: a piece out of the console's own catalog, named
+    /// rather than modeled — `"f34-2m"` is two meters of box truss and the browser
     /// draws one.
     ///
     /// Last of the three, and a mesh that came with a drawing wins: it is the truth
     /// about that object. This is what a console draws for a rig it made itself,
     /// where until now there was nothing to draw and the lights hung in the air.
     ///
-    /// See [`crate::types::catalogue`].
+    /// See [`crate::types::catalog`].
     #[serde(default)]
     #[pult(lifecycle = PERSISTED)]
-    pub catalogue: Option<String>,
-    /// What a piece out of the catalogue was asked for: a deck's leg height, a
-    /// panel's finish. Declared per piece in [`crate::types::catalogue`], so the
+    pub catalog: Option<String>,
+    /// What a piece out of the catalog was asked for: a deck's leg height, a
+    /// panel's finish. Declared per piece in [`crate::types::catalog`], so the
     /// keys are the piece's and an object carrying a key the piece never declared
     /// is simply ignored rather than refused.
     ///
-    /// An object out of a drawing has an empty map: a mesh somebody modelled says
+    /// An object out of a drawing has an empty map: a mesh somebody modeled says
     /// what it is, and there is nothing here to ask it.
     ///
     /// A JSON column, the way `PluginPackage::config` is.
@@ -217,18 +217,18 @@ pub struct SceneObject {
     ///
     /// The show's rather than the browser's, unlike layer visibility: locking the
     /// house rig so nobody drags it is a decision about the rig, and a lock only
-    /// one screen honoured would be no lock at all. A locked object is still drawn,
+    /// one screen honored would be no lock at all. A locked object is still drawn,
     /// still pickable and still says what it is — what it has is no gizmo.
     #[serde(default)]
     #[pult(lifecycle = PERSISTED)]
     pub locked: bool,
     /// What this one weighs, in kilograms, where somebody has said.
     ///
-    /// Overrides the nominal figure a catalogue piece carries, and is the only weight
+    /// Overrides the nominal figure a catalog piece carries, and is the only weight
     /// there is for an object out of a drawing — MVR says where a truss is and never
     /// what it weighs. A loading table distinguishes the two: a total resting on
     /// entered weights is a different claim from one resting on
-    /// [`crate::types::catalogue::StockPiece::weight_kg`], and printing them as the
+    /// [`crate::types::catalog::StockPiece::weight_kg`], and printing them as the
     /// same number is how a nominal figure becomes a rigging decision.
     #[serde(default)]
     #[pult(lifecycle = PERSISTED)]
@@ -370,7 +370,7 @@ pub fn by_id(objects: &[SceneObject]) -> HashMap<Uuid, &SceneObject> {
 ///
 /// Worked out through the matrix rather than by negating the three fields, because
 /// negating them is only right when there is no rotation: the inverse of "moved two
-/// metres and then turned" is "turned back and then moved two metres in the turned
+/// meters and then turned" is "turned back and then moved two meters in the turned
 /// frame", and −position is neither half of that.
 pub fn inverse(transform: &Transform) -> Transform {
     from_matrix(invert(to_matrix(transform)))

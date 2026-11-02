@@ -8,7 +8,7 @@
 //! It belongs to *this station* and not to the show, so it is not in the show. It
 //! used to be beside it — `show.db.node` — which was already the right idea and the
 //! wrong place, and a show became a folder is what made that plain: a folder is a
-//! thing an operator drags onto a stick, and if the id travelled with it the second
+//! thing an operator drags onto a stick, and if the id traveled with it the second
 //! machine to open the show would claim the first one's outputs and break the vector
 //! clock's tie-break, which resolves concurrent writes by comparing node ids and
 //! needs them to differ.

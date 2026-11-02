@@ -2,7 +2,7 @@
 //!
 //! The checked-in fixtures under `testdata/gdtf/` are the material, zipped in memory
 //! the way `pult-gdtf`'s own tests build them. What is asserted here is the
-//! *translation* — that a 16-bit pan comes through as two offsets, that four colour
+//! *translation* — that a 16-bit pan comes through as two offsets, that four color
 //! channels come through as one parameter with four emitters, that a mode's footprint
 //! is what the patch panel will show — because `pult-gdtf` has already proved it read
 //! the file correctly.
@@ -81,7 +81,7 @@ fn the_parameter_list_is_what_the_light_can_do_across_every_mode() {
         "the dimmer is on break 2 and is still a parameter",
     );
 
-    // Four colour channels, one colour parameter.
+    // Four color channels, one color parameter.
     assert_eq!(
         kinds.iter().filter(|k| **k == ParameterKind::ColorRgb).count(),
         1,
@@ -90,18 +90,18 @@ fn the_parameter_list_is_what_the_light_can_do_across_every_mode() {
 }
 
 #[test]
-fn the_colour_parameter_carries_the_dies_that_make_it() {
+fn the_color_parameter_carries_the_dies_that_make_it() {
     let (fixture_type, _) = derive("rgbw-two-mode");
-    let colour = fixture_type
+    let color = fixture_type
         .parameters
         .iter()
         .find(|p| p.kind == ParameterKind::ColorRgb)
-        .expect("a colour");
+        .expect("a color");
 
-    let names: Vec<&str> = colour.emitters.iter().map(|e| e.name.as_str()).collect();
+    let names: Vec<&str> = color.emitters.iter().map(|e| e.name.as_str()).collect();
     assert_eq!(names, vec!["Red", "Green", "Blue", "White"]);
-    assert!(colour.emitters.iter().all(|e| !e.subtractive), "an LED head adds light");
-    let red = &colour.emitters[0];
+    assert!(color.emitters.iter().all(|e| !e.subtractive), "an LED head adds light");
+    let red = &color.emitters[0];
     let rgb = red.rgb.expect("the file measured it");
     assert!(rgb.x > rgb.y && rgb.x > rgb.z, "red points at red: {rgb:?}");
 }
@@ -168,17 +168,17 @@ fn a_second_break_becomes_a_second_index_rather_than_a_second_universe() {
 }
 
 #[test]
-fn each_colour_channel_says_which_die_it_drives() {
+fn each_color_channel_says_which_die_it_drives() {
     let (fixture_type, _) = derive("rgbw-two-mode");
     let mode = fixture_type.mode("Standard");
-    let colour: Vec<(&str, Vec<u16>)> = mode
+    let color: Vec<(&str, Vec<u16>)> = mode
         .channels
         .iter()
         .filter(|channel| channel.parameter_key == parameter_key(&ParameterKind::ColorRgb))
         .map(|channel| (channel.emitter.as_deref().unwrap_or(""), channel.offsets.clone()))
         .collect();
     assert_eq!(
-        colour,
+        color,
         vec![
             ("Red", vec![3]),
             ("Green", vec![4]),
@@ -224,19 +224,19 @@ fn the_paperwork_comes_across() {
 ///
 /// The first version of this read the outermost geometry's own model, which on a real
 /// moving head is the base: importing a Robe MegaPointe gave it a height of nine and a
-/// half centimetres. The envelope is every part's box at the place its geometry puts
+/// half centimeters. The envelope is every part's box at the place its geometry puts
 /// it, which is what a rider wants and what a case needs to fit.
 #[test]
 fn the_dimensions_are_the_whole_fixtures_rather_than_its_first_parts() {
     let (fixture_type, _) = derive("rgbw-two-mode");
     let size = fixture_type.physical.dimensions_m.expect("the file said how big it is");
 
-    // Base 0.4 × 0.4 × 0.3 centred at the origin, so −0.15 to 0.15. Yoke 300 mm up and
+    // Base 0.4 × 0.4 × 0.3 centered at the origin, so −0.15 to 0.15. Yoke 300 mm up and
     // 0.4 tall, head 200 mm above that, beam 150 mm above that again — whose box tops
-    // out at 0.85. One metre, end to end, and taller than any one part.
+    // out at 0.85. One meter, end to end, and taller than any one part.
     assert!(
         size.y > 0.3,
-        "the base alone is 0.3 tall and the head is half a metre above it: {size:?}",
+        "the base alone is 0.3 tall and the head is half a meter above it: {size:?}",
     );
     assert!((size.y - 1.0).abs() < 0.01, "{size:?}");
     assert_eq!(size.x, 0.4, "and no wider than its widest part");
@@ -261,7 +261,7 @@ fn the_geometry_tree_comes_across_flat_in_the_consoles_own_axes() {
         "pan turns the outer axis and tilt the inner one",
     );
 
-    // The yoke sits 300 mm up the base. Millimetres Z-up become metres Y-up.
+    // The yoke sits 300 mm up the base. Millimeters Z-up become meters Y-up.
     let yoke = &fixture_type.geometry[1];
     assert_eq!(yoke.offset.y, 0.3);
     assert_eq!(yoke.offset.x, 0.0);
@@ -284,6 +284,69 @@ fn a_multi_cell_bar_is_patched_as_the_whole_bar_rather_than_one_cell() {
     assert_eq!(mode.channels.len(), 16);
 }
 
+/// And it is one fixture with four cells, not one with a single color sixteen channels
+/// deep: every referenced pixel is a cell, and each of its channels names its own.
+#[test]
+fn a_multi_cell_bar_has_a_cell_per_referenced_pixel() {
+    let (fixture_type, _) = derive("multicell-bar");
+    assert_eq!(fixture_type.cells, 4);
+    assert!(fixture_type.parameters.iter().any(|p| p.per_cell));
+    let mode = fixture_type.mode("Pixel");
+    let cells: std::collections::BTreeSet<&str> =
+        mode.channels.iter().filter_map(|c| c.parameter_key.split_once('@').map(|(_, n)| n)).collect();
+    assert_eq!(cells.into_iter().collect::<Vec<_>>(), ["1", "2", "3", "4"]);
+    for channel in &mode.channels {
+        assert!(fixture_type.parameter_for_key(&channel.parameter_key).is_some(), "{}", channel.parameter_key);
+    }
+}
+
+/// A master dimmer on the bar and a dimmer on each cell are two parameters of one kind,
+/// and a one-color mode's RGB is the whole bar's rather than cell 1's.
+#[test]
+fn a_bar_has_a_master_beside_its_cells_and_a_one_color_mode_is_the_whole_bar() {
+    let (fixture_type, warnings) = derive("mastered-bar");
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(fixture_type.cells, 3);
+
+    let declared: Vec<(String, bool)> = fixture_type
+        .parameters
+        .iter()
+        .map(|p| (parameter_key(&p.kind), p.per_cell))
+        .collect();
+    for wanted in [("Intensity", false), ("Intensity", true), ("ColorRgb", false), ("ColorRgb", true)] {
+        assert!(
+            declared.contains(&(wanted.0.to_string(), wanted.1)),
+            "{wanted:?} is declared: {declared:?}"
+        );
+    }
+
+    let keys = |mode: &str| -> std::collections::BTreeSet<String> {
+        fixture_type.mode(mode).channels.iter().map(|c| c.parameter_key.clone()).collect()
+    };
+    let pixel = keys("Pixel");
+    assert!(pixel.contains("Intensity"), "the master is the bar's: {pixel:?}");
+    for cell in 1..=3 {
+        assert!(pixel.contains(&format!("Intensity@{cell}")), "{pixel:?}");
+        assert!(pixel.contains(&format!("ColorRgb@{cell}")), "{pixel:?}");
+    }
+    assert!(!pixel.contains("ColorRgb"), "the pixel mode has no whole-bar color: {pixel:?}");
+    assert_eq!(
+        keys("Single").into_iter().collect::<Vec<_>>(),
+        ["ColorRgb", "Intensity"],
+        "the one-color mode drives the whole bar, not cell 1"
+    );
+
+    // Every key a mode carries reads back to its own definition.
+    for mode in ["Pixel", "Single"] {
+        for channel in &fixture_type.mode(mode).channels {
+            let definition = fixture_type
+                .parameter_for_key(&channel.parameter_key)
+                .unwrap_or_else(|| panic!("{} reads back", channel.parameter_key));
+            assert_eq!(definition.per_cell, channel.parameter_key.contains('@'), "{}", channel.parameter_key);
+        }
+    }
+}
+
 #[test]
 fn a_minimal_file_is_still_a_fixture_type() {
     let (fixture_type, warnings) = derive("minimal");
@@ -293,4 +356,34 @@ fn a_minimal_file_is_still_a_fixture_type() {
     assert_eq!(fixture_type.parameters.len(), 1);
     assert_eq!(fixture_type.parameters[0].kind, ParameterKind::Intensity);
     assert_eq!(fixture_type.physical.beam_angle_deg, Some(25.0));
+}
+
+/// Two channels, two parameters. A strobe's rate and its flash length both went to
+/// `Strobe` and the type declared one parameter for two channels — a Martin Atomic
+/// 3000 from the GDTF Share had no way to set how long a flash lasts, and its rate
+/// went out on both. And where two spellings of one thing share a mode, the second
+/// keeps its own name rather than vanishing under the first.
+#[test]
+fn every_channel_of_a_mode_is_a_parameter_of_its_own() {
+    let (fixture_type, _) = derive("two-strobes");
+    for mode in &fixture_type.dmx_modes {
+        let keys: Vec<&str> = mode.channels.iter().map(|c| c.parameter_key.as_str()).collect();
+        let mut distinct = keys.clone();
+        distinct.sort();
+        distinct.dedup();
+        assert_eq!(distinct.len(), keys.len(), "{} puts two channels under one key: {keys:?}", mode.name);
+        for key in keys {
+            assert!(fixture_type.parameter_for_key(key).is_some(), "{key} in {} is a parameter", mode.name);
+        }
+    }
+    let atomic = &fixture_type.dmx_modes[0];
+    let keys: Vec<&str> = atomic.channels.iter().map(|c| c.parameter_key.as_str()).collect();
+    assert_eq!(keys, ["Intensity", "Named:StrobeDuration", "Strobe"]);
+    let spellings = &fixture_type.dmx_modes[1];
+    let keys: Vec<&str> = spellings.channels.iter().map(|c| c.parameter_key.as_str()).collect();
+    assert_eq!(
+        keys,
+        ["Named:Shutter1Strobe", "Strobe"],
+        "the spelling that reached the key first in the file keeps it in every mode"
+    );
 }

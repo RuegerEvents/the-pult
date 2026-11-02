@@ -10,7 +10,7 @@
 	 * commands — opening a show is nobody's to undo and must not be told to a peer.
 	 * Each of them answers and *then* the station stops, so this page's socket closes
 	 * and reconnects onto the new console, which `stores/station.ts` turns into a
-	 * reload. That is why nothing here waits for a result beyond the acknowledgement.
+	 * reload. That is why nothing here waits for a result beyond the acknowledgment.
 	 */
 
 	import { onMount } from 'svelte';
@@ -18,11 +18,20 @@
 	import { getClientContext } from '$lib/ws/context.js';
 	import { addToast } from '$lib/toasts.js';
 	import { backendOrigin } from '$lib/ws/endpoint.js';
-	import { baseName, folderName, links, orderRecent, type ShowList } from '$lib/shows.js';
+	import {
+		baseName,
+		folderName,
+		links,
+		orderRecent,
+		upgradeAsked,
+		type ShowList,
+		type Upgrade
+	} from '$lib/shows.js';
 	import { focusOnMount, selectOnMount } from '$lib/actions.js';
 	import { beginSwitch, endSwitch } from '$lib/stores/switching.js';
 	import DemoCard from './DemoCard.svelte';
 	import ShowCard from './ShowCard.svelte';
+	import UpgradeDialog from '../UpgradeDialog.svelte';
 
 	let {
 		version,
@@ -38,11 +47,13 @@
 	let draft = $state('');
 	let openingPath = $state('');
 	let importing = $state(false);
+	/** A show the station asked about before upgrading it, while somebody decides. */
+	let upgrading = $state<{ path: string; name: string; upgrade: Upgrade } | null>(null);
 	/**
 	 * What is on the network, as the LOCAL `session` state reports it.
 	 *
 	 * Subscribed here rather than read from a store, because there is no store for
-	 * it — `SessionPanel` does the same, and this is the second reader rather than
+	 * it — `StationsPanel` does the same, and this is the second reader rather than
 	 * the reason to build one.
 	 */
 	type Discovered = { session_id: string; show_name: string; sync_addr: string };
@@ -71,7 +82,14 @@
 		busy = true;
 		beginSwitch(doing);
 		try {
-			await client.call(method, args);
+			const answer = await client.call(method, args);
+			// Asked rather than opened: the station is still up, and so is this page.
+			const asked = upgradeAsked(answer);
+			if (asked) {
+				endSwitch();
+				busy = false;
+				upgrading = { path: String(args.path), name: baseName(String(args.path)), upgrade: asked };
+			}
 		} catch (e) {
 			endSwitch();
 			addToast(`${e}`);
@@ -142,6 +160,22 @@
 	});
 </script>
 
+{#if upgrading}
+	{@const asking = upgrading}
+	<UpgradeDialog
+		name={asking.name}
+		upgrade={asking.upgrade}
+		onclose={() => (upgrading = null)}
+		onaccept={() => {
+			// Read before clearing: `asking` follows `upgrading`, and is null the moment
+			// it is cleared — which threw, and the button did nothing at the gig.
+			const { path, name } = asking;
+			upgrading = null;
+			void ask('show.open', { path, upgrade: true }, `upgrading ${name}`);
+		}}
+	/>
+{/if}
+
 <div class="welcome">
 	<header>
 		<h1>the-pult</h1>
@@ -210,6 +244,23 @@
 			<p class="where warn">This console has nowhere to keep shows.</p>
 		{/if}
 	</section>
+
+	{#if list?.waitingToUpgrade}
+		{@const waiting = list.waitingToUpgrade}
+		<section class="waiting">
+			<p>
+				<strong>{baseName(waiting)}</strong> was saved by an older build and needs upgrading. This
+				station opens it by itself, upgraded, as soon as another station in its session runs it
+				on this build. Or upgrade it here.
+			</p>
+			<button
+				class="primary"
+				disabled={busy}
+				onclick={() => ask('show.open', { path: waiting }, `opening ${baseName(waiting)}`)}
+				>Upgrade…</button
+			>
+		</section>
+	{/if}
 
 	{#if recent.length}
 		<section>
@@ -406,6 +457,18 @@
 	}
 	.where.warn {
 		color: var(--live);
+	}
+	.waiting {
+		display: flex;
+		gap: 12px;
+		align-items: center;
+		padding: 10px 14px;
+		border: 1px solid var(--accent);
+		border-radius: var(--radius);
+	}
+	.waiting p {
+		margin: 0;
+		flex: 1;
 	}
 
 	.joinable {

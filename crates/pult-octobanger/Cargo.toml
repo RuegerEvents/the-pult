@@ -1,0 +1,11 @@
+[package]
+name = "pult-octobanger"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+zip.workspace = true
+thiserror.workspace = true

@@ -13,5 +13,6 @@
 pub mod apply;
 pub mod gdtf;
 pub mod mvr;
+pub mod octobanger;
 pub mod share;
 pub mod xchange;

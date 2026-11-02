@@ -8,6 +8,7 @@
 
 import type {
 	Cue,
+	Element,
 	Fixture,
 	FixtureType,
 	ParameterCapture,
@@ -18,8 +19,9 @@ import type {
 	ProgrammerValue
 } from './generated/index.js';
 import { fadeGroup } from './fade.js';
-import type { FadeGroup } from './generated/index.js';
-import { displayLabel, modeHas, modeOf, parameterKey } from './patch.js';
+import type { FadeGroup, PhysicalRange } from './generated/index.js';
+import { parameterName, inCell, kindBase, modeHas, modeOf, parameterKey } from './patch.js';
+import { consoleNow } from './ws/clock.js';
 import type { Showing } from './stores/output.js';
 
 // ── Entry ids ─────────────────────────────────────────────────────────────────
@@ -72,6 +74,16 @@ export type EditableParameter = {
 	key: string;
 	label: string;
 	defaultValue: ParameterValue;
+	/**
+	 * The words a text parameter takes, where its type names them: a strip's Effect
+	 * port says which effects the node draws. Empty is free text.
+	 */
+	choices: string[];
+	/**
+	 * What its 0..1 spans, where the type says: a strip's Speed is 0 to 10 Hz, and
+	 * reads as hertz rather than as a fraction of its travel.
+	 */
+	physical: PhysicalRange | null;
 	/** How many of the selected fixtures actually have it. */
 	count: number;
 	/**
@@ -108,15 +120,26 @@ export function editableParameters(
 		const type = byType.get(fixture.fixture_type_id);
 		if (!type) continue;
 		const mode = modeOf(type, fixture.address);
+		// A kind declared twice — a bar's master and its per-cell dimmers — is one row,
+		// reachable if either way of setting it is.
+		const here = new Set<string>();
 		for (const parameter of type.parameters) {
 			if (parameter.direction !== 'Output') continue;
 			const key = parameterKey(parameter.kind);
+			if (here.has(key)) continue;
+			here.add(key);
 			// A parameter the fixture's chosen mode does not place is one the console
 			// cannot send. The row stays — it is still a thing the light can do, and an
 			// operator who cannot see it cannot work out why the light will not zoom —
 			// but it says so, and a selection where some fixtures can and some cannot
 			// says that too.
-			const reachable = modeHas(mode, key);
+			// A per-cell parameter is placed cell by cell; the first cell answers for it.
+			const reachable = type.parameters.some(
+				(p) =>
+					p.direction === 'Output' &&
+					parameterKey(p.kind) === key &&
+					modeHas(mode, p.per_cell && type.cells > 0 ? `${key}@1` : key)
+			);
 			const existing = rows.get(key);
 			if (existing) {
 				existing.count += 1;
@@ -126,8 +149,13 @@ export function editableParameters(
 			rows.set(key, {
 				kind: parameter.kind,
 				key,
-				label: displayLabel(parameter.kind),
+				// The first fixture's word for it: a selection of one says what that one is
+				// called, and a selection of many shares a kind and differs only in labels.
+				label: parameterName(fixture, parameter.kind),
 				defaultValue: parameter.default_value,
+				choices:
+					parameter.default_value.type === 'Text' ? parameter.slots.map((slot) => slot.name) : [],
+				physical: parameter.physical ?? null,
 				count: 1,
 				unreachable: reachable ? 0 : 1,
 				mixed: false
@@ -136,6 +164,87 @@ export function editableParameters(
 	}
 
 	return [...rows.values()].map((row) => ({ ...row, mixed: row.count < fixtures.length }));
+}
+
+/** One parameter of one fixture, as the programmer holds it: a cell's has its cell. */
+export type Target = { fixtureId: string; kind: ParameterKind };
+
+/**
+ * Where setting one parameter of a selection lands: one target per element that has
+ * it. A cell takes a per-cell parameter as itself; a fixture with cells selected whole
+ * takes it on every cell; and a parameter that is the whole fixture's (a bar's master
+ * dimmer) is set once per fixture however many of its cells are selected. A fixture
+ * whose type is not here takes the kind as itself, the way the station's `__by` does.
+ *
+ * Where a type declares the kind both ways — a master beside a dimmer per cell, or a
+ * one-color mode beside a pixel mode — the patched mode decides (`reaches`): a fixture
+ * selected whole takes the whole one where its mode carries it and every cell
+ * otherwise; a cell takes its own where its mode carries it and the whole one
+ * otherwise, because in a one-color mode the bar's one color is all there is.
+ *
+ * The station's half is `pult_schema::types::group::targets`, which the command line
+ * asks through `selection.targets`; `testdata/cell-targets.json` holds the two together.
+ */
+export function rowTargets(
+	kind: ParameterKind,
+	elements: Element[],
+	typeOf: (fixtureId: string) => FixtureType | undefined,
+	reaches: (fixtureId: string, key: string) => boolean = () => true
+): Target[] {
+	const base = kindBase(kind);
+	const key = parameterKey(base);
+	const out: Target[] = [];
+	const seen = new Set<string>();
+	const add = (fixtureId: string, k: ParameterKind) => {
+		const id = `${fixtureId}/${parameterKey(k)}`;
+		if (seen.has(id)) return;
+		seen.add(id);
+		out.push({ fixtureId, kind: k });
+	};
+	for (const { fixture, cell } of elements) {
+		const type = typeOf(fixture);
+		if (!type) {
+			add(fixture, base);
+			continue;
+		}
+		let whole = false;
+		let perCell = false;
+		for (const p of type.parameters) {
+			if (p.direction !== 'Output' || parameterKey(p.kind) !== key) continue;
+			if (p.per_cell && type.cells > 0) perCell = true;
+			else whole = true;
+		}
+		if (cell !== null && perCell && (!whole || reaches(fixture, `${key}@${cell}`))) {
+			add(fixture, inCell(base, cell));
+		} else if (cell === null && whole && (!perCell || reaches(fixture, key))) {
+			add(fixture, base);
+		} else if (cell === null && perCell) {
+			for (let c = 1; c <= type.cells; c++) add(fixture, inCell(base, c));
+		} else if (whole) {
+			add(fixture, base);
+		}
+	}
+	return out;
+}
+
+/** What a set of targets is showing, or nothing when they disagree. */
+export function commonValueOf(
+	targets: Target[],
+	showing: Showing
+): { value: ParameterValue | null; mixed: boolean } {
+	let found: ParameterValue | null = null;
+	let seen = false;
+	for (const target of targets) {
+		const value = showing.value(target.fixtureId, parameterKey(target.kind));
+		if (value === null) continue;
+		if (!seen) {
+			found = value;
+			seen = true;
+			continue;
+		}
+		if (!sameValue(found, value)) return { value: found, mixed: true };
+	}
+	return { value: found, mixed: false };
 }
 
 /**
@@ -179,58 +288,33 @@ const captureKey = (capture: { fixture_id: string; parameter_kind: ParameterKind
 	`${capture.fixture_id}/${parameterKey(capture.parameter_kind)}`;
 
 /**
- * What a cue's captures become once the programmer is stored into it.
+ * A preset dropped onto a cue: every value it holds, as a capture that *references*
+ * it — reference first, literal beside it, the rule a stored programmer entry follows.
  *
- * *Merge* keeps everything the cue already said and overwrites only the parameters
- * the programmer holds — the ordinary way a look is built up over several passes.
- * *Replace* makes the cue exactly what is in the programmer, which is what an
- * operator means when a cue has drifted and they want it to say this and nothing else.
- *
- * Timing is **kept, not rewritten**. A capture the cue already had keeps its own fade
- * time, delay and curve; a parameter arriving for the first time gets none, which the
- * playback engine reads as "use the cue's". The programmer holds values and never
- * timing, so a store that wrote zeroes would throw away, on every Update, timing an
- * operator set in a control that was never on the screen they were looking at.
+ * A merge: what the cue held for other parameters stays, and a parameter the preset
+ * also holds keeps its timing and easing, so dragging a palette onto a cue changes
+ * what it says and not how it moves. One write of the whole list, so one Ctrl-Z.
  */
-export function storeCaptures(
-	existing: ParameterCapture[],
-	entries: ProgrammerValue[],
-	mode: 'merge' | 'replace',
-	include: Set<string>
-): ParameterCapture[] {
+export function presetIntoCue(existing: ParameterCapture[], preset: Preset): ParameterCapture[] {
 	const before = new Map(existing.map((capture) => [captureKey(capture), capture]));
-	const stored: ParameterCapture[] = entries
-		.filter((entry) => include.has(entry.id))
-		.map((entry) => {
-			const kept = before.get(captureKey(entry));
-			return {
-				fixture_id: entry.fixture_id,
-				parameter_kind: entry.parameter_kind,
-				value: entry.value,
-				// Reference first, literal beside it: the capture carries the preset the
-				// entry was recalled from *and* the number it resolved to, so a station
-				// that has never heard of the preset still shows the right value and a
-				// deleted preset leaves the cue running exactly as it was.
-				preset: entry.preset ?? null,
-				fade_in_ms: kept?.fade_in_ms ?? 0,
-				fade_out_ms: kept?.fade_out_ms ?? 0,
-				delay_in_ms: kept?.delay_in_ms ?? 0,
-				// A stored effect drops its anchor: the cue's `went_at` is what it is
-				// measured from on every Go, so that two consoles replaying the cue
-				// start the same cycle rather than each remembering its own.
-				effect: entry.effect ? { ...entry.effect, t0: null } : null,
-				// `null` for a parameter this cue has not held before: nothing said, so
-				// the cue answers and the show answers for the cue. Writing `Linear`
-				// would pin it against a show that says otherwise.
-				easing: kept?.easing ?? null
-			};
-		});
-
-	if (mode === 'replace') return stored;
-
+	const stored: ParameterCapture[] = preset.values.map((v) => {
+		const kept = before.get(captureKey(v));
+		return {
+			fixture_id: v.fixture_id,
+			parameter_kind: v.parameter_kind,
+			value: v.value,
+			preset: preset.id,
+			fade_in_ms: kept?.fade_in_ms ?? 0,
+			fade_out_ms: kept?.fade_out_ms ?? 0,
+			delay_in_ms: kept?.delay_in_ms ?? 0,
+			effect: null,
+			easing: kept?.easing ?? null
+		};
+	});
 	const taken = new Set(stored.map(captureKey));
 	return [...existing.filter((capture) => !taken.has(captureKey(capture))), ...stored];
 }
+
 
 /**
  * A cue read back into the programmer, for editing it.
@@ -247,7 +331,7 @@ export function entriesFromCue(cue: Cue): ProgrammerValue[] {
 		value: capture.value,
 		// Back into the programmer, and anchored now: the operator is holding it
 		// again rather than replaying it from where the cue put it.
-		effect: capture.effect ? { ...capture.effect, t0: Date.now() } : null,
+		effect: capture.effect ? { ...capture.effect, t0: consoleNow() ?? Date.now() } : null,
 		// And the reference comes back with it, so editing a cue and updating it does
 		// not quietly turn every palette reference in it into a literal.
 		preset: capture.preset ?? null,
@@ -315,7 +399,7 @@ export function presetValues(entries: ProgrammerValue[], include: Set<string>): 
  * A preset's values with more merged into it, keyed the way everything else is.
  *
  * *Update from programmer* is a merge rather than a replace: a preset that also holds
- * a position should not lose it because somebody re-grabbed the colour.
+ * a position should not lose it because somebody re-grabbed the color.
  */
 export function mergePresetValues(existing: PresetValue[], incoming: PresetValue[]): PresetValue[] {
 	const key = (v: PresetValue) => `${v.fixture_id}/${parameterKey(v.parameter_kind)}`;
@@ -326,7 +410,7 @@ export function mergePresetValues(existing: PresetValue[], incoming: PresetValue
 /**
  * Which fade groups a preset touches, derived from its keys and never stored.
  *
- * A preset that grows a colour is a colour preset from that moment, and nobody has to
+ * A preset that grows a color is a color preset from that moment, and nobody has to
  * reclassify anything — which is the whole reason the pool is flat and the tags are
  * computed. See `crates/pult-schema/src/types/preset.rs`.
  */
@@ -374,7 +458,7 @@ export function withFloat(like: ParameterValue, n: number): ParameterValue {
 export const rgbToHex = (rgb: { r: number; g: number; b: number }): string =>
 	`#${byte(rgb.r)}${byte(rgb.g)}${byte(rgb.b)}`;
 
-/** A `#rrggbb` or `#rgb` colour as 0–1 channels, or null if it is neither. */
+/** A `#rrggbb` or `#rgb` color as 0–1 channels, or null if it is neither. */
 export function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
 	const text = hex.trim().replace(/^#/, '');
 	const full =

@@ -1,0 +1,232 @@
+/**
+ * The workspace: which arrangement is on screen, and what is being done to it.
+ *
+ * Workspaces themselves are show data — a PERSISTED `workspaces` collection, so an
+ * arrangement made at the tech table is there at the next call and on the console
+ * next to it. *Which* one this browser is looking at is not: two operators at two
+ * screens plainly want different tiles up, so that lives here and in `localStorage`.
+ *
+ * Rearranging does not save. A tile dragged somewhere marks the layout dirty and the
+ * arrangement is remembered locally, but the show is only written when *Save* is
+ * pressed — otherwise a busk on a spare screen would rewrite the layout everyone
+ * else is using.
+ */
+
+import { browser } from '$app/environment';
+import { get, writable } from 'svelte/store';
+import type { Workspace, WorkspaceNode } from '$lib/generated/index.js';
+import {
+	addTab,
+	findPanel,
+	movePanel,
+	removePanel,
+	resize,
+	tidy,
+	type DropSide,
+	type Path
+} from '$lib/workspace.js';
+import { DEFAULT_PRESET, presetByKey } from '$lib/workspace/presets.js';
+import { collection, showData } from './show.js';
+import { uuid } from '$lib/uuid.js';
+import { compactPanel } from './viewport.js';
+
+export type Active = { kind: 'preset'; key: string } | { kind: 'show'; id: string };
+
+// Still `layout`, from before the saved arrangements were called workspaces: renaming
+// the key would put every browser back on the default preset for nothing.
+const STORAGE_KEY = 'pult.layout';
+
+export const workspaces = collection('workspaces');
+
+export const tree = writable<WorkspaceNode>(DEFAULT_PRESET.tree);
+export const active = writable<Active>({ kind: 'preset', key: DEFAULT_PRESET.key });
+export const dirty = writable(false);
+/** One panel filling the workspace, for a moment of needing all the room. */
+export const maximized = writable<string | null>(null);
+
+// ── Remembering it locally ────────────────────────────────────────────────────
+
+function remember() {
+	if (!browser) return;
+	try {
+		localStorage.setItem(
+			STORAGE_KEY,
+			JSON.stringify({ active: get(active), tree: get(tree), dirty: get(dirty) })
+		);
+	} catch {
+		// A browser with storage turned off still works; it just opens on the default.
+	}
+}
+
+/** Put back what this browser was looking at. Falls back to the first preset. */
+export function restoreWorkspace(): void {
+	if (!browser) return;
+	try {
+		const saved = localStorage.getItem(STORAGE_KEY);
+		if (!saved) return;
+		const parsed = JSON.parse(saved) as { active?: Active; tree?: WorkspaceNode; dirty?: boolean };
+		if (!parsed?.tree || (parsed.tree.type !== 'Split' && parsed.tree.type !== 'Tabs')) return;
+		tree.set(tidy(parsed.tree));
+		if (parsed.active) active.set(parsed.active);
+		dirty.set(parsed.dirty === true);
+	} catch {
+		// Anything unreadable is not worth a broken workspace.
+	}
+}
+
+/** The tree changed by hand: keep it, mark it unsaved. */
+function change(next: WorkspaceNode): void {
+	tree.set(next);
+	dirty.set(true);
+	remember();
+}
+
+// ── Choosing one ──────────────────────────────────────────────────────────────
+
+export function applyPreset(key: string): void {
+	const preset = presetByKey(key);
+	if (!preset) return;
+	tree.set(preset.tree);
+	active.set({ kind: 'preset', key });
+	dirty.set(false);
+	maximized.set(null);
+	remember();
+}
+
+export function applyWorkspace(layout: Workspace): void {
+	tree.set(tidy(layout.tree));
+	active.set({ kind: 'show', id: layout.id });
+	dirty.set(false);
+	maximized.set(null);
+	remember();
+}
+
+export function resetWorkspace(): void {
+	const current = get(active);
+	if (current.kind === 'preset') return applyPreset(current.key);
+	const layout = get(workspaces).find((l) => l.id === current.id);
+	if (layout) applyWorkspace(layout);
+	else applyPreset(DEFAULT_PRESET.key);
+}
+
+// ── Saving one ────────────────────────────────────────────────────────────────
+
+export async function save(): Promise<void> {
+	const current = get(active);
+	// A preset is not a place to save to: it is the way back from having saved.
+	if (current.kind !== 'show') return;
+	await showData().workspaces.byId(current.id).tree.set(get(tree));
+	dirty.set(false);
+	remember();
+}
+
+export async function saveAs(name: string): Promise<void> {
+	const id = uuid();
+	await showData().workspaces.create({ id, name, tree: get(tree) });
+	active.set({ kind: 'show', id });
+	dirty.set(false);
+	remember();
+}
+
+export async function rename(id: string, name: string): Promise<void> {
+	await showData().workspaces.byId(id).name.set(name);
+}
+
+export async function removeWorkspace(id: string): Promise<void> {
+	await showData().workspaces.byId(id).delete();
+	const current = get(active);
+	if (current.kind === 'show' && current.id === id) applyPreset(DEFAULT_PRESET.key);
+}
+
+// ── Rearranging ───────────────────────────────────────────────────────────────
+
+export function openPanel(path: Path, panel: string): void {
+	change(addTab(get(tree), path, panel));
+	// A phone shows one panel at a time, so opening one there means looking at it.
+	compactPanel.set(panel);
+}
+
+/**
+ * Bring a panel to the front, opening it if it is not on screen.
+ *
+ * For the places one panel points at another — an effect chip in the values panel
+ * saying "this is what has your Intensity". The operator wants to *see* the effects
+ * panel; where in the workspace it lives is not something they should have to know,
+ * and opening a second copy of one already on screen would be worse than doing
+ * nothing.
+ *
+ * With nowhere obvious to put it, it goes in the first tile. That is arbitrary, but
+ * the alternative is refusing to show the operator the thing they asked for.
+ */
+export function revealPanel(panel: string): void {
+	const at = findPanel(get(tree), panel);
+	openPanel(at ?? firstTile(get(tree)), panel);
+}
+
+/** The path of the top-left tile, as somewhere to put a panel with no home. */
+export function firstTile(node: WorkspaceNode): Path {
+	const path: Path = [];
+	let here = node;
+	while (here.type === 'Split') {
+		path.push(0);
+		here = here.children[0];
+	}
+	return path;
+}
+
+export const closePanel = (path: Path, panel: string) => change(removePanel(get(tree), path, panel));
+export const dragGutter = (path: Path, gutter: number, delta: number) =>
+	change(resize(get(tree), path, gutter, delta));
+
+// ── Dragging a tab ────────────────────────────────────────────────────────────
+
+export const dragging = writable<{ path: Path; panel: string } | null>(null);
+/** The drop zone under the pointer, as `"0.1|left"`. */
+export const dropTarget = writable<string | null>(null);
+
+export const dropId = (path: Path, side: DropSide) => `${path.join('.')}|${side}`;
+
+/**
+ * Follow a tab being dragged, and drop it where it lands.
+ *
+ * The zone under the pointer is found with `elementFromPoint` rather than by
+ * listening on the zones themselves. A touch drag is implicitly captured by the
+ * element it started on, so enter and leave events never reach anything else — one
+ * mechanism that works for a mouse and a finger alike is worth more than two that
+ * each work for one.
+ */
+export function beginTabDrag(path: Path, panel: string, event: PointerEvent): void {
+	const from = { x: event.clientX, y: event.clientY };
+	let started = false;
+
+	const move = (e: PointerEvent) => {
+		if (!started) {
+			// A few pixels of slack, so clicking a tab selects it rather than moving it.
+			if (Math.hypot(e.clientX - from.x, e.clientY - from.y) < 5) return;
+			started = true;
+			dragging.set({ path, panel });
+		}
+		dropTarget.set(zoneAt(e.clientX, e.clientY));
+	};
+
+	const up = (e: PointerEvent) => {
+		window.removeEventListener('pointermove', move);
+		window.removeEventListener('pointerup', up);
+		const landed = started ? zoneAt(e.clientX, e.clientY) : null;
+		dragging.set(null);
+		dropTarget.set(null);
+		if (!landed) return;
+		const [text, side] = landed.split('|');
+		const to = text === '' ? [] : text.split('.').map(Number);
+		change(movePanel(get(tree), { path, panel }, to, side as DropSide));
+	};
+
+	window.addEventListener('pointermove', move);
+	window.addEventListener('pointerup', up);
+}
+
+function zoneAt(x: number, y: number): string | null {
+	return (
+		document.elementFromPoint(x, y)?.closest('[data-drop]')?.getAttribute('data-drop') ?? null
+	);
+}

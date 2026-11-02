@@ -39,6 +39,22 @@ pub struct Station {
     #[serde(default)]
     #[pult(lifecycle = SYNCED)]
     pub http_addr: String,
+    /// Where an OpenHaunt node reaches this station's broker, as `ip:port`, were it
+    /// to lead. The leader lists every station's in the broker list it hands its nodes
+    /// (`openhaunt/brokers`, doc 15), leader first, so a node whose leader dies finds
+    /// the next one without anybody having to see it over mDNS. Empty from an older
+    /// peer, which is then simply not in the list.
+    #[serde(default)]
+    #[pult(lifecycle = SYNCED)]
+    pub broker_addr: String,
+    /// Every address that door is reachable at, best first; `broker_addr` is the first
+    /// of them, kept for a peer that reads nothing else. Plural because a console in a
+    /// venue usually has two networks, and which one its nodes are on is something
+    /// only the leader — which has seen the nodes — can answer. Never loopback while
+    /// the machine has anything else (`infra::net::reachable`).
+    #[serde(default)]
+    #[pult(lifecycle = SYNCED)]
+    pub broker_doors: Vec<String>,
     #[pult(lifecycle = SYNCED)]
     pub cpu_percent: f32,
     #[pult(lifecycle = SYNCED)]
@@ -72,7 +88,7 @@ pub struct Station {
     /// that was told about a fade once are not two samples of one number.
     ///
     /// Defaulted, so a peer running a build that cannot say still sends a row that
-    /// deserialises.
+    /// deserializes.
     #[serde(default)]
     #[pult(lifecycle = SYNCED)]
     pub frame_costs: Vec<FrameCost>,
@@ -85,10 +101,16 @@ pub struct Station {
     /// a station at 4% on a machine at 96% is not a comfortable station, it is a
     /// console about to be starved by something nobody is looking at.
     ///
-    /// All defaulted, so a peer on an older build still deserialises.
+    /// All defaulted, so a peer on an older build still deserializes.
     #[serde(default)]
     #[pult(lifecycle = SYNCED)]
     pub machine: MachineStats,
+    /// How much decoded sound this station is holding, against what it may hold.
+    ///
+    /// Defaulted, and a `budget` of zero is a station on an older build that cannot say.
+    #[serde(default)]
+    #[pult(lifecycle = SYNCED)]
+    pub audio_cache: AudioCacheStats,
     /// What this machine's network interfaces carried over the window just reported,
     /// each way, and how long that window was.
     ///
@@ -103,7 +125,7 @@ pub struct Station {
     /// sends to itself would otherwise arrive twice — sent and received — and swamp
     /// the figure it is there to give.
     ///
-    /// Defaulted, so a peer on an older build still deserialises.
+    /// Defaulted, so a peer on an older build still deserializes.
     #[serde(default)]
     #[pult(lifecycle = SYNCED)]
     pub net_received: u64,
@@ -136,10 +158,21 @@ pub struct Station {
     /// each one says what it took. `None` on a leader, which is at the top of the
     /// ladder rather than in a slot.
     ///
-    /// Defaulted, so a peer on an older build still deserialises.
+    /// Defaulted, so a peer on an older build still deserializes.
     #[serde(default)]
     #[pult(lifecycle = SYNCED)]
     pub sacn_slot: Option<u8>,
+    /// The command wing plugged into this station, if one is.
+    ///
+    /// The station's own `wing` row is LOCAL, so a page on another station could not
+    /// otherwise know there is a wing here to drive. A page drives a wing over a socket
+    /// to the station it is plugged into, wherever the page came from, and this is how
+    /// it finds one. `None` is a station started with no wing at all.
+    ///
+    /// Defaulted, so a peer on an older build still deserializes.
+    #[serde(default)]
+    #[pult(lifecycle = SYNCED)]
+    pub wing: Option<super::wing::WingState>,
     /// When this station last said any of the above.
     #[pult(lifecycle = SYNCED)]
     pub last_seen: DateTime<Utc>,
@@ -233,7 +266,7 @@ pub struct FrameCost {
     /// half of emitting to work on — assembly and the socket writes are both per
     /// universe, and they do not respond to the same fixes.
     ///
-    /// Defaulted, so a peer on an older build still deserialises.
+    /// Defaulted, so a peer on an older build still deserializes.
     #[serde(default)]
     pub assembling_mean_ms: f32,
     /// How many frames the window contained. Never zero: a connector that emitted
@@ -254,7 +287,7 @@ pub struct FrameCost {
     /// UDP, IP and Ethernet headers under it. A wire carries perhaps 5% more than
     /// this says.
     ///
-    /// Defaulted, so a peer on an older build still deserialises.
+    /// Defaulted, so a peer on an older build still deserializes.
     #[serde(default)]
     pub bytes: u64,
     #[serde(default)]
@@ -355,6 +388,32 @@ impl MachineStats {
         }
         self.load_1 / self.cores as f32
     }
+}
+
+/// The decoded-audio cache: files as samples in memory, by asset.
+///
+/// A file is decoded once and kept, because decoding a long mp3 is seconds of a core —
+/// and a station that has to decode again every time it looks at its timelines is a
+/// station whose Play and Stop wait behind it. What a timeline holds is kept whatever
+/// it costs; `budget` bounds only the rest. So `timeline_bytes` over `budget` is a show
+/// whose sound does not fit what this machine set aside for it, and the station is
+/// holding it anyway.
+///
+/// `timeline_*` counts only files this station has decoded: one that plays no timeline
+/// here never decodes the others' sound, and cannot say how big it would be.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AudioCacheStats {
+    /// What may be held, in bytes. Zero from a station that cannot say.
+    pub budget: u64,
+    /// What is held, timelines' and otherwise.
+    pub held: u64,
+    pub files: u32,
+    /// Of `held`, what the show's timelines have on them.
+    pub timeline_bytes: u64,
+    /// Files on the show's timelines, and how many of those are decoded here.
+    pub timeline_files: u32,
+    pub timeline_decoded: u32,
 }
 
 /// A link to another station, measured from this one.
@@ -463,6 +522,8 @@ mod tests {
             is_leader: true,
             sync_addr: "10.0.0.5:7701".into(),
             http_addr: "10.0.0.5:7700".into(),
+            broker_addr: String::new(),
+            broker_doors: Vec::new(),
             cpu_percent: 12.5,
             mem_used: 4_000_000_000,
             mem_total: 16_000_000_000,
@@ -472,11 +533,13 @@ mod tests {
             total_fixtures: 12,
             frame_costs: Vec::new(),
             machine: MachineStats::default(),
+            audio_cache: AudioCacheStats::default(),
             net_received: 0,
             net_sent: 0,
             net_window_ms: 0,
             clock: ClockSync::default(),
             sacn_slot: None,
+            wing: None,
             last_seen,
         }
     }

@@ -185,7 +185,7 @@ export function drawTable(
 			y += ROW;
 		}
 		if (group.name && y + ROW <= bottom) {
-			// Labelled, not bare. An unlabelled figure reads as a subtotal only when it
+			// Labeled, not bare. An unlabeled figure reads as a subtotal only when it
 			// *is* a figure: a power table where nothing has a wattage printed a lone
 			// em-dash floating under each group, which reads as a fault.
 			items.push(...totalsRow(group.totals, rect.x, right, y, table.kind, group.name));

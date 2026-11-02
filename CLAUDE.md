@@ -25,7 +25,7 @@ ends as the next numbered task.
 - **`crates/pult-gdtf`** — GDTF, read and written. A pure format library: `quick-xml`, `serde`, `zip`, `uuid`, `thiserror`, and *no pult crate* — which is what lets it be tested against other people's files with no station near it. Writing is why it exists rather than a crate off crates.io. The translation into the schema is `crates/pult-backend/src/infra/interop/gdtf/`.
 - **`crates/pult-mvr`** — MVR, read and written. The other half of the interop pair and
   a pure format library like `pult-gdtf`, depending on it for the fixture definitions
-  inside an archive and for the millimetre Z-up to metre Y-up conversion they share.
+  inside an archive and for the millimeter Z-up to meter Y-up conversion they share.
   `transform.rs` is where a matrix becomes a position, a rotation and a **signed**
   scale — signed because a fifth of the trusses in a real Vectorworks file are
   mirrored, and no rotation is a reflection.
@@ -34,10 +34,15 @@ ends as the next numbered task.
   no socket, no runtime, and *not `pult-mvr` either*, because not one field of a message
   carries MVR content and an archive crosses as an opaque buffer. The station's half is
   `crates/pult-backend/src/infra/interop/xchange/`.
+- **`crates/pult-octobanger`** — OctoBanger prop controllers, read: the `.OBC` the
+  Windows app saves is .NET BinaryFormatter, and `nrbf.rs` reads its records into a
+  tree without instantiating anything. A pure crate like `pult-gdtf`. What a prop
+  becomes in a show (a timeline, a recording, a flow) is
+  `crates/pult-backend/src/infra/interop/octobanger.rs`. See task 97.
 - **`crates/pult-backend`** — A station, as a library and a binary. Axum WebSocket server, `Name.pult` showfile bundles, peer sync (mDNS + TCP), the WASM plugin runtime (`infra/plugins/`), fixture connectors. `pult_backend::start(Config)` brings a whole station up and is what both the binary and the desktop app call.
 - **`crates/pult-gui`** — The console as a Tauri desktop app. A window around `pult_backend::start`, pointed at the server it just started.
 - **`tools/pult-codegen`** — CLI that triggers ts-rs TypeScript export and writes `frontend/src/lib/generated/`.
-- **`tools/openhaunt-node-sim`** — The node side of the OpenHaunt protocol, in software. A node *is* a `NodeConfig` — identity, module descriptor, and the ports it describes — so a JSON config file is the whole of what makes one node different from another. `configs/` holds worked examples of modules that are not in the catalogue at all.
+- **`tools/openhaunt-node-sim`** — The node side of the OpenHaunt protocol, in software. A node *is* a `NodeConfig` — identity, module descriptor, and the ports it describes — so a JSON config file is the whole of what makes one node different from another. `configs/` holds worked examples of modules that are not in the catalog at all.
 - **`tools/openhaunt-node-sim-gui`** — A Tauri window onto a simulated node: buttons for its inputs, and an editor for its config. Talks to the sim over Tauri IPC, so nothing about the OpenHaunt protocol changes to accommodate a debug UI. Applying a config stops the node and starts a new one in its place, without the window closing.
 - **`plugins/`** — WASM plugins: its own cargo workspace (own lockfile; guests build to `wasm32-wasip2`, which does not belong in the console's dependency graph). `sdk/` is what plugins are written against; `command-line` and `natural-language-control` are the reference plugins and the worked examples for `docs/PLUGINS.md`.
 - **`frontend/`** — SvelteKit static-adapter frontend. Built into the binaries that serve it.
@@ -123,9 +128,13 @@ log line and the answer a browser syncs against all at once. The estimator is
 Four rules there, each of which is a way the rig would otherwise jump. A correction under
 20 ms applies, over 1 s steps, and in between is **walked at 5% of real time** — because
 `now_ms` is monotone-from-a-base precisely so a stepping system clock cannot jump every
-running fade, and correcting it puts that back unless it is disciplined. It is **never
-stepped backwards** at any size: that falls before a landed fade's `t1` and starts a
-parameter that had arrived moving again. A **promoted leader keeps the offset it had**,
+running fade, and correcting it puts that back unless it is disciplined. It is **stepped
+backwards only past a minute's walk** (3 s): a step back falls before a landed fade's `t1`
+and starts a parameter that had arrived moving again, but a follower once set off on a
+ten-day walk back to a leader eleven hours out. And the base **follows a machine clock
+that was wrong**: a wall clock more than 10 s ahead is the machine finding out the time
+(a Mac mini that booted before the network did), and the base jumps to it. A **promoted
+leader keeps the offset it had**,
 as a standing bias, so the show clock is continuous across a failover — after one, show
 time is no machine's wall clock but a timeline the session carries. And a station with no
 estimate yet **applies zero and says so**, in a `warn` and in its row: `consoleNow()`'s
@@ -146,18 +155,36 @@ same universe.
 **A type with no modes still has one.** Everything the console made for itself — a type
 derived from an OpenHaunt node, the demo seed, the hand editor — names no mode at all,
 and `FixtureType::mode()` computes an implicit `"Default"`: one byte per output
-parameter in the order the type lists them, three for a colour, and nothing at all for
+parameter in the order the type lists them, one per emitter for a color
+(`implicit_width` — three for a color that names none), and nothing at all for
 a parameter on a module port. Computed rather than stored, so there is one layout
 rather than a written one drifting from the parameters it was written from. The browser
 does not work that out for itself with one exception, `patch.ts`'s `implicitChannels`,
 which the hand editor needs in order to show an operator where the parameter they just
 added has landed — and it says so where it is defined.
 
-**A showfile is not a migration target.** While the console is in development nobody is
-carrying a season's work in one, and a migration is a promise about every shape the data
-has ever had. So there is none: `infra/showfile/mod.rs` stamps a file with
-`SCHEMA_GENERATION` and refuses one from another generation, saying so plainly. Two
-things make that necessary rather than merely tidy, and both are the SQLite read path:
+**So the emitter list is the layout.** A generic RGBWA+UV par is seven bytes because its
+color names six emitters; `types/generic.rs` holds those types and the emitter presets,
+each type with a fixed v5 id so the second one patched finds the first one's type, and
+the `fixtureTypes.library` RPC hands both to the patch dialog and the type editor. It
+used to be three bytes whatever the emitters said, so a hand-made RGBW head drove its
+white from nothing.
+
+**A showfile is upgraded from generation 9 on, and only when somebody says so.** Until
+then it was refused, on the grounds that nobody carried a season's work in one; a haunt
+running its second weekend is exactly that. So every bump of `SCHEMA_GENERATION` ships a
+**step** in `infra/showfile/upgrade.rs` — one Rust function over one transaction, `n` to
+`n + 1`, Rust because most shape changes are inside a JSON column — and
+`every_generation_since_the_first_has_a_step` fails a bump without one. Four rules, each
+the user's: **nothing is upgraded unasked** (`showfile::open` answers `NeedsUpgrade`;
+`show.open` and `show.restore` answer `{needsUpgrade}` and the page asks; a station
+opening an older show by itself comes up with no show and the welcome screen offers it);
+**a version is kept first** (`Before upgrading from generation n`, the file as it was);
+**history starts at the upgrade** (the floor is raised and the oplog goes, as a prune
+does — an old operation replayed would write the old shape back); and **older than 9
+stays refused**. `testdata/showfiles/generation-9.db` is walked by
+`tests/upgrade.rs`. Two things make the stamp necessary rather than merely tidy, and
+both are the SQLite read path:
 `#[derive(PultSchema)]` generates `from_columns`, which reads each column on its own and
 unwraps — so a non-`Option` column that is NULL **panics while a show is opening**, and
 an `Option` column that fails to parse **becomes `None` with no error at all**. The
@@ -166,12 +193,31 @@ adding a field is free; what it cannot do is fill one in, so a check beside the 
 names the first required column nothing filled and refuses that too. Bump
 `SCHEMA_GENERATION` when a stored *shape* changes; adding a field is not that.
 
-**A colour is one parameter and several channels.** Every `ColorAdd_*` and `ColorSub_*`
-attribute is the fixture's colour; a reader that made three parameters would give an
+**A color is one parameter and several channels.** Every `ColorAdd_*` and `ColorSub_*`
+attribute is the fixture's color; a reader that made three parameters would give an
 operator three faders where every other console gives a picker. So the type carries an
 emitter list, each channel of a mode names the one it drives, and `pult_render::color`
-gets from a colour to a level per emitter — compiled twice like the rest of the
+gets from a color to a level per emitter — compiled twice like the rest of the
 evaluator and held together by `testdata/color-mix.json`.
+
+**A node is a fixture per head, and a strip is one fixture with a cell per pixel.**
+Ports carry a `head`; `NodeDescription::for_head` is what one head says, and head 0 of a
+node without heads hashes byte for byte as it always did (`hashed` in `openhaunt.rs`,
+pinned by a test) or every adopted node would be re-typed. `DeviceManager::retype` is
+what makes a `Node` type follow its node. A strip's mode lives on its address
+(`PixelStrip`), the show is the truth and a node running something else is put back. In
+`sacn` mode the head's type is `pixels::strip_type` and its bytes go where
+`FixtureAddress::dmx_placement` says — the one question every DMX renderer asks, so a
+strip needs nothing taught. A driven number port with its own range is a
+`PhysicalRange`, and the connector sends it in the port's units. See tasks 74 and 82.
+
+**A cell is part of the kind.** `ParameterKind::Cell { cell, of }`, spelled `ColorRgb@7`:
+everything keyed by a fixture and a kind or key carries cells with no field added, and
+`pult-render` never learned what one is. `FixtureType::cells` and
+`ParameterDefinition::per_cell` say what repeats; `controls()` walks a type's every
+settable key and `parameter_for_key` is **the one way** a key goes back to its parameter
+— never `parameter_key(&p.kind) == key`, which finds nothing for a cell. A GDTF
+geometry reference is a cell. `testdata/cell-keys.json` holds the spelling.
 
 **A `.gdtf` is kept whole and the row is a reading of it.** The archive lives in the
 asset store and `FixtureTypeSource::Gdtf` points at it by sha256, so exporting hands
@@ -192,7 +238,7 @@ about that server are load-bearing and written down in `infra/interop/share.rs`:
 login answers **200 with an HTML page** when the credentials are wrong, so success is
 decided by the body; its list is **tens of megabytes and unfiltered**, so it is fetched
 once, cached, and searched locally; and its session **goes idle after about two hours**,
-so an unauthorised answer logs in again and retries exactly once.
+so an unauthorized answer logs in again and retries exactly once.
 
 Both import paths go through `infra/interop/apply.rs`, which is where the rules about
 writing live: a plan is built by a pure function before anything is stored, so a
@@ -353,7 +399,7 @@ supply it — no second crate, since it was already here.
 
 **A process CPU percentage is of one core; the machine's is of all of them.** So the
 panel labels both ("15.2% of a core" against "6.4% of 18 cores") and states the
-comparison outright. The pair only earns its place if it can be compared, and unlabelled
+comparison outright. The pair only earns its place if it can be compared, and unlabeled
 it reads backwards.
 
 One trap, and it is not a corner case: **a relative showfile path matches no mount
@@ -409,7 +455,7 @@ single operator the batch degenerates to one write per commit.
 
 A command still replies only when its write is **durable** — the actor hands its
 receipts to a task that answers the caller when they land, rather than sitting on the
-fsync itself. Nothing about what an acknowledgement means has changed; what changed is
+fsync itself. Nothing about what an acknowledgment means has changed; what changed is
 that the *next* command is no longer behind this one's disk, which is the only way the
 writer can ever hold a group to commit.
 
@@ -547,13 +593,25 @@ Autosave is the leader's, on `autosave_minutes`, only when the oplog has moved, 
 its own window to `autosave_keep`. `backup_dir` mirrors each snapshot and the assets it
 points at somewhere else, and failing to is a warning rather than a failed Save.
 
-**Four demo shows, in Rust.** Haunt, Theatre, Club and Festival, seeded through
+**Five demo shows, in Rust.** Haunt, Theater, Club, Festival and Garden, seeded through
 `EngineHandle` like anything else — so validation, the oplog and the seeded operator are
 what they are for a person; what they skip is the network, not the model. `--demo <id>`
 on both binaries and a card on the welcome screen. They are seeded **on a task**, not
 inside `start`: the listener is bound first, so awaiting two hundred writes there left
 the port accepting and answering nothing. `scripts/demo-seed.mjs` keeps the sized rigs,
 deliberately over the public API, because that one is the measurement instrument.
+
+**The Garden runs itself.** A haunt whose maze is flows, variables and timelines only —
+PIRs counting groups in, a gate for re-triggers, a traffic light, a phone surface — over
+ten V0 nodes patched the way adopting them would, so a real node or a simulator with one
+of its serials is adopted on sight. It is the one demo that makes assets (generated
+sound and a skeleton's take), through `seed_with`; `scripts/demo.sh --demo garden` starts
+its maze nodes, each fed from `.demo/<Area>.in`. See task 76.
+
+**A process that may not multicast finds nothing, and now says so.** On macOS that is the
+Local Network privacy setting of whatever app started it: every mDNS daemon browses an
+empty network with no error above `debug`. `infra::net::say_if_multicast_is_refused`
+warns once.
 
 **A demo never writes a rotation.** A fixture's own axis is −Y, so zero rotation *is*
 hanging, and `{90, 0, 0}` meaning "hanging" is a quarter turn away from it — which
@@ -565,9 +623,9 @@ direction.
 boom's frame.** A fixture's position is relative to what it hangs off, rotation
 included, so `kit::boom` turns the run's handle a quarter about Z and `kit::on(parent,
 world_offset, world_direction)` puts a world-terms offset and aim into that turned
-frame — once, so no show file hand-inverts a rotation. The first Theatre drew its
+frame — once, so no show file hand-inverts a rotation. The first Theater drew its
 booms as two more horizontal bars. And everything hangs `HUNG_BELOW` (350 mm) under
-its bar's centre line: the chord square plus a clamp, and the one figure every demo
+its bar's center line: the chord square plus a clamp, and the one figure every demo
 uses, because the first Club hung its washes 600 mm *beside* the truss and what that
 drew was lights floating next to it. The demo tests check both, composed through
 `world_transform`, which is the only direction that says where a light on a boom
@@ -575,7 +633,7 @@ looks.
 
 **And the console can draw a room it was never given a mesh for.** A `SceneObject` with
 no geometry is an empty group, so a truss a console made for itself was invisible.
-`pult_schema::types::catalogue` names the pieces — F34 in three lengths and a corner,
+`pult_schema::types::catalog` names the pieces — F34 in three lengths and a corner,
 decks, wall panels, flats — with their dimensions; `pult-codegen` emits the table to
 TypeScript so there is one of it; `frontend/src/lib/stock.ts` draws them procedurally,
 one merged geometry per id however many are in the rig. An imported mesh always wins,
@@ -583,12 +641,13 @@ and the MVR importer never guesses one: a drawing says what it is with its mesh,
 picking an `f34-2m` because the name said "truss" would put a measurement into
 somebody's rig that nobody measured.
 
-**A showfile is still not a migration target.** `SCHEMA_GENERATION` is 3 and refuses a
-file from another generation by name. Opening also vacuums when more than a quarter of
+**A showfile is upgraded, not refused, from generation 9 on** — see *A fixture type says
+what a light can do*. `SCHEMA_GENERATION` is 10; a file older than 9 or from a newer
+build is refused by name. Opening also vacuums when more than a quarter of
 the file is free, which is the one moment nothing else is using it.
 
 ```
-cargo test -p pult-backend --test shows    # opening, saving, restoring, travelling
+cargo test -p pult-backend --test shows    # opening, saving, restoring, traveling
 cargo test -p pult-backend --lib demo      # every demo hangs together, and points down
 cargo run -p pult-backend                  # → the welcome screen
 cargo run -p pult-backend -- --show Rig.pult --demo festival
@@ -795,7 +854,7 @@ npm --prefix tools/openhaunt-node-sim-gui/ui run build
 cargo run -p openhaunt-node-sim-gui -- --module relay --serial 4d5e6f
 ```
 
-A node the catalogue has never heard of is a config file rather than a code
+A node the catalog has never heard of is a config file rather than a code
 change — the console builds its fixture type from what the node says, so there is
 nothing to teach it:
 
@@ -809,22 +868,36 @@ The **`xchange` panel** is MVR-xchange: the group, who is in it, what they have
 committed, and the two acts. See *A rig can leave while it is still being drawn*.
 
 The **`outputs` panel is the I/O panel** — outputs and inputs, which are the same row
-read in two directions — and the **`timeline` panel** is a position with a waveform, a
-beat grid, events, markers and takes written against it. See *A recording is a function
-of time* and *A song the console can hear*.
+read in two directions — and the **`timeline` panel** is a list of timelines, lanes and
+an Inspector: markers, events, a lane per place sound goes and a lane per take, all
+against one ruler. A clip, an event, a marker, a tempo and a take are object kinds
+(`kinds/timeline.kind.ts`), so they are edited in the Inspector like a preset, and the
+panel docks the Inspector itself only while the layout has none. `timeline/lanes.ts` is
+the geometry. See task 80, *A recording is a function of time* and *A song the console
+can hear*.
+
+The **`surface` panel** builds the pages a phone runs the show from, and
+`/surface/<id>` is one of them full-screen with none of the desk round it. A tile
+points at something the show already has and presses it the way that thing's own panel
+does, so a surface adds no acts. Disconnected, a surface dims rather than covering
+itself. See task 72.
 
 The **`sheet` panel** is the rig as a table and the **`cues` panel** the editor of one
 sequence; **`pools`** is the direct selects — saved groups and presets, not sequences.
-See *The loop, and a colour that says where a value came from*.
+See *The loop, and a color that says where a value came from*.
 
 The frontend opens onto a **tiled workspace** rather than a sidebar and tabs. Panels
 live in a tree of splits and tab groups: drag a tab to a tile's edge to divide it or
-to its middle to stack it, drag the gutters to resize, and pick a layout from the menu
+to its middle to stack it, drag the gutters to resize, and pick a workspace from the menu
 in the top bar. Presets are built in; *Save as…* writes an arrangement into the show
-as a `layouts` row. Which layout this browser is looking at is kept in `localStorage`,
-not in the show.
+as a `workspaces` row. Which workspace this browser is looking at is kept in `localStorage`,
+not in the show. (They were `layouts` until generation 10; that name is now the
+**`layout` panel**'s — 2D drawings with sensors, variables, timelines and flow buttons on them, shared
+at `/layout/<id>` the way a surface is — read-only, and beside it an operating link
+`?key=<operate_key>` that presses what the desk presses, less selecting; allowing
+operating again makes a new key and revokes the old links. See task 101.)
 
-**Setup is a mode, not nine panels.** `PanelMeta.home` in `layout/panels.ts` is
+**Setup is a mode, not nine panels.** `PanelMeta.home` in `workspace/panels.ts` is
 `workspace | setup | both`: patching, fixture types, devices, I/O, network, session,
 plugins, MVR-xchange, the show and the settings are *errands*, and an errand that costs
 a tile costs the picture somebody is programming against. `components/setup/Setup.svelte`
@@ -835,16 +908,28 @@ a log subscribes while it is mounted, a wire view *is* an `output.watch`. And th
 modals that had each grown their own opinion about Escape and the backdrop are one
 `Dialog.svelte`.
 
-**Setup carries the Edit toggle**, because Setup is chrome. `EditToggle` belongs to the
-tile and not to the panel — it is the same control with the same meaning everywhere, and
-a panel's own buttons are what it must not be mistaken for — so every chrome that renders
-an `editable` panel has to carry one. The maximised view does; the Setup dialog did not,
-which left Plugins and Settings read-only with nothing anywhere to unlock them.
+**There is no edit mode, and one Show lock.** Edit handles live on the object: *a property
+is edited where it is shown when it is one value and Ctrl-Z can take it back, and asks
+with Save and Cancel when one act moves several things or nothing can take it back* —
+a mode change, a new fixture, a network cable, removing a plugin. Every panel reads
+`canEdit` from `stores/showLock.ts`; the lock is a top-bar button, per browser, that
+leaves acts working and hides every edit handle. See task 79 for the table.
+
+**Panels have a category and an icon; objects have one grammar.** `PanelMeta.category`
+is one of six (`workspace/categories.ts`), its color is a `--cat-*` token, and `icon` is a
+Lucide component. A pool object is a *kind* registered by a `*.kind.ts` file in
+`lib/kinds/` (imported by glob, so nothing lists them): tap acts, ⌘-click or the corner
+dot makes it the Inspector's subject, right-click or a long-press opens the one
+`ContextMenu`, and ⌘K finds it through the `commands.ts` registry. A new kind needs no
+change to the card, the menu, the Inspector or the palette.
 
 The **`values` panel** is the programmer: it sets fixture parameters into a shared
 SYNCED `programmer_values` buffer that takes priority over playback until the values
 are cleared or stored into a cue. Programming also happens in the `plan` and `rig`
 panels, where a selected head can be aimed by dragging where its beam lands.
+**Blind** (`Show::blind`, task 98) keeps the programmer off every lamp while the screens
+still show it: anything answering what a lamp is doing reads
+`engine::programmer_on_stage`, and switching it is unattributed so Ctrl-Z cannot.
 
 **A write can say how far instead of where.** A `__by` sentinel on a path — beside
 `__create` and `__delete` — is a change rather than a destination, and the station
@@ -873,7 +958,9 @@ selection home**, which is a programmer act and so replicates, undoes and clears
 any other. `Show::home_fade_ms` says how long either takes, seeded from a station
 preference the way `history_depth` is. Consequence worth knowing: **Go at the last cue
 stays there** rather than wrapping to no active cue, because "off" has to be a state
-playback can tell apart from "ran out of cues".
+playback can tell apart from "ran out of cues". A sequence can **go around** instead
+(`Sequence::wrap`, off by default): Go on the last cue takes the first, Go back on the
+first takes the last, and neither ever reaches off.
 
 And the verb backwards: `["fixtures", "__set_home"]` with the same
 `{fixtureId, parameterKind?}` makes where a parameter rests be wherever it is now,
@@ -898,12 +985,12 @@ key only later cues capture, over the cue's down time; jumping forward applies w
 the cues in between set. Tracking playback, deliberately, and the reason a blackout cue
 still has to zero everything by name.
 
-**A cue fades two ways.** `fade_in_ms` is what a parameter takes going up and
-`fade_out_ms` what it takes coming down, on the cue and per capture, the capture
-winning. Zero out means "this cue does not split its fade" rather than "snap", so a
-show that never sets one runs exactly as it did. Only values with an order to be on
-can be going down — a colour has three and a relay none, and those take the in time
-rather than have the console guess a ranking.
+**A cue fades in when it starts and out when it ends.** `fade_in_ms` is what everything
+a cue takes moves on, up or down; `fade_out_ms` is how what it set goes when the cue
+ends — the sequence going back past it, or Off — falling back to the show's *letting
+go* time. Per capture as well as per cue, the capture winning. It used to split by
+direction (ETC's downtime), and at HHG that read as a bug: back into a cue with an out
+time, every light caught higher than the cue faded and every one caught lower snapped.
 
 **And it fades in a shape, asked for in the same three steps.** The capture's `easing`,
 then the cue's, then the show's `fade_curves` — `FadeCurves::resolve` in `pult-schema`,
@@ -911,7 +998,7 @@ one implementation, because playback and the cue editor deciding it separately w
 disagree only on the cues nobody tested. Both are `Option<Easing>` so that "said
 nothing" is a different value from "said linear": `Easing::default()` is `Linear`, and
 without the option a default above could never reach a capture. A show's own answer is
-per **group** — `FadeGroup` is intensity, position, colour, beam and everything else,
+per **group** — `FadeGroup` is intensity, position, color, beam and everything else,
 keyed off the parameter *key* so that a release, which holds only a key, asks the same
 question a capture does. Position rests at ease-in-out and the rest at linear, which is
 the whole point: a dimmer has run linear since dimmers had handles, and a head that
@@ -919,24 +1006,60 @@ runs linear into a mark and stops dead reads as a fault. **A release takes the s
 curve too** — letting go of a mark is a move, and nothing above it can say otherwise.
 Seeded from a station preference the way `home_fade_ms` is.
 
-## The loop, and a colour that says where a value came from
+## A flow remembers, and nothing it writes is seen in the same pass
+
+`variables` are what a flow holds between events: occupancy, counts, a maze that is open.
+The definition is PERSISTED; the value is SYNCED and `None` means "at the initial value",
+so opening a show resets every one with no code. **Values are written unattributed by
+everybody**, a flow and a phone alike, through the `variable.*` RPCs: a field write or a
+command carries the caller, and a night of PIR counts would push an operator's own edits
+out of Ctrl-Z. `Flows` finds a change by diffing what the graph holds, so every writer
+reaches a `Read` node the same way. **A flow's write is seen on the next pass, never
+inside the one that made it**, and a `Gate` reads its level from before the pulse. That
+is the whole cycle rule, plus a cut at `MAX_CHAIN` passes that react to nothing else.
+
+## An effect is kept as a template, and a strip has no dimmer
+
+`effect_templates` is the pool: an entry is `layers`, one per parameter, holding
+everything an effect is except what the selection decides. **Applying copies**, with
+`EffectSpec::template` recording where from, because a spec's phase came from a
+selection that is gone by the time anybody edits the template. Phases are worked out
+**in the selection's order**, never the patch's — over its *elements*, so a strip's cells
+each get one, and *each fixture* restarts the spread per fixture. `Shape::Flicker` and
+`Shape::Lightning` read the absolute cycle count and hash it, salted by phase, so they
+never repeat and are still the same number on every runtime. The Effects panel's
+preview asks `effect_values` in the wasm, so it shows what the lamps will do.
+An intensity layer reaches a color-only pixel as a gray of that level. See task 75.
+
+**And a strip the node draws is drawn here too.** In `effect` mode the node renders the
+pixels (OpenHaunt doc 14), and `pult_render::pixfx` is the console's copy of the node's
+`oh_pixfx.c`, so the plan and the rig show the comet the strip is running rather than one
+lamp. Two languages, so a corpus between them: `testdata/pixel-effects.json` is
+generated by the firmware (`firmware/test/host/pixfx_corpus.c`, kept as the node repo's
+`docs/14-pixel-effects.json`), checked there exactly and here within one byte, on at most
+1% of bytes, natively and through the wasm. An effect changed in the firmware regenerates
+the file there; copy it here and follow what the test says. `stage.ts`'s `stripPixels`
+is the one place a strip becomes pixels for both views — cells in `sacn` mode, the node's
+effect in `effect` mode, which are drawn and are not cells, so picking one picks the strip.
+
+## The loop, and a color that says where a value came from
 
 Select, set, store, play, update — the loop every other desk has. Four panels and three
 verbs, and the interesting part is how little of it is stored.
 
 **Three labels for a parameter, and they are not interchangeable.** `kindLabel` is the
 one the fixture type editor's selector round-trips through, `parameterKey` is what opens
-`live_fades`, and `displayLabel` is what an operator reads — *Colour*, not `ColorRgb`;
-*Gobo 2*, not `Gobo:2`. The schema spells colour the way GDTF does and that stays; the
+`live_fades`, and `displayLabel` is what an operator reads — *Color*, not `ColorRgb`;
+*Gobo 2*, not `Gobo:2`. The schema spells color the way GDTF does and that stays; the
 label is the console's own English. A column headed with the map key is the map showing
 through.
 
-**The `sheet` panel colours every cell by which layer is driving it**, and this console
+**The `sheet` panel colors every cell by which layer is driving it**, and this console
 does not have to keep a flag to do that. The model already keeps *what is driving* each
 parameter, so `frontend/src/lib/sheet.ts`'s `source(drivenBy, track, shownCue)` reads
 the answer off `driving.ts`'s four layers and the panel *calls* that rule rather than
 restating it — the discipline `stats.ts`'s `struggling()` already follows. Programmer
-amber, recording green, effect magenta, this cue white, tracked cyan, home grey;
+amber, recording green, effect magenta, this cue white, tracked cyan, home gray;
 MA-near deliberately, because an operator who has stood behind a grandMA reads amber as
 the programmer without being told. The one layer a page cannot read off a fixture row
 is the recording — a take is bytes that never leave the wasm — so `Evaluator::recording`
@@ -947,18 +1070,27 @@ only while a timeline is running.
 sheet draws the stack *up to* that cue, hard against tracked, reaching no output at all;
 a double-click or the Go column takes. Which means "a cue is the stack up to it" is now
 evaluated twice: `trackedThrough` in `cues.ts` mirrors `cue::tracked_through`, because a
-cue clicked in a list has to colour the sheet in the same frame, and `testdata/tracking.json`
+cue clicked in a list has to color the sheet in the same frame, and `testdata/tracking.json`
 holds the two together the way `selection-queries.json` holds `evaluate`.
 
-**Update needs no target**, and *which* cue is `drivingCues` — **not** `live_fades`.
-`emit_motion` skips every fade and effect under a key the programmer holds, deliberately,
-so at the moment Update needs the answer the row is gone. The answer is the latest
-capture of the key over the tracked stack of each live sequence, with the sequence that
-went most recently winning a contested one, because that is what `start_capture` did to
-the parameter — `trackedThrough` again rather than a third rule. `updateDriven` writes
-each held value into that cue, one gesture over however many cues it touches; keys
-nothing is driving are handed back rather than guessed at, and the Store dialog opens
-with exactly those ticked.
+**Update and Store are the station's, and there is one of each.**
+`infra/storing.rs` is the whole of both, behind the `programmer.update` and
+`programmer.store` RPCs: the top bar, the Store dialog, the command line and the wing all
+reach the same code, so a cue stored from the wing and one stored from the screen are
+the same cue, and each act is one gesture under the caller's name — the programmer's
+clearing included. There were four copies (the page, the dialog, `wing_control`, the
+command-line plugin) and they had already parted. A plugin calling either acts for the
+operator its command is running for (`LocalRpcDeps::acting_for`).
+
+**Update needs no target**, and *which* cue is `storing::driving_cues` — **not**
+`live_fades`. `emit_motion` skips every fade and effect under a key the programmer holds,
+deliberately, so at the moment Update needs the answer the row is gone. The answer is the
+latest capture of the key over the tracked stack of each live sequence, with the sequence
+that went most recently winning a contested one, because that is what `start_capture`
+did to the parameter — `tracked_through` again rather than a third rule. Each held value
+goes into that cue, one gesture over however many cues it touches; keys nothing is
+driving are handed back rather than guessed at, and the Store dialog opens with exactly
+those ticked. While a cue is loaded for editing, Update means that cue.
 
 **And an edit to a cue that is standing moves the rig**, which is what makes Update mean
 anything: the stage keeps looking the way you set it rather than snapping back.
@@ -967,11 +1099,14 @@ agrees with where it is going, from `value_at(now)` over `home_fade_ms` — the 
 `release_key` follows, because swapping a running fade's `to` in place would jump. Its
 index is keyed by cue, **fixture** and parameter: a cue captures the same key for every
 fixture in it, and an index without the fixture collapses a system into whichever lamp
-came last and then moves all of them. **Cue only** is the other half: `cueOnlyCompensation` writes
+came last and then moves all of them. **Cue only** is the other half: `cue_only_compensation` writes
 what the *next* cue was tracking into it, for every key the store changes that the next
 cue does not capture itself, so a change stops at this cue's edge. The compensating
 capture carries the value and none of the timing — it is going into a different cue and
 should move the way that cue moves. Both are one gesture, so each is one Ctrl-Z.
+A value **taken out** of the cue on stage lets go the same way
+(`release_dropped_captures`): to an earlier cue that tracks it, another live sequence, or
+home. It is taken out from the sheet's cell strip or the cue's Inspector (*Caps*).
 
 **Space is Go on the cue sheet touched last**, and with none focused there is no Go and
 a toast. A console with three of them open has to answer which, and answering it by
@@ -981,8 +1116,8 @@ picking one is a look on stage nobody asked for.
 
 `presets` is a PERSISTED collection of `Preset { id, name, values }`, one flat pool
 whose values may be **any mix** — a preset *is* a look, and a look is usually a position
-and a colour together. The I/P/C/B/O tags an operator filters by are **derived from the
-keys and never stored**, so a preset that grows a colour is a colour preset from that
+and a color together. The I/P/C/B/O tags an operator filters by are **derived from the
+keys and never stored**, so a preset that grows a color is a color preset from that
 moment and nobody has to reclassify it.
 
 **Reference first, literal beside it.** `ParameterCapture.preset` and
@@ -1014,7 +1149,7 @@ the stated exception — because a fourth hand-written spelling would be a plugi
 a key nothing writes.
 
 ```
-cd frontend && npm test                              # the sheet's colours, tracking, cue only, presets
+cd frontend && npm test                              # the sheet's colors, tracking, cue only, presets
 cargo test -p pult-schema --test tracking_corpus     # the other half of that corpus
 cargo test -p pult-backend --lib playback::tests::presets   # a standing cue follows a palette
 cargo test -p pult-backend --test counts             # a store across three cues is one undo
@@ -1023,7 +1158,7 @@ cargo test -p pult-backend --test counts             # a store across three cues
 ## A piece says where it connects, and a light says what it is clamped to
 
 Until a person could put a truss in a room, a stock piece was a shape the *browser*
-drew: `stock.ts` built cylinders from `catalogue.rs`'s dimensions, and that was the
+drew: `stock.ts` built cylinders from `catalog.rs`'s dimensions, and that was the
 whole of what an `f34-2m` looked like. Which meant an exported MVR carried an **empty
 group** where the truss was — MVR has no primitive, its `GeometryNode` is a file or a
 symbol instance — so a rig built here and opened in Vectorworks was a room full of
@@ -1039,13 +1174,13 @@ outlived the code that made it would be a stale asset nobody could explain, and 
 nothing here a peer holds that this station cannot make in a hundred microseconds.
 Determinism is a gate rather than a nicety — the ETag, the archive entry's name and the
 symdef's uuid all rest on it — so no map is iterated, every position is rounded to a
-micrometre, and the tests generate every piece twice.
+micrometer, and the tests generate every piece twice.
 
 **A `.glb` goes out as a symdef, and comes back as the piece.** `stock_symdef_name` carries
 the piece id and its canonical properties, and `stock_symdef_uuid` is a v5 of that name;
 `parse_stock_symdef` checks the uuid against the name **before trusting it**, which is
 what stops a drawing that happens to name a symbol `pult-stock:f34-2m:{}` from having its
-own mesh thrown away. This console restores `catalogue` and stores no mesh; anybody else
+own mesh thrown away. This console restores `catalog` and stores no mesh; anybody else
 opens an ordinary symbol with a truss in it.
 
 **A connector is a point, an outward facing and a kind, and mating is the whole snapping
@@ -1069,16 +1204,16 @@ the light off the truss.
 a mount on a truss that came out of a drawing means knowing where its chords are, and
 those come off the mesh's own bounds — which only `geometry.ts` ever measures, because
 the station never loads a mesh. So the browser is the writer for *every* parent,
-catalogue piece or drawing alike, and `testdata/mounts.json` is what keeps its arithmetic
+catalog piece or drawing alike, and `testdata/mounts.json` is what keeps its arithmetic
 equal to `Mount::transform`'s. `HUNG_BELOW` is 205 mm measured from the **chord**, which
-on an F34 is the same 350 mm below the bar's centre line every demo used before there
-were chords to hang off. A catalogue piece declares its four; anything else gets **one**,
+on an F34 is the same 350 mm below the bar's center line every demo used before there
+were chords to hang off. A catalog piece declares its four; anything else gets **one**,
 along the bottom of its bounds, which is the smallest guess available on purpose.
 
 **A re-import reads the clamp back off the geometry.** MVR has nowhere to say a light is
-clamped, only where it is — so where the parent is a catalogue piece and the light is
-sitting within a millimetre of where one of that piece's clamps would put it, that is
-what it is on. A millimetre because the number came out of this console's own arithmetic
+clamped, only where it is — so where the parent is a catalog piece and the light is
+sitting within a millimeter of where one of that piece's clamps would put it, that is
+what it is on. A millimeter because the number came out of this console's own arithmetic
 on the way out; anything looser would be inventing a clamp for a light somebody placed by
 hand.
 
@@ -1096,7 +1231,7 @@ each is one Ctrl-Z. Two selections, deliberately separate: a `SelectionQuery` is
 question about the *rig* and `at 50` means the fixtures it answers, so `selectedObjects`
 is its own store and a truss is never in that scope.
 
-`SCHEMA_GENERATION` is 5.
+`SCHEMA_GENERATION` is 10.
 
 ```
 cargo test -p pult-schema                          # the corpora, the glb, the joints
@@ -1107,7 +1242,7 @@ curl -o truss.glb 'http://localhost:7700/stock/f34-3m.glb'
 
 ## The rig is a drawing, and a place is a transform
 
-`Fixture::position` is an `Option<Transform>` — a position in metres, a rotation as
+`Fixture::position` is an `Option<Transform>` — a position in meters, a rotation as
 XYZ Euler degrees, and a **signed** scale — and it is *relative to whatever the
 fixture hangs off*. Alongside it are `scene_objects` (trusses, rostra, screens, focus
 points, and `Group` for the handle that moves a truss and its lights together),
@@ -1147,13 +1282,13 @@ goes to nothing, and the power on that term falls with how end-on the beam is se
 looking down the barrel lights the whole disc — the flare — with no second term. The
 normal is worked out in the vertex shader for the cone it just made and interpolated,
 never from screen-space derivatives, which are flat per triangle and draw the strips.
-Attenuation is along the throw in metres and steeper for a wider beam. The fragment's
-alpha is **one**: additive blending scales the colour by it, and writing the strength
+Attenuation is along the throw in meters and steeper for a wider beam. The fragment's
+alpha is **one**: additive blending scales the color by it, and writing the strength
 there as well squares every beam into a ghost. The first version of this shader got
 every one of those wrong at once — a silhouette term taken from the beam's *axis*,
 which is the same for every pixel across the beam — and drew flat, hard-edged,
-faceted cones. Colour dims in **HSV, value only** — a scaled RGB drags a saturated
-colour towards grey on the way down, which no dimmer does. Haze is turbulence (the
+faceted cones. Color dims in **HSV, value only** — a scaled RGB drags a saturated
+color towards gray on the way down, which no dimmer does. Haze is turbulence (the
 absolute value of signed noise, four octaves) in world space with **time as the third
 axis**, floored at the beam's own intensity so it adds folds rather than taking light
 away; its two knobs are `Show::haze_density` and `haze_turbulence`: show data, because
@@ -1180,7 +1315,7 @@ The camera moved, the rig changed — worked out by comparing this frame's attri
 against the last frame's, through `Math.fround`, because the output store ticks every
 frame whether or not a value moved — or the picture animates on its own clock: a lit
 beam with haze in it, a strobe. Only lit beams get an instance, packed from the front,
-since an unlit cone whose fragments all discard is still a cone that is rasterised. A
+since an unlit cone whose fragments all discard is still a cone that is rasterized. A
 settled dark rig costs nothing and the panel prints *idle*; beside the page's own work
 per drawn frame it prints what the GPU took, read through
 `EXT_disjoint_timer_query_webgl2`, which is the figure a laggy view is felt by — a rAF
@@ -1193,16 +1328,16 @@ light is not. The four modes are four questions: *Wireframe* (where is everythin
 wire materials and an aim line per fixture), *Cones* (where is it pointing: the same
 cone under a flat alpha-blended shader, never white), *Real* (the beam shader) and
 *Photoreal* (the scene into a half-float target, bloom above white, ACES over the
-sum — the only thing that keeps crossing beams a colour). `dress` in `Rig3D.svelte`
+sum — the only thing that keeps crossing beams a color). `dress` in `Rig3D.svelte`
 switches by swapping materials and visibility on what the scene already has; nothing
 is rebuilt. Two traps there: the scene object is `$state.raw`, because a deep proxy
 keeps a plain field written through it and the render loop holds the object itself;
-and the photoreal frame is linear light, so the clear colour, the grid's grey and the
+and the photoreal frame is linear light, so the clear color, the grid's gray and the
 beams' gain are said in linear terms on that path only. Measure any of this in a
 *headed* browser only: a hidden tab has no animation frames.
 
 **And the rig view is an editor, but the editing is in panels beside it.** **Pieces** is
-the catalogue to drag from and the work plane a drop lands on; **Rig tools** is import
+the catalog to drag from and the work plane a drop lands on; **Rig tools** is import
 and export, the gizmo's three modes, duplicate, delete and line-up; **Objects** is the
 drawing as a tree by parent — the only way to reach a `Group`, which has no geometry and
 so cannot be clicked; **Object** is what one piece is, in numbers. The *Scene* layout
@@ -1237,12 +1372,12 @@ demo and a festival, on a tablet and on a monitor. Three decisions live there: p
 stands a couple of degrees off vertical, because a camera looking straight down has
 nothing to resolve its own roll; section looks from stage left, so the stage is on the
 left of the frame the way a section is drawn; and the box reaches the deck for the rig
-and **not** for a selection, since one head at six metres framed with the floor in shot
-is six metres of air. Focus changes only the distance, never the angle. The front
+and **not** for a selection, since one head at six meters framed with the floor in shot
+is six meters of air. Focus changes only the distance, never the angle. The front
 preset *is* where the view opens, so those are one place rather than two.
 
-**And a piece with no mesh is drawn from the catalogue.** `frontend/src/lib/stock.ts`
-turns `SceneObject::catalogue` into geometry — see *A show is a folder* — which is what
+**And a piece with no mesh is drawn from the catalog.** `frontend/src/lib/stock.ts`
+turns `SceneObject::catalog` into geometry — see *A show is a folder* — which is what
 lets a console that has never imported an MVR hang a rig on something.
 
 **The browser draws the drawing.** `frontend/src/lib/geometry.ts` loads a mesh once
@@ -1268,6 +1403,16 @@ downstage truss" stays true after somebody patches a fifth one. What is selected
 show's, a PERSISTED `groups` row holding the query itself. Recalling one takes on the
 question, so a fixture patched afterwards joins it, and `group 3` in the command line
 leaves exactly what clicking the group leaves.
+
+**A fixture is typed by its number, never its row.** `fixture 3` on the command line and
+the wing is `Fixture::fixture_number` 3 (`command_line_core::numbered`); the station
+numbers a fixture created without one, one past the highest. Numbers may repeat. See
+task 100.
+
+**And then which cells.** `SelectionQuery::cells` cuts every multi-cell fixture the query
+answers (MA's `.`); `elements()` — in `group.rs` and `selection.ts`, held by the corpus —
+is the ordered `(fixture, cell)` list a selection acts on, and `rowTargets` is where a
+value set on it lands. See task 82.
 
 Which means `SelectionQuery` is evaluated twice — `crates/pult-schema/src/types/group.rs`
 for the station and plugins, `frontend/src/lib/selection.ts` for the browser, because
@@ -1434,6 +1579,15 @@ cargo test -p pult-backend --test wire        # two stations, and a console watc
 cd frontend && npm test                       # what a browser makes of the batches
 ```
 
+**A hand on the wire, and it lets go when the hand does.** The wire panel's *Test* forces
+channels onto an output by number — `output.test`, a `ChannelTest` per session — laid
+over the render in `dmx::force`, after `render_carried` and before the dedup so the sheet
+reads back what really left. It works on a universe nothing is patched on (the first use),
+only on one the output carries, and it **expires with the session that asked**: a closed
+tab or a dropped sync link releases it, because this is the one diagnostic that drives the
+rig. A peer's output is reached with `SyncMessage::OutputTest` (protocol 9), and the page
+repeats a held test every three seconds so a returning link gets it back. See task 84.
+
 ## Which cable it goes out on
 
 A console at a venue has a house LAN, an isolated lighting network with no route to
@@ -1490,10 +1644,44 @@ torn down. Plugging the show network in never needs a restart. The output manage
 reconciles on its own one-second timer for the same reason: a cable coming or going, and
 a failover, change what should be running without anything writing to the show.
 
+**An mDNS daemon does not survive its machine's addresses moving**, so all three start
+again when they do. `mdns-sd` 0.13 adds a socket for a new interface, but a daemon up
+while a Mac went from wifi to ethernet reported the node it had found as removed several
+times a second and never resolved it again, while `dns-sd` and a fresh daemon found it at
+once. `Network::address_changes` ticks when a reachable address comes or goes; the
+OpenHaunt browser, the session (which also re-announces the station at its new address)
+and MVR-xchange's TCP mode each start a fresh daemon on it. And the broker list goes over
+HTTP to every adopted node at its last address, seen by mDNS or not — a node still dialing
+the old broker is exactly the one a browse has lost.
+
 **Restricting an mDNS daemon restricts discovery too, and that is the feature.** A daemon
 both advertises and browses, so a console kept on the lighting network will not *find* a
 peer on the house LAN either — and adopting an OpenHaunt node it cannot reach is how a
 fixture ends up on a cable that cannot carry it.
+
+**A Mac refuses multicast to an app nobody allowed**, silently — "No route to host" at
+`debug`, which is mDNS finding nothing and multicast sACN never leaving. The desktop apps
+carry `NSLocalNetworkUsageDescription` and `NSBonjourServices` in their `Info.plist`; a
+`pult-backend` started from a shell inherits the **terminal's** permission (System
+Settings → Privacy & Security → Local Network). `session.joinAt { address }` joins a
+station by its sync address, so a spare never depends on discovery.
+
+**A spare holds every asset.** `infra::assets::mirror` asks each peer what it holds and
+fetches what is missing, both ways, without knowing which collections name an asset: a
+follower plays nothing, so it used to fetch nothing, and was promoted holding none of the
+sound. See task 77, and `tests/failover.rs` for the leader killed mid-scare.
+
+**And a node finds the next leader itself.** Every station's row says where its broker
+door is (`Station::broker_addr`), and the leader hands its nodes the list, itself first,
+over HTTP and on the retained `openhaunt/brokers` (OpenHaunt doc 15). **Only the leader's
+door is open** — `infra/devices/broker.rs` is rumqttd behind a `FrontDoor` that closes when
+the station stops driving, because rumqttd cannot be stopped and a follower holding a node
+is a node whose inputs nobody acts on. So the walk can only end at whoever leads. A node's
+input is **not gated on mDNS**: one that walked here may be one no browse here has seen.
+Nor is anything else: an adopted node on the broker gets a device-list entry from its
+`status` and its `net` (`DeviceManager::hear`), and is asked `/api/v1/info` on port 80,
+until a browse finds it.
+A broker is per door port, not per process, so two stations in one test are two brokers.
 
 **Which station sends an output is part of the same question.** Art-Net and OpenHaunt
 have no way to arbitrate between two senders, so `OutputConfig::node_id` being `None`
@@ -1570,15 +1758,15 @@ highest of each slot; a source silent for 2.5 s is gone. That last rule is what 
 console being *unplugged* different from a console *sending zeros*: the first drops out
 and lets whatever else is there through, and the second wins on HTP against nothing.
 
-**A colour decodes exactly on any fixture, and that is `unmix`.** `r`, `g` and `b` come
+**A color decodes exactly on any fixture, and that is `unmix`.** `r`, `g` and `b` come
 from the emitters that are primaries by `primary_channel`'s own rule — the same rule the
 mix passes them through going out — and then every emitter whose received level differs
-from what that colour would derive becomes an **override**. A CMY head has no primaries
+from what that color would derive becomes an **override**. A CMY head has no primaries
 and comes back as three overrides over black; an RGBW head whose white is somewhere the
 mix would never put it comes back with the white pinned; a plain RGB par comes back with
-nothing pinned, which is a colour an operator can then edit. Half a byte of tolerance,
+nothing pinned, which is a color an operator can then edit. Half a byte of tolerance,
 because the levels came off a wire as bytes: tighter and every emitter of every fixture
-would be pinned, and the next colour command would do nothing.
+would be pinned, and the next color command would do nothing.
 
 **`pult_render::track` is the codec, and there is one of it.** Hand-written
 little-endian — magic `PLTK`, a `u16` version, per `(fixture, key)` a list of change
@@ -1632,6 +1820,28 @@ On stop it encodes, `AssetStore::put`s under `application/vnd.pult.track`, appen
 `TimelineTrack` and clears `recording`. Selection-scoped recording was declined: a take
 made with the wrong selection is missing fixtures nobody notices until playback.
 
+**Or from the programmer**, `RecordSource::Programmer`, recorded by the **leader**: every
+key that changes while the timeline rolls, from its first touch. The engine feeds the
+take a snapshot after each write it applies, and tells the input manager about a moved
+transport *before* that, or the first move after a loop wraps lands on the lap that
+ended. **A pass punches in at each key's first touch**: a row per parameter from the
+touch to the stop, cut out of every row already playing that key
+(`types::timeline::store_take`), so the old take plays up to the hand landing on the
+fader and resumes after the stop. **A button is not a take**: a key that appears in the
+programmer and leaves it holding one value becomes a `TimelineFlash` — a value, a start
+and a length — laid over every row by `pult_render::compose_with` and cutting none, so a
+second pass adds presses rather than erasing the first's. A jump closes the pass, so a
+looping timeline is a rehearsal where every touched lap is a pass. The faders are given
+back at the final stop, because programmer beats track.
+
+**And nothing a take records is merged by the station.** Every pass is an asset at once
+and a line on the timeline's PERSISTED `pending`; the page that armed it (`armedBy`,
+kept as `Timeline::armed_by`) opens a review, every other page offers it in the top bar,
+and `take.merge` / `take.discard` answer it under the caller's name in one gesture — so
+one Ctrl-Z puts a merged take back up for review. A take's change points are edited in
+the lanes and written as a new one-key recording the row points at; the recording a row
+pointed at before is never rewritten. See task 86.
+
 **Stopping a timeline lets its keys go.** The engine samples each enabled track at the
 stop position — through `infra/tracks.rs`, the *same* cache the output manager reads, so
 the two cannot disagree about what a stopping track was showing — and hands them to
@@ -1648,7 +1858,7 @@ else on the machine is listening to the same show LAN, so `SO_REUSEADDR` (and
 multicast group is joined *on* an interface as a separate act, and binding a receiver to
 a unicast address is what stops broadcast Art-Net arriving at all.
 
-`SCHEMA_GENERATION` is 5. `FollowMode::Timecode` is gone — a position written on a cue
+`SCHEMA_GENERATION` is 10. `FollowMode::Timecode` is gone — a position written on a cue
 is a clock the cue cannot see, and the same fact as a `timelines` event is a list an
 operator can read and drag.
 
@@ -1691,9 +1901,50 @@ every browser's playhead visibly stuttering. **Audio never gates the transport**
 timeline with no audio, or on a station with no device, runs exactly as task 66 left it,
 and reports *nothing* rather than an empty status row.
 
+**A timeline's sound is clips, each going somewhere, and one stream carries all of
+them.** `Timeline::clips` is files at positions, trimmed, with their own gain, a count of times round and
+`AudioDestination` — a speaker zone, or one node's loudspeaker.
+Every running timeline a station plays is a *deck* in one mixer in one callback, at the
+device's full channel count (`pult_audio::mix`), so each timeline anchors itself off one
+sample clock and two cannot drift apart. The callback takes decks over a lock-free
+queue and hands back what they replaced to be dropped elsewhere: **it never locks,
+allocates or frees.** A channel the device has not got refuses that clip by name on
+the status row — never folded onto a channel that exists, which is somebody else's
+speaker. The device is open while anything here *has* a clip, running or not, because a
+scare a flow starts cannot wait for CoreAudio.
+
+**A clip goes to a zone, and each station says where the zone is.** `speaker_zones` is
+the show's ("Area 2", "IBC row"); `SpeakerZone::channels` maps it per station, on the
+row, the shape `OutputConfig::interfaces` has — because channel 4 names one machine's
+card, and a spare promoted mid-scare must play the zone on *its* channels.
+A zone channel (mono, or L and R) goes to **any number of outputs** per station
+(`Outputs`, which also reads an old show's one number per channel — by its type, since
+the SQLite path parses columns by type). `station_audio` is PERSISTED and is the show's
+list of stations it has seen, so a station that is off is still mapped from here.
+`types::zone::station_channels` is the one rule, resolved by the playing station before
+anything is decoded: a zone it has not mapped, or mapped to the wrong width, is a
+`clip_faults` entry naming the zone and the station, never a fold onto channels it has;
+`clip_channels` on the status row says where each clip comes out here. A zone may hold
+node speakers too, not keyed by station, and a clip some of whose members fail is
+`clip_partial`, not `clip_faults` — that is kept for silence (`zone::clip_health`). Device
+aliases and channel names are the station's `[audio.names]`, published to the others as
+the SYNCED `station_audio` row so any station's zones are mapped from any station; the
+names are changed only on their own machine. Setup → Audio is the card, the names and the
+matrix. See tasks 81 and 83.
+
+**A node's loudspeaker is somewhere a clip can go.** `AudioDestination::Node` hands a
+clip to an OpenHaunt node, which plays it from its own flash at a show time or from an
+RTP stream. The operator picks which per clip; nothing works it out from the file.
+**The station driving the nodes is the one that speaks to them**, because the broker
+and `openhaunt/clock` are its own. What is uploaded is the region the timeline plays,
+written deterministically so the sha never changes. Gain travels on `play`, so a fader
+never rewrites flash. A stream follows the node's retained `net` without a new session,
+and a node's own fixture may ask for it down every path. See `infra/audio/nodes.rs` and
+tasks 71 and 89.
+
 **Peaks are an asset, computed once by the station that plays the file.** Min and max
 per bin at a hundred bins a second, as `i16`, under `application/vnd.pult.peaks`;
-`Timeline::peaks` is the sha. Min and max because a waveform is read as an envelope and
+`AudioClip::peaks` is the sha. Min and max because a waveform is read as an envelope and
 a snare that peaks for two milliseconds is invisible in its bin's mean; `i16` because
 the sixteenth bit of a column's height is not a thing anybody can see and it halves what
 the tablet downloads. Computed by the *playing* station, so two of them do not race to
@@ -1747,7 +1998,7 @@ queue a `cpal` input thread pushes them into, so a generated LTC stream exercise
 real decoder, the real chase, the real anchor write and the real firing.
 
 ```
-cargo test -p pult-audio                             # peaks, LTC, the detector, the chase
+cargo test -p pult-audio                             # peaks, LTC, the detector, the chase, the mix
 cargo test -p pult-backend --lib infra::audio        # who plays, and the two conversions
 cargo test -p pult-backend --lib model::timelines    # the speed-master step
 cargo test -p pult-backend --test audio              # timecode in, an anchor and a Go out
@@ -1758,7 +2009,7 @@ cd frontend && npx vitest run src/lib/waveform.test.ts
 ## Paperwork is a drawing, and it is drawn twice
 
 The rig has to leave the console as paper: A3 sheets with a title block, viewports at a
-stated scale, labelled plan heads, and tables of weight, power and counts. The roadmap
+stated scale, labeled plan heads, and tables of weight, power and counts. The roadmap
 called this "a read-only plugin over introspection" and that was half right, which is
 the interesting half.
 
@@ -1771,7 +2022,7 @@ and a plugin, the command line and curl can all ask what a truss weighs. Written
 browser beside the renderer, that number would have been reachable by nothing.
 
 **One drawing model, rendered twice.** `frontend/src/lib/paperwork/drawing.ts` is lines,
-polylines, text and images in **paper millimetres from the top left**; `svg.ts` renders
+polylines, text and images in **paper millimeters from the top left**; `svg.ts` renders
 it for the preview and `pdf.ts` for the file. There is no SVG-to-PDF converter anywhere,
 deliberately — a converter is a third implementation of the page with its own opinions
 about dashes, joins and text placement, and it is what would make the file differ from
@@ -1811,7 +2062,7 @@ worked out. It printed `1:0` before that was written down.
 
 **Nothing prints a bare total, anywhere.** `Totals` carries what it could *not* account
 for beside what it summed — how many items had no figure, and whether any of it came
-from the catalogue's nominal weights — and `Totals::weight_label` is the one place that
+from the catalog's nominal weights — and `Totals::weight_label` is the one place that
 becomes text, so the PDF, the CSV and a plugin's answer cannot disagree about whether a
 number is complete. `≥ 412 kg nominal` is a different claim from `412 kg`, and `—` is
 what a total with nothing in it says, because zero reads as a rig that weighs nothing.
@@ -1819,9 +2070,9 @@ A filtered table captions what it left out; a plan that could not place twelve f
 says so in its margin. **A loading table is a number somebody hangs a truss on**, and
 this is the whole reason the module is shaped the way it is.
 
-**Catalogue weights are nominal and say so.** `StockPiece::weight_kg` is a round figure
+**Catalog weights are nominal and say so.** `StockPiece::weight_kg` is a round figure
 for the *class* of part — 290 mm four-chord box truss, 48.3 × 4 mm tube, an
-aluminium-and-ply deck — taken at the heavy end, because the direction to be wrong about
+aluminum-and-ply deck — taken at the heavy end, because the direction to be wrong about
 a load is upwards. `SceneObject::weight_kg` overrides one, and a total resting on
 entered weights is printed differently from one resting on these.
 
@@ -1833,7 +2084,7 @@ than printing what it has. The first exported PDF had no trusses on it at all an
 nothing, because two animation frames is not a download.
 
 Three smaller rules with reasons. **A captured line mode clears to white** and dresses
-its models in flat grey — a rig view is a dark studio, and a shaded axonometric on A3
+its models in flat gray — a rig view is a dark studio, and a shaded axonometric on A3
 came out as a near-black rectangle. *Real* and *photoreal* keep the dark ground, which
 is not an inconsistency: a beam is additive light and there is no version of one on
 white. **Fixture bodies keep their own material** even on paper, because the per-frame
@@ -1871,7 +2122,7 @@ animation frames at all** and an export that stalled on one would report a failu
 seconds later that had not happened.
 
 **A 2D viewport can dimension each bar**, which is the only question anybody up a ladder
-is asking. `Dimensions` carries the datum — left, right or centre, because every crew has
+is asking. `Dimensions` carries the datum — left, right or center, because every crew has
 a convention and none of them is right — and draws a gap chain plus a running chain, in
 one unit per bar decided by its longest figure. Three things there were wrong first and
 are worth keeping: the chain is measured **along the bar in its own frame**, not across
@@ -1968,7 +2219,7 @@ every entry in it is real.
 Three traps, each of which was a defect first.
 
 **A TCP station's address comes from mDNS and from nowhere else.** A message arriving
-over TCP comes from the *ephemeral* port the sender dialled out of, and every interaction
+over TCP comes from the *ephemeral* port the sender dialed out of, and every interaction
 in that mode is a short connection — so remembering a station from an inbound message
 overwrote its discovered listening address with one that was dead on close, and commits
 were announced to a closed port. `Known::dialable` is what says which addresses can be
@@ -2037,6 +2288,11 @@ are the corpus that holds the two compilations of the evaluator to each other, a
 guard outside the default suite is a guard nobody runs. Its vitest half needs
 `scripts/build-evaluator.sh` to have been run, and says so loudly rather than passing
 quietly when it has not.
+
+**Cargo never empties `target/`**, and it reached 313 GB: every feature set, test target
+and toolchain it ever built leaves a copy behind. A dev build now keeps line tables only
+(`[profile.dev]` in `Cargo.toml` says why), and `scripts/sweep-target.sh [--days 7]
+[--dry-run]` deletes what has not been rebuilt in a week.
 
 Both the Rust build and `svelte-check` are kept at zero warnings, so a new one is
 visible rather than buried.

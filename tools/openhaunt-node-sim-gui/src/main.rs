@@ -160,7 +160,7 @@ async fn apply(config: NodeConfig, sim: State<'_, Sim>) -> Result<Snapshot, Stri
     }
 }
 
-/// The catalogue presets, as configs to start editing from.
+/// The catalog presets, as configs to start editing from.
 #[tauri::command]
 fn presets() -> Vec<NodeConfig> {
     ModuleKind::ALL.iter().map(|module| module.config("1a2b3c")).collect()

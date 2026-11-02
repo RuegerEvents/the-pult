@@ -7,7 +7,7 @@
  * put the camera, worked out from the rig's own bounding box, so the same button
  * frames a five-fixture demo and a two-hundred-head festival.
  *
- * Pure arithmetic, in metres, with no three.js in it: the panel owns the renderer and
+ * Pure arithmetic, in meters, with no three.js in it: the panel owns the renderer and
  * two `rig` tiles can be open at once, so a shot is a value one of them is told to
  * take rather than a camera anything here holds.
  */
@@ -17,7 +17,7 @@ import { fixturePoint } from './stage.js';
 import { worldTransform } from './scene.js';
 import { piece, stockSize } from './stock.js';
 
-/** A box in metres, in world axes. */
+/** A box in meters, in world axes. */
 export type Bounds = { min: Vec3; max: Vec3 };
 
 /** Somewhere to put a camera, and what to point it at. */
@@ -56,10 +56,10 @@ export type BoundsOptions = {
 	/**
 	 * Whether the box reaches the deck.
 	 *
-	 * True for the rig, because a rig hung at six metres over an empty floor is still
+	 * True for the rig, because a rig hung at six meters over an empty floor is still
 	 * a room with a floor in it, and a front view framing only the bar is a picture of
-	 * a bar. False for a *selection*: an operator who picked one head at six metres
-	 * wants that head, not six metres of air under it.
+	 * a bar. False for a *selection*: an operator who picked one head at six meters
+	 * wants that head, not six meters of air under it.
 	 */
 	toFloor?: boolean;
 };
@@ -70,10 +70,10 @@ export type BoundsOptions = {
  * Fixtures **and** scene objects, because a truss standing where no lantern hangs is
  * still part of what somebody wants in frame.
  *
- * A **catalogue** piece counts as its whole extent, because the table says how long it
- * is — and once a person can build a rig out of nothing but catalogue pieces, an origin
- * is not enough: a nine-metre bar counted as a point is a nine-metre bar with three
- * metres of itself outside the frame. Its longest dimension is used in every direction,
+ * A **catalog** piece counts as its whole extent, because the table says how long it
+ * is — and once a person can build a rig out of nothing but catalog pieces, an origin
+ * is not enough: a nine-meter bar counted as a point is a nine-meter bar with three
+ * meters of itself outside the frame. Its longest dimension is used in every direction,
  * which is generous by up to that length on a turned piece and is the honest answer
  * without composing a box through a rotation. Anything else still counts as its origin,
  * which the margin covers: an imported mesh's size is known only once it has loaded, and
@@ -92,7 +92,7 @@ export function rigBounds(
 	}
 	for (const object of pieces ?? objects.values()) {
 		const at = worldTransform(object.transform, object.parent, objects).position;
-		const entry = piece(object.catalogue);
+		const entry = piece(object.catalog);
 		if (!entry) {
 			points.push(at);
 			continue;
@@ -118,7 +118,7 @@ export function rigBounds(
 	};
 }
 
-const centreOf = (b: Bounds): Vec3 => ({
+const centerOf = (b: Bounds): Vec3 => ({
 	x: (b.min.x + b.max.x) / 2,
 	y: (b.min.y + b.max.y) / 2,
 	z: (b.min.z + b.max.z) / 2
@@ -169,14 +169,14 @@ const radiusOf = (b: Bounds): number => {
  * room rather than as a drawing.
  */
 export function presetShot(preset: ViewPreset, bounds: Bounds, aspect = 16 / 9): Shot {
-	const c = centreOf(bounds);
+	const c = centerOf(bounds);
 	const s = sizeOf(bounds);
 	const target: [number, number, number] = [c.x, c.y, c.z];
 
 	switch (preset) {
 		case 'front': {
 			const back = fitDistance(s.x / 2, s.y / 2, aspect);
-			// From the far face rather than the centre, so the downstage truss is
+			// From the far face rather than the center, so the downstage truss is
 			// inside the frame and not on the glass.
 			return { position: [c.x, EYE_HEIGHT, bounds.max.z + back], target };
 		}
@@ -219,7 +219,7 @@ export function presetShot(preset: ViewPreset, bounds: Bounds, aspect = 16 / 9):
  * changes — the direction is the one they are already looking from.
  */
 export function focusShot(bounds: Bounds, from: Vec3, aspect = 16 / 9): Shot {
-	const c = centreOf(bounds);
+	const c = centerOf(bounds);
 	const radius = Math.max(radiusOf(bounds), 0.75);
 	const away = fitDistance(radius, radius, aspect);
 
@@ -275,7 +275,7 @@ export function orthoFrame(
  * Which projection a preset opens in.
  *
  * A plan and a section are drawings and are read straight on: parallel lines stay
- * parallel and a metre is a metre wherever it is on the page, which is the whole
+ * parallel and a meter is a meter wherever it is on the page, which is the whole
  * reason anybody draws them. The front and the three-quarter are pictures of a room.
  * It is a *default*, not a rule — the toggle is beside the presets and stays wherever
  * somebody puts it.

@@ -20,7 +20,7 @@
 	 */
 	import type { SceneObject } from '$lib/generated/index.js';
 	import { getDataContext } from '$lib/ws/context.js';
-	import { editing } from '$lib/stores/editing.js';
+	import { canEdit } from '$lib/stores/showLock.js';
 	import { piece } from '$lib/stock.js';
 	import { clearSelection } from '$lib/stores/selection.js';
 	import { collection } from '$lib/stores/show.js';
@@ -35,7 +35,6 @@
 	} from '$lib/stores/scene.js';
 
 	const data = getDataContext();
-	const unlocked = editing('objects');
 	const fixtures = collection('fixtures');
 
 	/** The drawing as a tree, flattened depth-first with the depth kept. */
@@ -72,9 +71,9 @@
 	const layerName = (id: string | null) =>
 		id === null ? '—' : ($layers.find((layer) => layer.id === id)?.name ?? 'a layer that has gone');
 
-	/** What it is: the catalogue piece it names, a mesh it carries, or its kind. */
+	/** What it is: the catalog piece it names, a mesh it carries, or its kind. */
 	function what(object: SceneObject): string {
-		const entry = piece(object.catalogue);
+		const entry = piece(object.catalog);
 		if (entry) return entry.title;
 		if (object.geometry.length > 0 || object.symbol) return 'Imported mesh';
 		return object.kind === 'Group' ? 'Group' : object.kind;
@@ -126,11 +125,11 @@
 					{#if lights > 0}
 						<span class="of">{lights} {lights === 1 ? 'light' : 'lights'}</span>
 					{/if}
-					<!-- Lock is show data, so it is behind the same edit toggle every other
-					     write in the console is behind. A locked piece keeps its gizmo away
+					<!-- Lock is show data, so the Show lock hides it like every other write
+					     in the console. A locked piece keeps its gizmo away
 					     and stays selectable: a piece you cannot pick is a piece whose name
 					     and layer you cannot read. -->
-					{#if $unlocked}
+					{#if $canEdit}
 						<label class="lock">
 							<input
 								type="checkbox"

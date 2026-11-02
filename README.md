@@ -84,6 +84,6 @@ Both the Rust build and `svelte-check` are kept at zero warnings.
 thing to remember: **`pult-schema` is the single source of truth**, and adding an
 entity type should need no edit anywhere else.
 
-## Licence
+## License
 
 MIT. See [LICENSE](LICENSE).

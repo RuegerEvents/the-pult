@@ -6,7 +6,7 @@
                 <FeatureGroup Name="Dimmer" Pretty="Dimmer">
                     <Feature Name="Dimmer"/>
                 </FeatureGroup>
-                <FeatureGroup Name="Color" Pretty="Colour">
+                <FeatureGroup Name="Color" Pretty="Color">
                     <Feature Name="RGB"/>
                 </FeatureGroup>
             </FeatureGroups>

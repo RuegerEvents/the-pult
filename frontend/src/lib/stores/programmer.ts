@@ -20,35 +20,36 @@
 import { derived, get, type Readable } from 'svelte/store';
 import type {
 	Cue,
+	Easing,
 	EffectSpec,
 	ParameterKind,
 	ParameterValue,
 	Preset,
 	PresetValue,
 	ProgrammerValue,
-	Sequence
+	Sequence,
+	StoreOnto
 } from '$lib/generated/index.js';
 import { parameterKey } from '$lib/patch.js';
+import { kindOn, splitTarget } from '$lib/effectPool.js';
 import {
 	applyPreset,
 	entryId,
 	entriesFromCue,
 	mergePresetValues,
 	presetValues,
-	sameValue,
-	storeCaptures
+	sameValue
 } from '$lib/programmer.js';
-import { drivingCues } from '$lib/cues.js';
 import { beginGesture, endGesture } from './gesture.js';
-import { collection, show, showData } from './show.js';
+import { offer } from './learn.js';
+import { collection, show, showClient, showData } from './show.js';
+import { uuid } from '$lib/uuid.js';
+import { actAt } from '$lib/ws/clock.js';
 
 // ── What is in the buffer ─────────────────────────────────────────────────────
 
 export const entries: Readable<ProgrammerValue[]> = collection('programmer_values');
 
-/// Read for one question — what timing the cue being edited already had — since the
-/// programmer itself carries none.
-const cues: Readable<Cue[]> = collection('cues');
 
 /** The entries by `(fixture, parameter key)`, for a control asking about itself. */
 export const byKey: Readable<Map<string, ProgrammerValue>> = derived(entries, ($entries) => {
@@ -92,15 +93,56 @@ let frame: number | null = null;
  * rival one beside it.
  */
 export function setValue(fixtureIds: string[], kind: ParameterKind, value: ParameterValue): void {
-	const key = parameterKey(kind);
-	for (const fixtureId of fixtureIds) {
-		pending.set(entryId(fixtureId, key), { fixtureId, kind, value });
+	setValueOn(
+		fixtureIds.map((fixtureId) => ({ fixtureId, kind })),
+		value
+	);
+}
+
+/**
+ * The same, onto targets that may each hold the parameter under its own kind: the
+ * cells of a strip, each its own `ColorRgb@n`. See `rowTargets`.
+ */
+export function setValueOn(targets: { fixtureId: string; kind: ParameterKind }[], value: ParameterValue): void {
+	// A control being learned can take this parameter for its own: the first of them,
+	// since a fader moves one parameter of one fixture.
+	if (targets[0]) offer({ kind: 'Parameter', fixture_id: targets[0].fixtureId, parameter: targets[0].kind });
+	for (const { fixtureId, kind } of targets) {
+		pending.set(entryId(fixtureId, parameterKey(kind)), { fixtureId, kind, value });
 	}
 	if (frame !== null) return;
 	frame = requestAnimationFrame(() => {
 		frame = null;
-		void flush();
+		// At most one flush waits behind the one being sent. Queued once per frame
+		// instead, a moving fader queued sixty a second behind writes that each wait for
+		// the station's answer, and everything trailed further behind (found at the gig).
+		// The waiting flush takes whatever is pending when its turn comes, so it is
+		// always the newest value that goes.
+		if (flushWaiting) return;
+		flushWaiting = true;
+		void inOrder(async () => {
+			flushWaiting = false;
+			await flush();
+		});
 	});
+}
+
+let flushWaiting = false;
+
+/**
+ * Every programmer write, one after another.
+ *
+ * A wing flash key pressed and let go fast lost its release (found at the gig): the
+ * press's create was already on its way to the station when the release's delete was
+ * sent, the delete found nothing, and the create landed after it — a mouth left at
+ * full. Writes made from here now leave in the order they were asked for, so a
+ * release always lands after the press it undoes.
+ */
+let writes: Promise<void> = Promise.resolve();
+function inOrder(write: () => Promise<void>): Promise<void> {
+	const next = writes.then(write, write);
+	writes = next.catch(() => {});
+	return next;
 }
 
 async function flush(): Promise<void> {
@@ -175,11 +217,16 @@ export async function setEffect(
 	specs: Record<string, EffectSpec>
 ): Promise<void> {
 	const data = showData();
-	const key = parameterKey(kind);
-	const at = Date.now();
+	// The show clock: an effect's `t0` is its phase on every station.
+	const at = actAt() ?? Date.now();
 	const current = new Map(held.map((entry) => [entry.id, entry]));
 
-	for (const [fixtureId, spec] of Object.entries(specs)) {
+	// Keyed by target: a fixture, or `fixture@cell` for one cell of a multi-cell one,
+	// which holds the parameter under its cell's own kind.
+	for (const [target, spec] of Object.entries(specs)) {
+		const fixtureId = splitTarget(target).fixture;
+		const heldKind = kindOn(kind, target);
+		const key = parameterKey(heldKind);
 		const id = entryId(fixtureId, key);
 		const anchored = { ...spec, t0: at };
 		// A value pending from a fader drag would land after this and cover it.
@@ -191,7 +238,7 @@ export async function setEffect(
 			await data.programmer_values.create({
 				id,
 				fixture_id: fixtureId,
-				parameter_kind: kind,
+				parameter_kind: heldKind,
 				// Where the parameter falls back to if the effect cannot be rendered.
 				value: spec.low,
 				effect: anchored,
@@ -232,8 +279,10 @@ export function effectsHeld(entries: ProgrammerValue[]): Map<string, ProgrammerV
 // ── Emptying it ───────────────────────────────────────────────────────────────
 
 export async function remove(id: string): Promise<void> {
+	// A value still waiting for its frame is dropped; one already sent is deleted after
+	// it has landed, not before.
 	pending.delete(id);
-	await showData().programmer_values.byId(id).delete();
+	await inOrder(() => showData().programmer_values.byId(id).delete());
 }
 
 /**
@@ -282,33 +331,11 @@ export async function lockAll(locked = true): Promise<void> {
 export async function beginEdit(cue: Cue, sequence: Sequence | null): Promise<void> {
 	const data = showData();
 	await clear({ keepLocked: true });
-	if (sequence) await data.sequences.byId(sequence.id).goToCue({ cueId: cue.id, at: Date.now() });
+	if (sequence) await data.sequences.byId(sequence.id).goToCue({ cueId: cue.id, at: actAt() });
 	for (const entry of entriesFromCue(cue)) {
 		await data.programmer_values.create(entry);
 	}
 	await data.show.editing_cue.set(cue.id);
-}
-
-/**
- * Write the programmer back into the cue being edited.
- *
- * Replace rather than merge: the operator has the whole cue in front of them, and a
- * parameter they removed from the buffer is one they meant the cue to stop saying.
- *
- * The cue's own captures go in even so, because *replace* is about which parameters
- * the cue holds and not about their timing: the programmer carries values and never
- * a fade time, a delay or a curve, so an Update that passed nothing here would throw
- * away, every time, timing an operator set in a control that is not on this screen.
- */
-export async function updateEdit(): Promise<void> {
-	const cueId = get(editingCue);
-	if (!cueId) return;
-	const data = showData();
-	const before = get(cues).find((c) => c.id === cueId)?.captures ?? [];
-	const captures = storeCaptures(before, held, 'replace', new Set(held.map((e) => e.id)));
-	await data.cues.byId(cueId).captures.set(captures);
-	await clear({ keepLocked: true });
-	await data.show.editing_cue.set(null);
 }
 
 export async function cancelEdit(): Promise<void> {
@@ -316,83 +343,90 @@ export async function cancelEdit(): Promise<void> {
 	await showData().show.editing_cue.set(null);
 }
 
-// ── Storing ───────────────────────────────────────────────────────────────────
-
-/** Write the chosen entries into a cue that already exists. */
-export async function storeInto(
-	cue: Cue,
-	mode: 'merge' | 'replace',
-	include: Set<string>
-): Promise<void> {
-	const captures = storeCaptures(cue.captures, held, mode, include);
-	await showData().cues.byId(cue.id).captures.set(captures);
-}
-
-// ── Update ────────────────────────────────────────────────────────────────────
+// ── Update and Store ──────────────────────────────────────────────────────────
 
 /**
- * Update: every held value into the cue that is **driving it now**.
+ * Update and Store are the station's (`infra/storing.rs`), and so are the wing's: one
+ * code path, so a store from the wing and one from this screen are the same act. Each
+ * is one gesture under this page's user, so one Ctrl-Z however many cues it touched.
  *
- * This is the verb every other desk has and this console did not, and the reason it
- * needs no target is that the console already knows one: an operator who has nudged a
- * light in the middle of cue 12 means cue 12, and being asked which cue they meant is
- * being asked a question the desk can answer.
- *
- * *How* it answers is `drivingCues`, and not `live_fades[key].cue_id` — see the note
- * there. A key the programmer holds is exactly the key playback stops publishing.
- *
- * Keys nothing is driving are the honest exception and are handed back rather than
- * guessed at: there is no cue they belong to, and the Store dialog opens with exactly
- * those ticked.
- *
- * One gesture over however many cues it touches, so an Update across three cues is
- * one Ctrl-Z. A merge rather than a replace, and the timing is kept — `storeCaptures`
- * is where both of those rules live, and this does not restate them.
+ * Whatever a fader moved this frame goes first, or the act would miss the last move.
  */
-export async function updateDriven(): Promise<{ updated: number; orphans: string[] }> {
-	const data = showData();
-	// Fetched rather than read out of the shared stores. `get()` on a lazy store runs
-	// its start function and hands back the *initial* value — an empty array — because
-	// the subscription behind it is a socket round trip; the note on `held` above says
-	// as much, and this is the other half of it. Update is one deliberate act, so one
-	// round trip costs nothing and reading a stale empty rig would answer "nothing here
-	// is driven by a cue" every time.
-	const [sequenceList, cueList] = await Promise.all([data.sequences.get(), data.cues.get()]);
-	const byId = new Map(cueList.map((c) => [c.id, c]));
-	const wanted = new Set(
-		held.map((entry) => `${entry.fixture_id}/${parameterKey(entry.parameter_kind)}`)
-	);
-	const driving = drivingCues(sequenceList, (id) => byId.get(id), wanted);
+async function settled(): Promise<void> {
+	await inOrder(flush);
+}
 
-	/** Entry ids, grouped by the cue driving each. */
-	const perCue = new Map<string, string[]>();
-	const orphans: string[] = [];
+/** What an Update did: see `storing::Updated`. */
+export type Updated = {
+	updated: number;
+	/** Entries no cue drives. They stay in the programmer for the Store dialog. */
+	orphans: string[];
+	/** The cue loaded for editing, when Update wrote back into that instead. */
+	edited: { cueId: string; number: number; name: string } | null;
+};
 
-	for (const entry of held) {
-		const from = driving.get(`${entry.fixture_id}/${parameterKey(entry.parameter_kind)}`);
-		if (!from) {
-			orphans.push(entry.id);
-			continue;
-		}
-		perCue.set(from, [...(perCue.get(from) ?? []), entry.id]);
-	}
+/**
+ * Update: every held value into the cue that is **driving it now** — or, while a cue
+ * is loaded for editing, into that cue, which becomes exactly what the programmer holds
+ * and ends the edit.
+ *
+ * The verb every other desk has, and it needs no target because the console already
+ * knows one: an operator who nudged a light in the middle of cue 12 means cue 12. Keys
+ * nothing is driving are handed back rather than guessed at, and the programmer is
+ * cleared only once every value has found its cue.
+ */
+/**
+ * Blind: the programmer reaches no lamp, and every screen goes on showing it. One for
+ * the show, SYNCED, so every page and the wing's BLIND light agree. See `Show::blind`.
+ */
+export const blind: Readable<boolean> = derived(show, ($show) => !!$show?.blind);
 
-	if (perCue.size > 0) {
-		beginGesture();
-		try {
-			for (const [cueId, ids] of perCue) {
-				const cue = cueList.find((c) => c.id === cueId);
-				if (!cue) continue;
-				await data.cues.byId(cueId).captures.set(
-					storeCaptures(cue.captures, held, 'merge', new Set(ids))
-				);
-			}
-		} finally {
-			endGesture();
-		}
-	}
+/**
+ * Switch blind on or off, or over with no argument. The station's `programmer.blind`,
+ * the one the wing's BLIND key runs: unattributed, so Ctrl-Z never switches it off on
+ * the way past an operator's own change.
+ */
+export async function setBlind(on?: boolean): Promise<boolean> {
+	const answer = (await showClient().call('programmer.blind', on === undefined ? {} : { on })) as { blind: boolean };
+	return answer.blind;
+}
 
-	return { updated: perCue.size, orphans };
+export async function update(): Promise<Updated> {
+	await settled();
+	return (await showClient().call('programmer.update', {})) as Updated;
+}
+
+/** Everything the Store dialog asks: see `storing::StoreRequest`. */
+export type StoreRequest = {
+	include?: string[];
+	sequenceId?: string;
+	newSequence?: string;
+	cueId?: string;
+	replace?: boolean;
+	name?: string;
+	after?: string | null;
+	fadeInMs?: number;
+	fadeOutMs?: number;
+	easing?: Easing | null;
+	followMode?: Cue['follow_mode'];
+	/** Per entry, only for the rows somebody typed into; the rest keep what the cue had. */
+	timing?: Record<string, { fadeMs: number; delayMs: number; easing: Easing | null }>;
+	cueOnly?: boolean;
+	keep?: boolean;
+	onto?: StoreOnto | null;
+};
+
+export type Stored = {
+	sequenceId: string;
+	sequenceName: string;
+	cue: { cueId: string; number: number; name: string };
+	created: boolean;
+};
+
+/** Store the programmer into a cue: a new one, or one that exists. */
+export async function store(request: StoreRequest): Promise<Stored> {
+	await settled();
+	return (await showClient().call('programmer.store', request)) as Stored;
 }
 
 // ── Presets ───────────────────────────────────────────────────────────────────
@@ -431,8 +465,9 @@ export async function recallPreset(preset: Preset, selection: string[]): Promise
 export async function storePreset(name: string, include?: Set<string>): Promise<Preset> {
 	const chosen = include ?? new Set(held.map((entry) => entry.id));
 	const preset: Preset = {
-		id: crypto.randomUUID(),
+		id: uuid(),
 		name,
+		color: null,
 		values: presetValues(held, chosen)
 	};
 	await showData().presets.create(preset);
@@ -443,7 +478,7 @@ export async function storePreset(name: string, include?: Set<string>): Promise<
  * Fold what the programmer is holding into a preset that already exists.
  *
  * A merge rather than a replace, for the reason a store into a cue is: a preset that
- * also holds a position should not lose it because somebody re-grabbed the colour.
+ * also holds a position should not lose it because somebody re-grabbed the color.
  * The right-click verb on a pool button, and the one that makes a palette live —
  * every standing cue that references it moves as soon as this lands.
  */

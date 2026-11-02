@@ -9,7 +9,7 @@
 //! export into a fresh show gives the same rig rather than a copy of it.
 //!
 //! What it does **not** carry is what this console does not keep: an MVR's
-//! `CastShadow`, `DMXInvertPan`, `CustomCommands` and per-fixture plot colour are
+//! `CastShadow`, `DMXInvertPan`, `CustomCommands` and per-fixture plot color are
 //! another console's settings, and inventing values for them on the way out would be
 //! writing things the operator never said.
 
@@ -23,7 +23,7 @@ use pult_mvr::model::{
 use pult_mvr::MvrFile;
 use pult_schema::types::fixture::{Fixture, FixtureType};
 use pult_schema::stock::{stock_file_name, stock_symdef_name, stock_symdef_uuid};
-use pult_schema::types::catalogue::canonical_properties_of;
+use pult_schema::types::catalog::canonical_properties_of;
 use pult_schema::types::scene::{
     GeometryRef, Layer, NamedAsset, SceneClass, SceneObject, SceneObjectKind, Symbol, Transform,
 };
@@ -46,7 +46,7 @@ pub struct Rig<'a> {
 ///
 /// Three ways one arrives, and the caller fetches or makes each in turn: a mesh out
 /// of the asset store; a GDTF, which is the stored archive where the type came from
-/// one and a generated file otherwise; and a **catalogue piece**, which is neither
+/// one and a generated file otherwise; and a **catalog piece**, which is neither
 /// stored nor fetched — [`pult_schema::stock::stock_glb`] makes it from the table.
 ///
 /// That last one is why this task exists at all. MVR has no primitive — its
@@ -60,11 +60,11 @@ pub struct Wanted {
     pub asset: Option<String>,
     /// The fixture type a generated GDTF is for.
     pub fixture_type: Option<Uuid>,
-    /// The catalogue piece a generated mesh is for.
+    /// The catalog piece a generated mesh is for.
     pub stock: Option<Stock>,
 }
 
-/// A catalogue piece, as an export names one.
+/// A catalog piece, as an export names one.
 ///
 /// The properties are **canonical** — the piece's declared keys, filled in and in
 /// order — because they go into the symdef's name and through that into its uuid, and
@@ -192,7 +192,7 @@ pub fn plan_export(rig: &Rig, only: &BTreeSet<Uuid>) -> Export {
             }),
         }));
     }
-    // And the catalogue's own, as symdefs carrying a generated mesh. Named so that a
+    // And the catalog's own, as symdefs carrying a generated mesh. Named so that a
     // console reading this file back can tell what the piece *was* — see
     // `pult_schema::stock::parse_stock_symdef` — and so that anybody else simply sees
     // an ordinary symbol with an ordinary truss in it.
@@ -381,16 +381,16 @@ fn as_geometry_node_inner(reference: &GeometryRef) -> GeometryNode {
     })
 }
 
-/// The symdef a catalogue piece is written as, where the object is one.
+/// The symdef a catalog piece is written as, where the object is one.
 ///
 /// Only when there is nothing better: a mesh the drawing carried, or a symbol it
-/// instanced, is the truth about that object, and `catalogue` is last of the three —
+/// instanced, is the truth about that object, and `catalog` is last of the three —
 /// the same order the rig view draws them in.
 fn stock_of(object: &SceneObject) -> Option<(Uuid, Stock)> {
     if !object.geometry.is_empty() || object.symbol.is_some() {
         return None;
     }
-    let id = object.catalogue.as_deref()?;
+    let id = object.catalog.as_deref()?;
     let properties = canonical_properties_of(id, &object.properties);
     let name = stock_symdef_name(id, &properties);
     Some((stock_symdef_uuid(&name), Stock { id: id.to_string(), properties: properties.to_string() }))

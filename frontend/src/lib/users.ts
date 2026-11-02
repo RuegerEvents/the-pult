@@ -1,21 +1,21 @@
 /**
  * Users, as far as anything pure is concerned.
  *
- * The colours are the same list the schema hands out, written here too rather than
+ * The colors are the same list the schema hands out, written here too rather than
  * fetched: a browser needs one the moment somebody types a name, and a round trip to
- * ask what colour they should be would be a round trip to learn a constant.
+ * ask what color they should be would be a round trip to learn a constant.
  */
 
 import type { HistoryEntry, PluginDatum, User } from './generated/index.js';
 
-/** The colours a new user is given, in order. Matches `pult-schema`'s list. */
-export const USER_COLOURS = ['#4a9eff', '#f59e0b', '#22c55e', '#e879f9', '#f87171', '#2dd4bf'];
+/** The colors a new user is given, in order. Matches `pult-schema`'s list. */
+export const USER_COLORS = ['#4a9eff', '#f59e0b', '#22c55e', '#e879f9', '#f87171', '#2dd4bf'];
 
 /**
  * The user a show has before anybody has said who they are. Matches
  * `User::DEFAULT_ID` in `pult-schema`, and a Rust test asserts that it still does.
  *
- * Written here rather than fetched, for the same reason as the colours above and
+ * Written here rather than fetched, for the same reason as the colors above and
  * one better: this browser has to be working as *somebody* before its first write,
  * because a change attributed to nobody can never be taken back — not later, not
  * once the operator says who they are. Waiting on a round trip, or on the `users`
@@ -24,12 +24,12 @@ export const USER_COLOURS = ['#4a9eff', '#f59e0b', '#22c55e', '#e879f9', '#f8717
  */
 export const DEFAULT_USER_ID = '00000000-0000-4000-8000-000000000001';
 
-export const colourFor = (index: number): string => USER_COLOURS[index % USER_COLOURS.length];
+export const colorFor = (index: number): string => USER_COLORS[index % USER_COLORS.length];
 
-/** The colour to draw a user's changes in, falling back for one nobody knows. */
-export function colourOf(users: User[], id: string | null | undefined): string {
+/** The color to draw a user's changes in, falling back for one nobody knows. */
+export function colorOf(users: User[], id: string | null | undefined): string {
 	if (!id) return 'var(--text-faint)';
-	return users.find((u) => u.id === id)?.colour ?? 'var(--text-dim)';
+	return users.find((u) => u.id === id)?.color ?? 'var(--text-dim)';
 }
 
 /**

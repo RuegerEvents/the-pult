@@ -190,3 +190,43 @@ async fn an_optional_number_nobody_set_is_still_nothing() {
 
     assert_eq!(read[0].fixture_number, None);
 }
+
+/// What the writer's batch rests on: `BEGIN` and `COMMIT` sent through a pool reach
+/// the same connection only while the pool keeps it. With a lifetime, the connection
+/// is replaced between the two and the commit finds no transaction — the autosave
+/// warning every half hour at HHG.
+#[tokio::test]
+async fn a_pool_that_recycles_its_connection_loses_the_transaction_between_statements() {
+    let dir = std::env::temp_dir().join(format!("pult-recycle-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("show.db");
+    let opts = SqliteConnectOptions::from_str(&format!("sqlite:{}?mode=rwc", file.display())).unwrap();
+    let recycling = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .max_lifetime(std::time::Duration::from_millis(50))
+        .connect_with(opts)
+        .await
+        .unwrap();
+    sqlx::query("CREATE TABLE t (x INTEGER)").execute(&recycling).await.unwrap();
+
+    sqlx::query("BEGIN IMMEDIATE").execute(&recycling).await.unwrap();
+    // The writer between two statements — and the connection, idle in the pool, ages
+    // past its lifetime.
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    sqlx::query("INSERT INTO t VALUES (1)").execute(&recycling).await.unwrap();
+    let commit = sqlx::query("COMMIT").execute(&recycling).await;
+    assert!(commit.is_err(), "the connection was replaced under the transaction");
+    recycling.close().await;
+
+    // The writer's own pool keeps its connection, however long it has been open.
+    let show = dir.join("other.db");
+    super::open(&show).await.unwrap().close().await;
+    let writing = super::open_for_writing(&show).await.unwrap();
+    assert_eq!(writing.options().get_max_lifetime(), None);
+    assert_eq!(writing.options().get_idle_timeout(), None);
+    writing.close().await;
+    let memory = super::open_in_memory().await.unwrap();
+    assert_eq!(memory.options().get_max_lifetime(), None, "a new :memory: connection is an empty show");
+    assert_eq!(memory.options().get_idle_timeout(), None);
+    let _ = std::fs::remove_dir_all(&dir);
+}

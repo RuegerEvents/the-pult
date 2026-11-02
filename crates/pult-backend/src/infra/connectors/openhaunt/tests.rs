@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use pult_schema::types::{
     fixture::{
-        FixtureType, ParameterDefinition, ParameterKind,
+        parameter_key, FixtureType, ParameterDefinition, ParameterKind,
     },
     openhaunt as modules,
     openhaunt::{EffectCapability, PortEffectCapability},
@@ -39,7 +39,7 @@ fn a_module(module_type: u16) -> FixtureType {
         WS2812 => (
             "LED Strip",
             serde_json::json!({ "ports": [
-                { "port": 0, "name": "Strip colour", "access": "readwrite",
+                { "port": 0, "name": "Strip color", "access": "readwrite",
                   "dataType": "color", "class": "color" },
                 { "port": 1, "name": "Brightness", "access": "readwrite", "dataType": "number",
                   "unit": "percent", "minimum": 0, "maximum": 1, "default": 0,
@@ -85,7 +85,7 @@ fn directory(entries: Vec<(&str, DeviceEntry)>) -> watch::Receiver<DeviceDirecto
 }
 
 fn an_entry(ip: &str, module_type: u16, universe: Option<u16>, online: bool) -> DeviceEntry {
-    DeviceEntry { ip: ip.to_string(), port: 80, module_type, universe, online, effects: None }
+    DeviceEntry { ip: ip.to_string(), port: 80, module_type, universes: universe.into_iter().collect(), online, effects: None, audio: None, on_broker: true, name: String::new(), adopted: true, audio_summary: None, starts: 0, addresses: Vec::new(), transports: std::collections::BTreeMap::new(), redundant_stream: false }
 }
 
 /// The same node, with one port that says what it can trace for itself.
@@ -114,11 +114,13 @@ fn a_node_fixture(fixture_type: &FixtureType, serial: &str, universe: Option<u16
         id: Uuid::new_v4(),
         name: serial.into(),
         fixture_type_id: fixture_type.id,
-        address: FixtureAddress::OpenHaunt { serial: serial.into(), universe },
+        address: FixtureAddress::node(serial, universe),
         position: None,
         sensed_values: HashMap::new(),
+        sensed_at: Default::default(),
         live_effects: Default::default(),
         live_fades: Default::default(),
+        live_htp: Default::default(),
         home_values: Default::default(),
         ..Fixture::default()
     }
@@ -143,8 +145,10 @@ fn a_dmx_dimmer(universe: u16, level: f32) -> (Fixture, FixtureType) {
         address: FixtureAddress::dmx(universe, 1),
         position: None,
         sensed_values: HashMap::new(),
+        sensed_at: Default::default(),
         live_effects: Default::default(),
         live_fades: Default::default(),
+        live_htp: Default::default(),
         home_values: Default::default(),
         ..Fixture::default()
     };
@@ -210,7 +214,7 @@ async fn a_relay_is_commanded_when_it_changes_and_not_before() {
 }
 
 #[tokio::test]
-async fn a_strip_sends_its_colour_as_bytes_and_its_brightness_as_a_number() {
+async fn a_strip_sends_its_color_as_bytes_and_its_brightness_as_a_number() {
     let (devices, mut received) = a_recording_device_handle();
     let mut output = OpenHauntOutput::new(
         directory(vec![("led1", an_entry("127.0.0.1", WS2812, None, true))]),
@@ -588,7 +592,7 @@ async fn a_capable_port_is_handed_the_shape_once_and_then_left_alone() {
 }
 
 /// A port that never said it could trace a sine is not sent one. Nothing is
-/// negotiated: silence in `/info` means the old behaviour, exactly as before.
+/// negotiated: silence in `/info` means the old behavior, exactly as before.
 #[tokio::test]
 async fn a_port_that_says_nothing_gets_values_as_it_always_did() {
     let (devices, mut received) = a_recording_device_handle();
@@ -894,4 +898,221 @@ async fn a_node_that_reboots_is_told_the_shape_again() {
         1,
         "and said again after the reboot",
     );
+}
+
+/// A node can start over without ever going away: a reboot quicker than mDNS
+/// notices, or a strip re-patched, whose ports come back at their defaults. The
+/// directory counts those, and the console says everything again when the count
+/// moves — or a strip whose pixel count was changed sits black while the console
+/// believes it is lit.
+#[tokio::test]
+async fn a_node_that_starts_over_without_going_away_is_told_again() {
+    let (devices, mut received) = a_recording_device_handle();
+    let (tx, directory_rx) = watch::channel(DeviceDirectory {
+        entries: [("strip1".to_string(), a_capable_entry("127.0.0.1", WS2812, 1, &["sine"], false))]
+            .into_iter()
+            .collect(),
+    });
+    let mut output = OpenHauntOutput::new(directory_rx, devices, 5568, None).await.unwrap();
+
+    let ft = a_module(WS2812);
+    let mut fixture = a_node_fixture(&ft, "strip1", None);
+    fixture.live_effects.insert("Intensity".into(), a_running_sine(1_000));
+    output.send(&patch(vec![fixture.clone()], vec![ft.clone()]), &[], 0).await.unwrap();
+    assert_eq!(of_kind(&everything(&mut received), "effect", 1).len(), 1, "said once");
+
+    output.send(&patch(vec![fixture.clone()], vec![ft.clone()]), &[], 0).await.unwrap();
+    assert_eq!(of_kind(&everything(&mut received), "effect", 1).len(), 0, "and not again while nothing moved");
+
+    tx.send_modify(|d| d.entries.get_mut("strip1").unwrap().starts += 1);
+    output.send(&patch(vec![fixture.clone()], vec![ft.clone()]), &[], 0).await.unwrap();
+    assert_eq!(
+        of_kind(&everything(&mut received), "effect", 1).len(),
+        1,
+        "said again once the node started over, though it never went offline",
+    );
+}
+
+// ── A strip in sACN mode ──────────────────────────────────────────────────────
+
+/// The whole path a strip's pixels take, against a simulated node: cells planned from
+/// the strip, a chase spread across them the way the Effects panel spreads one, the
+/// universes rendered by the DMX family's own code, and the node counting frames for
+/// its strip. Nothing in it knows what a pixel is apart from the plan.
+#[tokio::test]
+async fn a_chase_across_a_strip_arrives_at_the_node_as_its_universes() {
+    use openhaunt_node_sim::{pixels::StripConfig, ModuleKind, SimConfig};
+    use pult_schema::types::pixels::{self, PixelStrip, StripMode};
+
+    // 200 RGB pixels from universe 5: 170 in 5, 30 in 6.
+    let mut config = SimConfig::new(ModuleKind::NodeV0, "chase");
+    config.node.pixels[0] = StripConfig {
+        mode: "sacn".into(),
+        count: 200,
+        universe: 5,
+        ..StripConfig::default_for(0)
+    };
+    let sim = openhaunt_node_sim::start(config).await.unwrap();
+    let port = sim.sacn_addr.unwrap().port();
+
+    let strip = PixelStrip {
+        output: 0,
+        mode: StripMode::Sacn,
+        count: 200,
+        order: "GRB".into(),
+        universe: 5,
+        address: 1,
+        hold_ms: 10_000,
+        pitch_m: 1.0 / 60.0,
+    };
+    let head = Fixture {
+        id: modules::head_fixture_id("chase", 1),
+        name: "Strip 1".into(),
+        address: FixtureAddress::OpenHaunt {
+            serial: "chase".into(),
+            universe: None,
+            head: Some(1),
+            strip: Some(strip.clone()),
+            redundant_stream: None,
+        },
+        ..Fixture::default()
+    };
+    let strip_type = pixels::strip_type(&strip);
+    let mut head = Fixture { fixture_type_id: strip_type.id, ..head };
+
+    // A block of red one pixel in eight wide, traveling along the strip once a second:
+    // each cell a phase further on, in the strip's own order.
+    let n = strip.count as usize;
+    for i in 0..n {
+        head.live_effects.insert(
+            parameter_key(&ParameterKind::ColorRgb.in_cell(i as u16 + 1)),
+            RunningEffect {
+                effect_id: Uuid::nil(),
+                curve: Curve::Shape(Shape::Square),
+                rate_hz: 1.0,
+                low: ParameterValue::rgb(0.0, 0.0, 0.0),
+                high: ParameterValue::rgb(1.0, 0.0, 0.0),
+                width: 1.0 / 8.0,
+                direction: Direction::Forward,
+                phase: i as f32 / n as f32,
+                t0: 0,
+                source: EffectSource::Programmer,
+            },
+        );
+    }
+
+    let mut entry = an_entry("127.0.0.1", 0x0f01, None, true);
+    entry.universes = vec![5, 6];
+    let (devices, _received) = a_recording_device_handle();
+    let mut output =
+        OpenHauntOutput::new(directory(vec![("chase", entry)]), devices, port, None).await.unwrap();
+
+    let rig = patch(vec![head], vec![strip_type]);
+    output.send(&rig, &[], 0).await.unwrap();
+
+    let mut frames = sim.pixel_frames.clone();
+    eventually_frames(&mut frames, |f| f.get(&0).is_some_and(|s| s.universes.len() == 2)).await;
+    let first = frames.borrow().get(&0).cloned().unwrap();
+    let lit = |channels: &[u8]| -> Vec<usize> {
+        channels.chunks(3).enumerate().filter(|(_, c)| c[0] > 0).map(|(i, _)| i).collect()
+    };
+    let at_zero = lit(&first.universes[&5]);
+    assert!(!at_zero.is_empty(), "some of the strip is lit");
+    assert!(at_zero.len() < 170, "and not all of it: it is a chase");
+    assert!(first.universes[&6].len() >= 90, "the second universe carries pixels 170 to 199");
+
+    // A quarter of a second later the block has moved along the strip.
+    output.send(&rig, &[], 250).await.unwrap();
+    eventually_frames(&mut frames, |f| f.get(&0).is_some_and(|s| s.frames >= 4)).await;
+    let later = frames.borrow().get(&0).cloned().unwrap();
+    assert_ne!(lit(&later.universes[&5]), at_zero, "the chase travels");
+}
+
+async fn eventually_frames(
+    frames: &mut watch::Receiver<std::collections::BTreeMap<u8, openhaunt_node_sim::pixels::StripFrames>>,
+    done: impl Fn(&std::collections::BTreeMap<u8, openhaunt_node_sim::pixels::StripFrames>) -> bool,
+) {
+    for _ in 0..80 {
+        if done(&frames.borrow()) {
+            return;
+        }
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(25), frames.changed()).await;
+    }
+    panic!("the node never saw the frames: {:?}", frames.borrow().keys().collect::<Vec<_>>());
+}
+
+/// What evaluating a pixel rig costs per frame: ten nodes, a 1024-pixel strip each, a
+/// chase on every pixel. A measurement for a person to read, never a gate (see the
+/// counts test for why), so it is ignored and prints.
+///
+///     cargo test --release -p pult-backend --lib pixel_frame_cost -- --ignored --nocapture
+#[test]
+#[ignore]
+fn pixel_frame_cost() {
+    use pult_schema::types::pixels::{self, PixelStrip, StripMode};
+
+    let mut fixtures = Vec::new();
+    let mut types = Vec::new();
+    for node in 0..10u16 {
+        let strip = PixelStrip {
+            output: 0,
+            mode: StripMode::Sacn,
+            count: 1024,
+            order: "GRB".into(),
+            universe: 1 + node * 7,
+            address: 1,
+            hold_ms: 10_000,
+            pitch_m: 1.0 / 60.0,
+        };
+        let strip_type = pixels::strip_type(&strip);
+        let serial = format!("n{node}");
+        let mut head = Fixture {
+            fixture_type_id: strip_type.id,
+            address: FixtureAddress::OpenHaunt { serial: serial.clone(), universe: None, head: Some(1), strip: Some(strip.clone()), redundant_stream: None },
+            ..Fixture::default()
+        };
+        for i in 0..1024u16 {
+            head.live_effects.insert(
+                parameter_key(&ParameterKind::ColorRgb.in_cell(i + 1)),
+                RunningEffect {
+                    effect_id: Uuid::nil(),
+                    curve: Curve::Shape(Shape::Sine),
+                    rate_hz: 0.5,
+                    low: ParameterValue::rgb(0.0, 0.0, 0.0),
+                    high: ParameterValue::rgb(1.0, 0.2, 0.0),
+                    width: 1.0,
+                    direction: Direction::Forward,
+                    phase: i as f32 / 1024.0,
+                    t0: 0,
+                    source: EffectSource::Programmer,
+                },
+            );
+        }
+        fixtures.push(head);
+        types.push(strip_type);
+    }
+    types.dedup_by_key(|t| t.id);
+    let rig = patch(fixtures, types);
+    let mut times = Vec::new();
+    for frame in 0..60u64 {
+        let began = std::time::Instant::now();
+        let universes = crate::infra::connectors::dmx::render_carried(&rig, frame * 25, &[]);
+        times.push(began.elapsed());
+        assert_eq!(universes.len(), 70);
+    }
+    times.sort();
+    println!(
+        "10 × 1024 pixels, 70 universes: median {:?}, worst {:?} per frame",
+        times[times.len() / 2],
+        times[times.len() - 1],
+    );
+}
+
+
+/// A strip's Speed is 0–10 Hz on the node and a 0..1 fader here: half is 5 Hz.
+#[test]
+fn a_ranged_port_is_sent_in_its_own_units() {
+    let range = Some(PhysicalRange { from: 0.0, to: 10.0, unit: Default::default() });
+    assert_eq!(port_payload(&ParameterValue::Float(0.5), range), serde_json::json!({ "value": 5.0 }));
+    assert_eq!(port_payload(&ParameterValue::Float(0.5), None), serde_json::json!({ "value": 0.5 }));
 }

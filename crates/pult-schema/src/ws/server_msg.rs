@@ -14,7 +14,7 @@ pub enum ServerMessage {
         value: serde_json::Value,
         request_id: String,
     },
-    /// Acknowledgement for a Set request.
+    /// Acknowledgment for a Set request.
     SetAck {
         request_id: String,
         ok: bool,

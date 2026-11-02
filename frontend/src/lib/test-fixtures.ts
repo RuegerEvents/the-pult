@@ -42,6 +42,7 @@ export function aFixtureType(over: Partial<FixtureType> = {}): FixtureType {
 		physical: NOTHING_PHYSICAL,
 		geometry: [],
 		source: 'Manual',
+		cells: 0,
 		...over
 	};
 }
@@ -61,6 +62,7 @@ export function aParameter(
 		slots: [],
 		feature_group: null,
 		emitters: [],
+		per_cell: false,
 		...over
 	};
 }
@@ -85,9 +87,13 @@ export function aFixture(over: Partial<Fixture> = {}): Fixture {
 		fixture_number: null,
 		unit_number: null,
 		sensed_values: {},
+		sensed_at: {},
 		live_effects: {},
 		live_fades: {},
+		live_htp: {},
 		home_values: {},
+		parameter_labels: null,
+		agreed_names: null,
 		...over
 	};
 }

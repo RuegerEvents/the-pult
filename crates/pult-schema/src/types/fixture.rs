@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -12,7 +12,7 @@ use super::mount::Mount;
 use super::scene::Transform;
 use crate::PultSchema;
 
-/// A point in the rig, in metres, from whatever origin the show uses.
+/// A point in the rig, in meters, from whatever origin the show uses.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct Vec3 {
@@ -47,6 +47,25 @@ pub enum FixtureAddress {
     OpenHaunt {
         serial: String,
         universe: Option<u16>,
+        /// Which head of the node this fixture is. Absent is head 0, the node itself,
+        /// and every fixture adopted before heads existed. See
+        /// `crate::types::openhaunt::NodeDescription::for_head`.
+        #[serde(default)]
+        #[ts(optional = nullable)]
+        head: Option<u8>,
+        /// For a head that is a pixel strip: the mode it is patched in, and where its
+        /// pixels go. On the address for the reason a DMX mode is: it is not what the
+        /// light can do, it is where the bytes go. See [`crate::types::pixels`].
+        #[serde(default)]
+        #[ts(optional = nullable)]
+        strip: Option<crate::types::pixels::PixelStrip>,
+        /// For a node's own fixture: send its audio stream down every path the node
+        /// says it is on, not only the one it prefers. Absent is off. On the address for
+        /// the reason `strip` is: it is where the bytes go. See the OpenHaunt protocol's
+        /// docs/13, "Redundant streams".
+        #[serde(default)]
+        #[ts(optional = nullable)]
+        redundant_stream: Option<bool>,
     },
 }
 
@@ -105,6 +124,63 @@ impl FixtureAddress {
             FixtureAddress::Dmx { .. } => None,
         }
     }
+
+    /// A node's own fixture: head 0, no strip.
+    pub fn node(serial: impl Into<String>, universe: Option<u16>) -> Self {
+        FixtureAddress::OpenHaunt { serial: serial.into(), universe, head: None, strip: None, redundant_stream: None }
+    }
+
+    /// Whether a node's audio stream goes down every path it is on. Only a node's own
+    /// fixture says; a head, and anything not on a node, never does.
+    pub fn redundant_stream(&self) -> bool {
+        match self {
+            FixtureAddress::OpenHaunt { head: None | Some(0), redundant_stream, .. } => *redundant_stream == Some(true),
+            _ => false,
+        }
+    }
+
+    /// Which head of its node this fixture is, for one that lives on a node.
+    pub fn head(&self) -> Option<u8> {
+        match self {
+            FixtureAddress::OpenHaunt { head, .. } => Some(head.unwrap_or(0)),
+            FixtureAddress::Dmx { .. } => None,
+        }
+    }
+
+    /// The universe a gateway forwards, for a node's own fixture that is one.
+    pub fn gateway_universe(&self) -> Option<u16> {
+        match self {
+            FixtureAddress::OpenHaunt { universe, .. } => *universe,
+            FixtureAddress::Dmx { .. } => None,
+        }
+    }
+
+    /// Where this fixture's DMX bytes go: the mode and a place per break.
+    ///
+    /// A DMX fixture says so on its address. A node's strip patched in `sacn` mode is
+    /// the other thing that answers: its pixels go out in universes the node reads, laid
+    /// out by [`crate::types::pixels::PixelStrip::placement`] against the mode its type
+    /// has. Everything that renders or decodes DMX asks this rather than matching on
+    /// the address, so a strip needs nothing taught.
+    pub fn dmx_placement(&self) -> Option<(&str, Cow<'_, [DmxBreak]>)> {
+        match self {
+            FixtureAddress::Dmx { mode, breaks } => Some((mode.as_str(), Cow::Borrowed(breaks.as_slice()))),
+            FixtureAddress::OpenHaunt { strip: Some(strip), .. }
+                if strip.mode == crate::types::pixels::StripMode::Sacn =>
+            {
+                Some((DEFAULT_MODE, Cow::Owned(strip.placement())))
+            }
+            FixtureAddress::OpenHaunt { .. } => None,
+        }
+    }
+
+    /// How a strip head is patched, for one that is.
+    pub fn strip(&self) -> Option<&crate::types::pixels::PixelStrip> {
+        match self {
+            FixtureAddress::OpenHaunt { strip, .. } => strip.as_ref(),
+            FixtureAddress::Dmx { .. } => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -132,8 +208,8 @@ pub enum ParameterKind {
     ColorWheel(u8),
     Prism(u8),
     Frost(u8),
-    /// Correlated colour temperature in kelvin, for a variable-white fixture. Not a
-    /// colour: a tunable-white bar has this and no RGB at all.
+    /// Correlated color temperature in kelvin, for a variable-white fixture. Not a
+    /// color: a tunable-white bar has this and no RGB at all.
     ColorTemperature,
     Raw(u8),
     /// A switched output: a relay, a dry contact the console closes.
@@ -151,6 +227,59 @@ pub enum ParameterKind {
     /// console has never heard of. The name it gave is the whole identity: it is
     /// what the operator sees and what the parameter key is built from.
     Named(String),
+    /// One cell of a multi-cell fixture's per-cell parameter: the seventh pixel's
+    /// color, the third segment of a bar. Counted from 1, spelled `ColorRgb@7` as a
+    /// key.
+    ///
+    /// Part of the kind rather than a field beside it, for the reason `Gobo(2)` is:
+    /// everything in the console is keyed by a fixture and a kind — the programmer,
+    /// a capture, a preset, a running fade, a take — so a cell that is part of the
+    /// kind reaches all of them with no field added and no consumer forked. Never
+    /// nested: [`ParameterKind::in_cell`] is how one is made.
+    Cell { cell: u16, of: Box<ParameterKind> },
+}
+
+impl ParameterKind {
+    /// The kind without its cell: what a parameter definition is declared as, and
+    /// what anything classifying a kind (fade groups, preset tags, labels) asks.
+    pub fn base(&self) -> &ParameterKind {
+        match self {
+            ParameterKind::Cell { of, .. } => of.base(),
+            kind => kind,
+        }
+    }
+
+    /// Which cell this is, for a per-cell kind.
+    pub fn cell(&self) -> Option<u16> {
+        match self {
+            ParameterKind::Cell { cell, .. } => Some(*cell),
+            _ => None,
+        }
+    }
+
+    /// This kind, in one cell. A cell of a cell is the inner kind in the new cell.
+    pub fn in_cell(&self, cell: u16) -> ParameterKind {
+        ParameterKind::Cell { cell, of: Box::new(self.base().clone()) }
+    }
+}
+
+/// The separator between a key and its cell: `ColorRgb@7`.
+pub const CELL_SEPARATOR: char = '@';
+
+/// A key split into the parameter it is of and the cell it is in.
+///
+/// `ColorRgb@7` is `("ColorRgb", Some(7))`; a key with no cell, or one whose tail is
+/// not a number (a `Named` port somebody called `a@b`), is the whole key and no cell.
+pub fn split_cell(key: &str) -> (&str, Option<u16>) {
+    match key.rsplit_once(CELL_SEPARATOR) {
+        Some((base, cell)) if !cell.is_empty() && cell.bytes().all(|b| b.is_ascii_digit()) => {
+            match cell.parse::<u16>() {
+                Ok(n) if n >= 1 => (base, Some(n)),
+                _ => (key, None),
+            }
+        }
+        _ => (key, None),
+    }
 }
 
 // What a parameter can be, and the arithmetic over it, live in `pult-render`: the
@@ -202,7 +331,7 @@ pub enum PhysicalUnit {
     Seconds,
     Hertz,
     Kelvin,
-    Metres,
+    Meters,
     Watts,
 }
 
@@ -220,13 +349,13 @@ pub struct PhysicalRange {
 }
 
 impl PhysicalRange {
-    /// A normalised value as a physical one.
-    pub fn to_physical(&self, normalised: f32) -> f32 {
-        self.from + (self.to - self.from) * normalised
+    /// A normalized value as a physical one.
+    pub fn to_physical(&self, normalized: f32) -> f32 {
+        self.from + (self.to - self.from) * normalized
     }
 
     /// And back. A zero-width range answers zero rather than dividing by nothing.
-    pub fn to_normalised(&self, physical: f32) -> f32 {
+    pub fn to_normalized(&self, physical: f32) -> f32 {
         if (self.to - self.from).abs() < f32::EPSILON {
             return 0.0;
         }
@@ -234,14 +363,14 @@ impl PhysicalRange {
     }
 }
 
-/// One named position on a wheel: a gobo, a colour, a prism facet.
+/// One named position on a wheel: a gobo, a color, a prism facet.
 ///
 /// What turns "Gobo 1 at 37%" into "Gobo 1: Breakup".
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct Slot {
     pub name: String,
-    /// The colour of this slot, where it has one, as linear RGB. A colour wheel's
+    /// The color of this slot, where it has one, as linear RGB. A color wheel's
     /// slots do; a gobo wheel's do not.
     #[serde(default)]
     pub color: Option<Vec3>,
@@ -252,21 +381,21 @@ pub struct Slot {
 
 /// One light source in the fixture.
 ///
-/// The list that makes a colour mixable. Given a colour and these, the console works
+/// The list that makes a color mixable. Given a color and these, the console works
 /// out a level per emitter; without them an RGBW head's fourth channel is a number
 /// with no meaning and stays dark.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct Emitter {
     /// The GDTF emitter name — `Red`, `White`, `Lime` — which is also how a
-    /// per-emitter override in a colour value names it.
+    /// per-emitter override in a color value names it.
     pub name: String,
-    /// Where this emitter sits in linear RGB, from its CIE colour. `None` for one the
+    /// Where this emitter sits in linear RGB, from its CIE color. `None` for one the
     /// file did not measure, which then mixes by its name and nothing else.
     #[serde(default)]
     pub rgb: Option<Vec3>,
     /// A subtractive element — a CMY flag — rather than a source. Full means *less*
-    /// light, so it is the complement of the colour it is named for.
+    /// light, so it is the complement of the color it is named for.
     #[serde(default)]
     pub subtractive: bool,
 }
@@ -283,7 +412,7 @@ pub struct FixturePhysical {
     pub weight_kg: Option<f32>,
     #[serde(default)]
     pub power_w: Option<f32>,
-    /// Length, width, height in metres.
+    /// Length, width, height in meters.
     #[serde(default)]
     pub dimensions_m: Option<Vec3>,
     #[serde(default)]
@@ -369,9 +498,9 @@ pub struct FixtureGeometry {
     #[serde(default)]
     pub parent: Option<String>,
     pub kind: GeometryKind,
-    /// Where this part sits relative to its parent, in metres, in console axes.
+    /// Where this part sits relative to its parent, in meters, in console axes.
     pub offset: Vec3,
-    /// Length, width, height in metres, for the box to draw when there is no mesh.
+    /// Length, width, height in meters, for the box to draw when there is no mesh.
     #[serde(default)]
     pub size: Option<Vec3>,
     /// The mesh in the asset store, where one was extracted.
@@ -416,9 +545,13 @@ pub struct ParameterDefinition {
     /// Which encoder page this belongs on: `Dimmer`, `Position`, `Color`, `Beam`.
     #[serde(default)]
     pub feature_group: Option<String>,
-    /// The light sources a colour parameter mixes across. Empty on everything else.
+    /// The light sources a color parameter mixes across. Empty on everything else.
     #[serde(default)]
     pub emitters: Vec<Emitter>,
+    /// Whether this parameter exists once per cell, on a type with cells: a bar's RGB
+    /// is, its master dimmer is not. See [`FixtureType::cells`].
+    #[serde(default)]
+    pub per_cell: bool,
 }
 
 impl ParameterDefinition {
@@ -434,6 +567,7 @@ impl ParameterDefinition {
     slots: Vec::new(),
     feature_group: None,
     emitters: Vec::new(),
+    per_cell: false,
     }
     }
 
@@ -531,6 +665,13 @@ pub struct FixtureType {
     #[serde(default)]
     #[pult(lifecycle = PERSISTED)]
     pub thumbnail: Option<String>,
+    /// How many cells one of these has: the pixels of a strip, the segments of a bar.
+    /// 0 is a fixture with none, which is almost every fixture. A parameter marked
+    /// [`ParameterDefinition::per_cell`] exists once per cell, as
+    /// [`ParameterKind::Cell`]; the rest exist once.
+    #[serde(default)]
+    #[pult(lifecycle = PERSISTED)]
+    pub cells: u16,
 }
 
 /// What a fixture of this type is drawn as, seen from above.
@@ -595,6 +736,64 @@ impl FixtureType {
         self.dmx_modes.iter().any(|mode| mode.name == name)
     }
 
+    /// The definition a key is read back to: the parameter itself for a whole one,
+    /// and the per-cell parameter for `ColorRgb@7` on a type with at least seven
+    /// cells. The one place a key becomes a parameter, so a cell key and a plain one
+    /// cannot be looked up two ways.
+    pub fn parameter_for_key(&self, key: &str) -> Option<&ParameterDefinition> {
+        let (base, cell) = split_cell(key);
+        self.parameters.iter().find(|p| {
+            parameter_key(&p.kind) == base
+                && match cell {
+                    Some(cell) => p.per_cell && cell <= self.cells,
+                    None => !p.per_cell || self.cells == 0,
+                }
+        })
+    }
+
+    /// The same, from a kind.
+    pub fn parameter_for_kind(&self, kind: &ParameterKind) -> Option<&ParameterDefinition> {
+        self.parameter_for_key(&parameter_key(kind))
+    }
+
+    /// Whether the mode a unit at this address is patched in carries this key: the
+    /// named mode, or the first where the name is not one of this type's, and every
+    /// key for a type with no written modes. `patch.ts`'s `modeOf` and `modeHas` are
+    /// the browser's half.
+    pub fn reaches(&self, address: &FixtureAddress, key: &str) -> bool {
+        if self.dmx_modes.is_empty() {
+            return true;
+        }
+        let named = address.mode().and_then(|name| self.dmx_modes.iter().find(|m| m.name == name));
+        named
+            .or_else(|| self.dmx_modes.first())
+            .is_some_and(|mode| mode.channels.iter().any(|c| c.parameter_key == key))
+    }
+
+    /// Whether this type has cells, and so per-cell parameters to expand.
+    pub fn has_cells(&self) -> bool {
+        self.cells > 0 && self.parameters.iter().any(|p| p.per_cell)
+    }
+
+    /// Every output an operator can set, as the kind it is held under: a whole
+    /// parameter once, and a per-cell one once per cell, cell by cell. What the
+    /// implicit mode, sending a fixture home and anything else that walks "all of a
+    /// fixture's parameters" iterate.
+    pub fn controls(&self) -> Vec<(ParameterKind, &ParameterDefinition)> {
+        let mut out: Vec<(ParameterKind, &ParameterDefinition)> = output_parameters(self)
+            .filter(|p| !(p.per_cell && self.cells > 0))
+            .map(|p| (p.kind.clone(), p))
+            .collect();
+        if self.cells > 0 {
+            for cell in 1..=self.cells {
+                for p in output_parameters(self).filter(|p| p.per_cell) {
+                    out.push((p.kind.in_cell(cell), p));
+                }
+            }
+        }
+        out
+    }
+
     /// How many channels a mode occupies, per break.
     pub fn footprint(&self, mode: &str) -> Vec<u16> {
         self.mode(mode).breaks.clone()
@@ -602,16 +801,20 @@ impl FixtureType {
 
     /// The one mode a type without modes has.
     ///
-    /// One byte per parameter in the order the type lists them, three for a colour,
-    /// which is what the connector did before layouts existed and what a type derived
-    /// from an OpenHaunt node's ports still means.
+    /// One byte per parameter in the order the type lists them, one per emitter for a
+    /// color ([`implicit_width`]), which is what the connector did before layouts
+    /// existed and what a type derived from an OpenHaunt node's ports still means.
     fn implicit_mode(&self) -> DmxMode {
         let mut channels = Vec::new();
         let mut next = 1u16;
-        for parameter in output_parameters(self) {
-            let key = parameter_key(&parameter.kind);
-            let is_colour = matches!(parameter.default_value, ParameterValue::Color { .. });
-            let width = if is_colour { 3 } else { 1 };
+        for (kind, parameter) in self.controls() {
+            let key = parameter_key(&kind);
+            let is_color = matches!(parameter.default_value, ParameterValue::Color { .. });
+            // A byte per emitter: three for a plain color, four for an RGBW one, and
+            // as many as a generic RGBWA+UV type names. It was three whatever the
+            // parameter said, so a hand-made RGBW head drove its white from nothing.
+            let emitters = if is_color { emitters_of(parameter) } else { Vec::new() };
+            let width = implicit_width(parameter);
 
             // A parameter on a *port* has no DMX channel at all, whatever the fixture
             // is addressed to. Giving it a slot in the sequential fallback would put a
@@ -624,11 +827,11 @@ impl FixtureType {
                 start
             };
 
-            if is_colour {
+            if is_color {
                 // Three channels rather than one three-byte channel: an emitter per
                 // byte is how every other mode says which die a byte drives, and one
-                // shape for both keeps the connector from having a colour special case.
-                for (index, emitter) in rgb_emitters().into_iter().enumerate() {
+                // shape for both keeps the connector from having a color special case.
+                for (index, emitter) in emitters.into_iter().enumerate() {
                     channels.push(DmxChannelLayout {
                         parameter_key: key.clone(),
                         break_index: 0,
@@ -661,10 +864,10 @@ impl FixtureType {
     }
 }
 
-/// The three emitters a colour parameter has when the fixture never named any.
+/// The three emitters a color parameter has when the fixture never named any.
 ///
-/// Every colour the console could send before GDTF existed was three consecutive
-/// bytes in this order, and a type derived from an OpenHaunt node's colour port still
+/// Every color the console could send before GDTF existed was three consecutive
+/// bytes in this order, and a type derived from an OpenHaunt node's color port still
 /// is. Naming them makes that the same shape as an RGBW head's four, so the mixer and
 /// the connector have one path rather than a legacy one beside a real one.
 pub fn rgb_emitters() -> Vec<Emitter> {
@@ -675,10 +878,23 @@ pub fn rgb_emitters() -> Vec<Emitter> {
     ]
 }
 
-/// The emitters a parameter mixes across, filled in for a colour that named none.
+/// How many bytes a parameter takes in a type's implicit mode: one per emitter for a
+/// color — three for a plain one — and one for anything else.
 ///
-/// One place rather than at each caller, because a colour with no emitters is not a
-/// colour with nothing to drive — it is one whose fixture predates the question.
+/// Mirrored by `implicitChannels` in `frontend/src/lib/patch.ts`, which the hand editor
+/// needs to say where a parameter landed; this is the authority.
+pub fn implicit_width(parameter: &ParameterDefinition) -> u16 {
+    if matches!(parameter.default_value, ParameterValue::Color { .. }) {
+        emitters_of(parameter).len().max(1) as u16
+    } else {
+        1
+    }
+}
+
+/// The emitters a parameter mixes across, filled in for a color that named none.
+///
+/// One place rather than at each caller, because a color with no emitters is not a
+/// color with nothing to drive — it is one whose fixture predates the question.
 pub fn emitters_of(parameter: &ParameterDefinition) -> Vec<Emitter> {
     if !parameter.emitters.is_empty() {
         return parameter.emitters.clone();
@@ -724,7 +940,7 @@ pub struct Fixture {
     /// resolved against the parent piece's chords, and for an imported truss those
     /// come off the mesh's own bounds — which the station never loads, because only
     /// `frontend/src/lib/geometry.ts` measures a mesh. So the *browser* is the writer
-    /// for every parent, whether the piece came out of the catalogue or out of a
+    /// for every parent, whether the piece came out of the catalog or out of a
     /// drawing, and what keeps its arithmetic equal to
     /// [`crate::types::mount::Mount::transform`]'s is `testdata/mounts.json`.
     ///
@@ -772,6 +988,17 @@ pub struct Fixture {
     #[serde(default)]
     #[pult(lifecycle = SYNCED)]
     pub sensed_values: HashMap<String, ParameterValue>,
+    /// When each of `sensed_values` last *changed*, in console milliseconds, keyed the
+    /// same way.
+    ///
+    /// Stamped by the station that heard the device, and only on a change: a node
+    /// repeating the value it already reported moves nothing. What makes "somebody
+    /// was here thirty seconds ago" a reading every page agrees on — a page that only
+    /// noted when *it* saw a change would show nothing until the next one, and two
+    /// phones would disagree. A layout's decay reads it; see [`crate::types::layout`].
+    #[serde(default)]
+    #[pult(lifecycle = SYNCED)]
+    pub sensed_at: HashMap<String, u64>,
     /// What shape is driving each of this fixture's parameters, keyed by parameter
     /// key.
     ///
@@ -803,6 +1030,13 @@ pub struct Fixture {
     #[serde(default)]
     #[pult(lifecycle = LOCAL)]
     pub live_fades: HashMap<String, RunningFade>,
+    /// What other sequences are playing on an intensity beside the one in
+    /// `live_effects` or `live_fades`, under an HTP merge, keyed by parameter key. The
+    /// parameter shows the highest of them all; see `sequence::Merge`. Empty on almost
+    /// every fixture, and LOCAL and defaulted for the reasons the two above are.
+    #[serde(default)]
+    #[pult(lifecycle = LOCAL)]
+    pub live_htp: HashMap<String, Vec<pult_render::HtpLayer>>,
     /// What this fixture's parameters rest at when nothing is driving them, keyed by
     /// parameter key. Empty on nearly every fixture, and then the answer is
     /// whatever its type declares.
@@ -815,6 +1049,64 @@ pub struct Fixture {
     #[serde(default)]
     #[pult(lifecycle = PERSISTED)]
     pub home_values: HashMap<String, ParameterValue>,
+    /// What somebody called this fixture's parameters, keyed by parameter key: "Ausgang
+    /// PIR" for `Contact:4`. Absent is a parameter called what its type calls it.
+    ///
+    /// A label and never a kind. `Named:<name>` is a parameter's *identity*, and every
+    /// cue, flow and binding holds it; this is only what an operator reads. On an
+    /// OpenHaunt node's fixtures the node keeps them too, as port labels, and the station
+    /// keeps the two the same — see [`Fixture::agreed_names`].
+    ///
+    /// `Option` only for the showfile: a non-`Option` field is a column every existing
+    /// row holds NULL in, and that is a generation bump and an upgrade for every show. A
+    /// show that never named anything reads `None`, which means the same as empty.
+    #[serde(default)]
+    #[pult(lifecycle = PERSISTED)]
+    pub parameter_labels: Option<BTreeMap<String, String>>,
+    /// The names this fixture and its OpenHaunt node last agreed on: the name or head
+    /// label, and the parameter labels. None on anything that is not a node's, and on a
+    /// node's until the two have first agreed.
+    ///
+    /// What tells a change apart from a disagreement. A name that differs from the
+    /// node's, where the node still says what was agreed, was changed *here* — while it
+    /// was off, or by an undo — and is passed on. One where the node moved is asked about.
+    #[serde(default)]
+    #[pult(lifecycle = PERSISTED)]
+    pub agreed_names: Option<AgreedNames>,
+}
+
+/// What a fixture and its node last agreed it and its parameters are called. See
+/// [`Fixture::agreed_names`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AgreedNames {
+    /// The node's name on its own fixture (head 0), the head's label on any other.
+    /// Empty is agreed to be unnamed; None is never agreed.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Parameter key to label. Empty is agreed to be unnamed; absent is never agreed,
+    /// which is not the same thing: a label set here while the node was off has
+    /// nothing to be compared with.
+    #[serde(default)]
+    pub parameters: BTreeMap<String, String>,
+}
+
+impl Fixture {
+    /// What an operator calls one of its parameters, where somebody named it.
+    pub fn parameter_label(&self, kind: &ParameterKind) -> Option<&str> {
+        self.parameter_labels.as_ref()?.get(&parameter_key(kind)).map(String::as_str).filter(|l| !l.is_empty())
+    }
+
+    /// Every label, `None` read as none.
+    pub fn labels(&self) -> BTreeMap<String, String> {
+        self.parameter_labels.clone().unwrap_or_default()
+    }
+}
+
+/// The number a fixture patched now gets when nobody gave it one: one past the highest
+/// in the rig, so a gap somebody left on purpose stays a gap.
+pub fn next_fixture_number(fixtures: &[Fixture]) -> u32 {
+    fixtures.iter().filter_map(|f| f.fixture_number).max().map_or(1, |n| n.saturating_add(1))
 }
 
 /// The map key for a parameter, in `home_values`, `sensed_values`, `live_fades` and
@@ -849,6 +1141,9 @@ pub fn parameter_key(kind: &ParameterKind) -> String {
         ParameterKind::AirQuality => "AirQuality".into(),
         ParameterKind::Text => "Text".into(),
         ParameterKind::Named(name) => format!("Named:{name}"),
+        // `@` is `CELL_SEPARATOR`, spelled out because this function is mirrored into
+        // the plugin SDK whole and the constant is not.
+        ParameterKind::Cell { cell, of } => format!("{}@{cell}", parameter_key(of)),
     }
 }
 
@@ -891,7 +1186,7 @@ pub fn home_value_by_key(
 /// The same answer, borrowed rather than cloned.
 ///
 /// What [`driving`] needs: a parameter's home value is looked up once per parameter
-/// per output frame, and cloning a colour at that rate to hand it straight to an
+/// per output frame, and cloning a color at that rate to hand it straight to an
 /// evaluator that only reads it is the sort of cost that becomes the whole frame on a
 /// rig of thousands.
 pub fn home_value_ref_by_key<'a>(
@@ -902,11 +1197,7 @@ pub fn home_value_ref_by_key<'a>(
     if let Some(overridden) = fixture.home_values.get(key) {
         return Some(overridden);
     }
-    fixture_type?
-        .parameters
-        .iter()
-        .find(|p| parameter_key(&p.kind) == key)
-        .map(|p| &p.default_value)
+    fixture_type?.parameter_for_key(key).map(|p| &p.default_value)
 }
 
 // ── What is driving a parameter ──────────────────────────────────────
@@ -946,21 +1237,34 @@ impl<'a> HeldByProgrammer<'a> {
 /// something a station worked out — and only where it holds a plain value: an entry
 /// carrying a shape has already been resolved against its speed master and published
 /// as the running effect, which is what keeps rate-following out of the evaluator.
+///
+/// `masters` is the sequences' playback faders: a separate argument rather than
+/// something read off the fixture, because a fader moving rewrites one sequence row
+/// and no fixture at all.
 pub fn driving<'a>(
     fixture: &'a Fixture,
     fixture_type: Option<&'a FixtureType>,
     held: Option<&'a ProgrammerValue>,
     key: &str,
+    masters: &crate::types::sequence::Masters,
 ) -> pult_render::Driving<'a> {
+    let effect = fixture.live_effects.get(key);
+    let fade = fixture.live_fades.get(key);
     pult_render::Driving {
         programmer: held.filter(|entry| entry.effect.is_none()).map(|entry| &entry.value),
         // A recording is a timeline's, and this function is handed a fixture. The
         // callers that hold the playing timelines — the DMX patch and the browser's
         // evaluator — fill it in over the top of what this answers.
         track: None,
-        effect: fixture.live_effects.get(key),
-        fade: fixture.live_fades.get(key),
+        effect,
+        fade,
         home: home_value_ref_by_key(fixture, fixture_type, key),
+        master: masters.over(key, effect, fade),
+        beside: fixture
+            .live_htp
+            .get(key)
+            .map(|layers| pult_render::Driving::beside_from(layers, |layer| masters.over_layer(key, layer)))
+            .unwrap_or_default(),
     }
 }
 
@@ -973,9 +1277,10 @@ pub fn value_at(
     fixture_type: Option<&FixtureType>,
     held: Option<&ProgrammerValue>,
     key: &str,
+    masters: &crate::types::sequence::Masters,
     now_ms: u64,
 ) -> Option<ParameterValue> {
-    pult_render::value_at(&driving(fixture, fixture_type, held, key), now_ms)
+    pult_render::value_at(&driving(fixture, fixture_type, held, key, masters), now_ms)
 }
 
 /// The parameters of a type an operator can set, in the order it lists them.
@@ -1103,7 +1408,7 @@ mod tests {
         assert_eq!(dmx.mode(), Some(DEFAULT_MODE));
         assert_eq!(dmx.serial(), None);
 
-        let node = FixtureAddress::OpenHaunt { serial: "1a2b3c".into(), universe: Some(5) };
+        let node = FixtureAddress::node("1a2b3c", Some(5));
         assert_eq!(node.dmx_start(), None, "a node fixture has no slot in a universe");
         assert!(node.breaks().is_empty());
         assert_eq!(node.serial(), Some("1a2b3c"));
@@ -1135,7 +1440,7 @@ mod tests {
         let ParameterValue::Color { r, g, b, .. } =
             ParameterValue::rgb(0.9, 0.1, 0.5).nudged(-0.3).unwrap()
         else {
-            panic!("a nudged colour is a colour")
+            panic!("a nudged color is a color")
         };
         assert!((r - 0.6).abs() < 1e-5, "{r}");
         assert_eq!(g, 0.0, "the channel that would have gone under stops at the bottom");
@@ -1149,5 +1454,67 @@ mod tests {
         let text =
             ParameterValue::Text("HELLO".into()).nudged(1.0).expect_err("text cannot be nudged");
         assert!(text.contains("text"), "{text}");
+    }
+
+    // ── Cells ─────────────────────────────────────────────────────────────────
+
+    /// A three-cell bar: a master dimmer for the whole thing, and a color per cell.
+    fn a_bar() -> FixtureType {
+        let mut bar = a_type(vec![
+            ParameterDefinition::new(ParameterKind::Intensity, ParameterValue::Float(0.0)),
+            ParameterDefinition {
+                per_cell: true,
+                emitters: rgb_emitters(),
+                ..ParameterDefinition::new(ParameterKind::ColorRgb, ParameterValue::rgb(0.0, 0.0, 0.0))
+            },
+        ]);
+        bar.cells = 3;
+        bar
+    }
+
+    #[test]
+    fn a_bar_s_controls_are_its_master_and_then_each_cell() {
+        let keys: Vec<String> = a_bar().controls().iter().map(|(kind, _)| parameter_key(kind)).collect();
+        assert_eq!(keys, ["Intensity", "ColorRgb@1", "ColorRgb@2", "ColorRgb@3"]);
+    }
+
+    #[test]
+    fn a_cell_key_is_read_back_to_its_parameter_and_no_further() {
+        let bar = a_bar();
+        assert_eq!(bar.parameter_for_key("ColorRgb@2").unwrap().kind, ParameterKind::ColorRgb);
+        assert!(bar.parameter_for_key("ColorRgb@4").is_none(), "past the last cell");
+        assert!(bar.parameter_for_key("ColorRgb").is_none(), "a per-cell parameter has no whole key");
+        assert!(bar.parameter_for_key("Intensity@1").is_none(), "the master is not per cell");
+        assert_eq!(bar.parameter_for_key("Intensity").unwrap().kind, ParameterKind::Intensity);
+    }
+
+    #[test]
+    fn a_cell_rests_where_its_parameter_does_unless_the_fixture_says_otherwise() {
+        let bar = a_bar();
+        let mut homes = HashMap::new();
+        homes.insert("ColorRgb@2".to_string(), ParameterValue::rgb(1.0, 0.0, 0.0));
+        let fixture = a_fixture(homes);
+        assert_eq!(home_value_by_key(&fixture, Some(&bar), "ColorRgb@1"), Some(ParameterValue::rgb(0.0, 0.0, 0.0)));
+        assert_eq!(home_value_by_key(&fixture, Some(&bar), "ColorRgb@2"), Some(ParameterValue::rgb(1.0, 0.0, 0.0)));
+    }
+
+    #[test]
+    fn the_implicit_mode_repeats_a_per_cell_parameter_cell_by_cell() {
+        let mode = a_bar().modes().into_owned().remove(0);
+        let placed: Vec<(String, u16)> =
+            mode.channels.iter().map(|c| (c.parameter_key.clone(), c.offsets[0])).collect();
+        assert_eq!(placed[0], ("Intensity".into(), 1));
+        assert_eq!(placed[1], ("ColorRgb@1".into(), 2));
+        assert_eq!(placed[4], ("ColorRgb@2".into(), 5));
+        assert_eq!(placed[9], ("ColorRgb@3".into(), 10));
+        assert_eq!(mode.breaks, vec![10]);
+    }
+
+    #[test]
+    fn a_cell_of_a_cell_is_the_inner_kind_in_the_new_cell() {
+        let seven = ParameterKind::ColorRgb.in_cell(7);
+        assert_eq!(seven.in_cell(3), ParameterKind::ColorRgb.in_cell(3));
+        assert_eq!(seven.base(), &ParameterKind::ColorRgb);
+        assert_eq!(seven.cell(), Some(7));
     }
 }

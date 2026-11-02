@@ -100,7 +100,7 @@
 		outline-offset: 1px;
 	}
 
-	/* Centre lines: where the head hangs, so "back to rest" is somewhere to aim for. */
+	/* Center lines: where the head hangs, so "back to rest" is somewhere to aim for. */
 	.cross {
 		position: absolute;
 		background: var(--line-strong);

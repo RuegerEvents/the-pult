@@ -94,17 +94,17 @@ async fn seeds_a_rig_that_hangs_together(demo: Demo) {
     assert!(!objects.is_empty(), "{} hangs its rig off nothing", demo.id());
     let drawable = objects
         .iter()
-        .filter(|object| object.catalogue.is_some())
+        .filter(|object| object.catalog.is_some())
         .count();
     assert!(drawable > 0, "{}: nothing in the room can be drawn", demo.id());
     for object in &objects {
         if let Some(parent) = object.parent {
             assert!(places.contains(&parent), "{}: {} hangs off nothing", demo.id(), object.name);
         }
-        if let Some(id) = &object.catalogue {
+        if let Some(id) = &object.catalog {
             assert!(
                 pult_schema::types::piece(id).is_some(),
-                "{}: {} names {id}, which is not in the catalogue",
+                "{}: {} names {id}, which is not in the catalog",
                 demo.id(),
                 object.name,
             );
@@ -139,14 +139,16 @@ async fn seeds_a_rig_that_hangs_together(demo: Demo) {
         );
         // And nothing hangs *inside* the bar it is clamped to: a fixture whose body
         // overlaps the chords is what "next to the truss" looked like in the Club.
-        if let Some(parent) = fixture.parent {
+        // Only what is *clamped*: a par standing in a tank and a pixel on a strip hang
+        // off something they are meant to be inside.
+        if let Some(parent) = fixture.parent.filter(|_| fixture.mount.is_some()) {
             let bar = by_id[&parent];
             // A run of truss lies along its own X whichever way it was turned, so
-            // the distance from its centre line is the other two.
+            // the distance from its center line is the other two.
             let off_the_bar = position.position.y.hypot(position.position.z);
             assert!(
                 off_the_bar >= 0.3,
-                "{}: {} is {off_the_bar:.2} m from the centre of {}, which is inside it",
+                "{}: {} is {off_the_bar:.2} m from the center of {}, which is inside it",
                 demo.id(),
                 fixture.name,
                 bar.name,
@@ -182,7 +184,7 @@ async fn seeds_a_rig_that_hangs_together(demo: Demo) {
 /// demonstrates nothing.
 #[tokio::test]
 async fn every_preset_names_only_fixtures_that_exist() {
-    for demo in [Demo::Haunt, Demo::Theatre, Demo::Club, Demo::Festival] {
+    for demo in ALL.iter().copied() {
         let engine = a_station().await;
         seed(&engine, demo).await.expect("it seeds");
         let fixtures: Vec<Fixture> = read(&engine, "fixtures").await;
@@ -227,7 +229,7 @@ async fn every_preset_names_only_fixtures_that_exist() {
 #[tokio::test]
 async fn editing_a_demo_preset_moves_the_cue_that_is_standing() {
     let engine = a_station().await;
-    seed(&engine, Demo::Theatre).await.expect("it seeds");
+    seed(&engine, Demo::Theater).await.expect("it seeds");
 
     let cues: Vec<Cue> = read(&engine, "cues").await;
     let sequences: Vec<Sequence> = read(&engine, "sequences").await;
@@ -256,7 +258,7 @@ async fn editing_a_demo_preset_moves_the_cue_that_is_standing() {
         .find(|f| f.name.starts_with("Cyc"))
         .expect("a cyc batten");
     let to_of = |f: &Fixture| f.live_fades.get("ColorRgb").map(|fade| fade.to.clone());
-    let before = to_of(&cyc).expect("the cue is driving its colour");
+    let before = to_of(&cyc).expect("the cue is driving its color");
 
     // Somebody edits the palette. Nothing else about the show changes.
     let mut values = sky.values.clone();
@@ -293,8 +295,8 @@ async fn haunt_seeds_a_rig_that_hangs_together() {
 }
 
 #[tokio::test]
-async fn theatre_seeds_a_rig_that_hangs_together() {
-    seeds_a_rig_that_hangs_together(Demo::Theatre).await;
+async fn theater_seeds_a_rig_that_hangs_together() {
+    seeds_a_rig_that_hangs_together(Demo::Theater).await;
 }
 
 #[tokio::test]
@@ -308,12 +310,17 @@ async fn festival_seeds_a_rig_that_hangs_together() {
 }
 
 #[tokio::test]
+async fn garden_seeds_a_rig_that_hangs_together() {
+    seeds_a_rig_that_hangs_together(Demo::Garden).await;
+}
+
+#[tokio::test]
 async fn the_demos_name_no_curve_and_so_their_heads_ease_into_their_marks() {
     // The test of whether the show's default is in the right place. Every demo's
     // position cues run on the shape the *show* says, so a desk that turns the
     // setting off sees all four rigs change — which a demo that wrote `Linear` into
     // its captures could never show.
-    for demo in [Demo::Haunt, Demo::Theatre, Demo::Club, Demo::Festival] {
+    for demo in ALL.iter().copied() {
         let engine = a_station().await;
         seed(&engine, demo).await.unwrap();
         let cues: Vec<Cue> = read(&engine, "cues").await;
@@ -399,4 +406,164 @@ fn every_demo_can_be_spelled_and_read_back() {
     }
     assert_eq!(Demo::parse("HAUNT"), Some(Demo::Haunt), "case is not a spelling mistake");
     assert_eq!(Demo::parse("nonesuch"), None);
+}
+
+// ── The Garden ────────────────────────────────────────────────────────────────
+
+/// What the Garden says a V0 is, against what the simulator — the firmware's side of
+/// the contract, in software — says it is. A drift here is ten demo nodes whose types
+/// a real node would rebuild the moment it came up.
+#[test]
+fn the_garden_describes_a_v0_as_the_simulator_does() {
+    use openhaunt_node_sim::{pixels::StripConfig, ModuleKind};
+    let (ours, pixels) = garden::v0_description();
+    let sim_ports: Vec<serde_json::Value> = ModuleKind::NodeV0
+        .ports()
+        .into_iter()
+        .chain(StripConfig::default_for(0).ports())
+        .chain(StripConfig::default_for(1).ports())
+        .map(|port| serde_json::to_value(port).unwrap())
+        .collect();
+    let theirs: Vec<pult_schema::types::openhaunt::PortDescription> =
+        serde_json::from_value(serde_json::Value::Array(sim_ports)).unwrap();
+    assert_eq!(ours.ports, theirs);
+    assert_eq!(ModuleKind::NodeV0.type_id(), garden::V0_MODULE);
+    assert_eq!(pixels.effects, openhaunt_node_sim::pixels::EFFECTS.map(str::to_string).to_vec());
+}
+
+/// A station with an empty show and somewhere to put what the Garden generates.
+async fn a_station_with_a_store() -> EngineHandle {
+    let pool = std::sync::Arc::new(crate::infra::showfile::open_in_memory().await.unwrap());
+    let station = pult_schema::events::operation::NodeId::new();
+    let (engine, handle, _broadcast) = ShowEngine::new(station, pool.clone(), None);
+    tokio::spawn(engine.run());
+    let dir = std::env::temp_dir().join(format!("pult-garden-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let assets = crate::infra::assets::AssetStore::new(Some(dir), pool);
+    seed_with(&handle, Some(assets), Some(station), Demo::Garden).await.expect("the garden seeds");
+    handle
+}
+
+async fn eventually<F, Fut>(what: &str, mut check: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    for _ in 0..100 {
+        if check().await {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("never: {what}");
+}
+
+/// The Garden's maze, run by nothing but its sensors: groups walk in and out of the
+/// first two areas, the scare goes off for the first group into an empty area and not
+/// for the one behind it, and the traffic light follows the second area. No hardware,
+/// no operator — sensed values in, and what the show's own flows make of them.
+#[tokio::test]
+async fn the_garden_maze_runs_on_its_sensors() {
+    use pult_schema::types::{timeline::Timeline, Variable};
+
+    let engine = a_station_with_a_store().await;
+    let fixtures: Vec<Fixture> = read(&engine, "fixtures").await;
+    let node = |name: &str| fixtures.iter().find(|f| f.name == name).unwrap_or_else(|| panic!("{name}")).id;
+    let (area1, area2, entrance) = (node("Area 1 node"), node("Area 2 node"), node("Entrance node"));
+
+    let timelines: Vec<Timeline> = read(&engine, "timelines").await;
+    let scare1 = timelines.iter().find(|t| t.name == "Area 1 scare").unwrap().id;
+    assert!(
+        timelines.iter().filter(|t| t.name.ends_with("scare")).all(|t| !t.clips.is_empty()),
+        "every scare has its sound"
+    );
+    assert_eq!(
+        timelines.iter().filter(|t| !t.tracks.is_empty()).count(),
+        2,
+        "both skeletons have a take"
+    );
+
+    let edge = |fixture: Uuid, port: u8, closed: bool| {
+        let engine = engine.clone();
+        async move {
+            engine
+                .set_sensed_value(
+                    fixture,
+                    format!("Contact:{port}"),
+                    serde_json::json!({ "type": "Bool", "value": closed }),
+                )
+                .await
+                .unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+        }
+    };
+    let walk = |fixture: Uuid, port: u8| {
+        let edge = edge.clone();
+        async move {
+            edge(fixture, port, true).await;
+            edge(fixture, port, false).await;
+        }
+    };
+    let inside = |name: &'static str| {
+        let engine = engine.clone();
+        async move {
+            let vars: Vec<Variable> = read(&engine, "variables").await;
+            vars.iter().find(|v| v.name == name).unwrap().current()
+        }
+    };
+    let running = |id: Uuid| {
+        let engine = engine.clone();
+        async move {
+            let timelines: Vec<Timeline> = read(&engine, "timelines").await;
+            timelines.iter().find(|t| t.id == id).unwrap().running
+        }
+    };
+    let lamp = |relay: u8| {
+        let engine = engine.clone();
+        async move {
+            let fixtures: Vec<Fixture> = read(&engine, "fixtures").await;
+            let entrance = fixtures.iter().find(|f| f.id == entrance).unwrap();
+            entrance
+                .live_fades
+                .get(&format!("Switch:{relay}"))
+                .map(|fade| fade.to == pult_schema::types::ParameterValue::Bool(true))
+        }
+    };
+
+    // The flows meet the sensors once before anything happens.
+    edge(area1, 4, false).await;
+    edge(area2, 4, false).await;
+
+    // The first group into area 1.
+    walk(area1, 4).await;
+    eventually("area 1 counts them in", || async { inside("Area 1 inside").await == 1.0 }).await;
+    eventually("and scares them", || async { running(scare1).await }).await;
+    // The scare finishes, and the next group walks in behind the first.
+    engine
+        .set(
+            vec![PathSegment::Key("timelines".into()), PathSegment::Id(scare1), PathSegment::Key("stop".into())],
+            pult_schema::lifecycle::Lifecycle::Synced,
+            serde_json::json!({}),
+        )
+        .await
+        .unwrap();
+    walk(area1, 4).await;
+    eventually("two groups inside", || async { inside("Area 1 inside").await == 2.0 }).await;
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    assert!(!running(scare1).await, "an occupied area does not scare again");
+    walk(area1, 5).await;
+    walk(area1, 5).await;
+    eventually("both groups out", || async { inside("Area 1 inside").await == 0.0 }).await;
+
+    // Area 2, and the light at the entrance.
+    walk(area2, 4).await;
+    eventually("red while somebody is in area 2", || async {
+        lamp(0).await == Some(true) && lamp(1).await == Some(false)
+    })
+    .await;
+    walk(area2, 5).await;
+    eventually("green when area 2 is free", || async {
+        lamp(1).await == Some(true) && lamp(0).await == Some(false)
+    })
+    .await;
 }

@@ -1,6 +1,6 @@
 //! From a matrix to three vectors a person can read, and back.
 //!
-//! An MVR object's place is a 4x3 matrix in millimetres with Z up. The console holds
+//! An MVR object's place is a 4x3 matrix in millimeters with Z up. The console holds
 //! a position, a rotation as XYZ Euler degrees, and a scale — three numbers each,
 //! which is what a numeric field can show and a gizmo can write. Getting between the
 //! two is the whole of this module.
@@ -23,10 +23,10 @@ use crate::values::{
     from_console, to_console, Matrix, MvrMatrix,
 };
 
-/// Where something is, in the console's space: metres, Y up, Z downstage.
+/// Where something is, in the console's space: meters, Y up, Z downstage.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Placement {
-    /// Metres.
+    /// Meters.
     pub position: [f32; 3],
     /// XYZ Euler degrees — three.js's order, and the console's.
     pub rotation: [f32; 3],
@@ -159,10 +159,10 @@ mod tests {
         close(placement.scale, [1.0; 3], "scale");
     }
 
-    /// Millimetres Z-up to metres Y-up: 4 m upstage and 4 m in the air becomes 4 m
+    /// Millimeters Z-up to meters Y-up: 4 m upstage and 4 m in the air becomes 4 m
     /// up and 4 m *downstage negative*, because the console's Z points the other way.
     #[test]
-    fn a_position_arrives_in_metres_with_y_up() {
+    fn a_position_arrives_in_meters_with_y_up() {
         let (placement, _) = round_trip("{1,0,0}{0,1,0}{0,0,1}{-3600,13900,4000}");
 
         close(placement.position, [-3.6, 4.0, -13.9], "position");

@@ -65,7 +65,7 @@ impl Placed {
             class: None,
             geometry: Vec::new(),
             symbol: None,
-            catalogue: None,
+            catalog: None,
             properties: serde_json::Value::Null,
             locked: false,
             weight_kg: None,
@@ -133,7 +133,7 @@ fn a_parent_chain_that_loops_stops_rather_than_hangs() {
         class: None,
         geometry: Vec::new(),
         symbol: None,
-        catalogue: None,
+        catalog: None,
         properties: serde_json::Value::Null,
         locked: false,
         weight_kg: None,
@@ -142,7 +142,7 @@ fn a_parent_chain_that_loops_stops_rather_than_hangs() {
 
     let got = world_transform(&Transform::default(), Some(a), &by_id(&objects));
 
-    // Sixty-four steps of one metre each, and then it gives up.
+    // Sixty-four steps of one meter each, and then it gives up.
     assert!(got.position.x > 0.0, "it walked and stopped: {got:?}");
 }
 

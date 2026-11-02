@@ -2,44 +2,29 @@
 	/**
 	 * The programmer, as a panel.
 	 *
-	 * Two halves. The top is the selection's parameters and the controls that move
-	 * them — what an operator uses to build a look. The bottom is what the programmer
-	 * is actually holding, which is a different question: the spec keeps the two
-	 * apart deliberately, so clearing the selection does not clear the buffer and a
-	 * value can be parked and then reached again from a different selection.
+	 * The selection's parameters and the controls that move them — what an operator
+	 * uses to build a look — grouped the way a cue's fades are: intensity, position,
+	 * color, beam, the rest. What the programmer is *holding* is its own panel,
+	 * `HeldPanel`, because it answers a different question.
+	 *
+	 * A control shows its own value — a fader in its track, a switch by where its knob
+	 * is, a select by what it says — so there is no readout beside it repeating that.
 	 *
 	 * A row that the programmer holds is tinted amber, the same amber that marks a
-	 * live cue elsewhere. That is the whole of the priority rule, said in a colour:
+	 * live cue elsewhere. That is the whole of the priority rule, said in a color:
 	 * amber is what is reaching the rig.
 	 */
 
-	import type { EffectSpec, ParameterKind, ParameterValue } from '$lib/generated/index.js';
-	import { commonValue, editableParameters } from '$lib/programmer.js';
-	import { formatValue, kindLabel } from '$lib/patch.js';
+	import { addToast } from '$lib/toasts.js';
+	import type { FadeGroup, ParameterKind, ParameterValue } from '$lib/generated/index.js';
+	import { fadeGroup } from '$lib/fade.js';
+	import { commonValueOf, editableParameters, rowTargets, type Target } from '$lib/programmer.js';
+	import { modeHas, modeOf, parameterKey } from '$lib/patch.js';
+	import { cellSpansText, parseCellSpans } from '$lib/selection.js';
 	import { collection } from '$lib/stores/show.js';
-	import { selection } from '$lib/stores/selection.js';
-	import { revealPanel } from '$lib/stores/layout.js';
+	import { elements, hasCellsSelected, query, selection, setCells, targetElements } from '$lib/stores/selection.js';
 	import { output, watching } from '$lib/stores/output.js';
-	import {
-		byKey,
-		cancelEdit,
-		clear,
-		editingCue,
-		entries,
-		home,
-		lockAll,
-		remove,
-		removeEffect,
-		setValue,
-		toggleLock,
-		updateEdit
-	} from '$lib/stores/programmer.js';
-	/** What an effect chip says: the shape and the rate, which is all that fits. */
-	function effectSummary(effect: EffectSpec): string {
-		const shape = 'Steps' in effect.curve ? `${effect.curve.Steps.length} steps` : effect.curve.Shape.toLowerCase();
-		const rate = 'Hz' in effect.rate ? `${effect.rate.Hz} Hz` : 'master';
-		return `${shape} · ${rate}`;
-	}
+	import { byKey, cancelEdit, editingCue, entries, home, setValueOn, update } from '$lib/stores/programmer.js';
 
 	import PanTiltPad from './controls/PanTiltPad.svelte';
 	import ValueControl from './controls/ValueControl.svelte';
@@ -48,67 +33,116 @@
 	const fixtures = collection('fixtures');
 	const types = collection('fixture_types');
 	const cues = collection('cues');
-	const presets = collection('presets');
 
 	let storeOpen = $state(false);
 
 	const chosen = $derived($fixtures.filter((f) => $selection.includes(f.id)));
 	const rows = $derived(editableParameters($types, chosen));
+	const typeById = $derived(new Map($types.map((t) => [t.id, t])));
+	const fixtureTypeOf = $derived(new Map($fixtures.map((f) => [f.id, typeById.get(f.fixture_type_id)])));
+	/// Where each row lands: a fixture's own key, or each selected cell's.
+	const targetsOf = (kind: ParameterKind): Target[] =>
+		rowTargets(kind, $targetElements, (id) => fixtureTypeOf.get(id), reaches);
+	const fixtureById = $derived(new Map($fixtures.map((f) => [f.id, f])));
+	/// A cut selection whose value lands on a whole-fixture key the type also declares
+	/// per cell: a bar in its one-color mode, where the cells are one color.
+	const wholeForCells = (kind: ParameterKind) =>
+		targetsOf(kind).some(
+			(t) =>
+				parameterKey(t.kind) === parameterKey(kind) &&
+				(fixtureTypeOf.get(t.fixtureId)?.parameters ?? []).some(
+					(p) => p.per_cell && parameterKey(p.kind) === parameterKey(kind)
+				)
+		);
+	/// Whether the mode a fixture is patched in carries a key: what decides between a
+	/// bar's master and its cells, and between its one-color mode and its pixel mode.
+	const reaches = (id: string, key: string) => {
+		const fixture = fixtureById.get(id);
+		return !fixture || modeHas(modeOf(fixtureTypeOf.get(id), fixture.address), key);
+	};
+	const targetKey = (t: Target) => `${t.fixtureId}/${parameterKey(t.kind)}`;
+	const cellCount = $derived($elements.filter((e) => e.cell !== null).length);
+	let cellText = $state('');
+	$effect(() => {
+		cellText = cellSpansText($query.cells ?? []);
+	});
+	const cellError = $derived(parseCellSpans(cellText) === null);
 	const editing = $derived($cues.find((c) => c.id === $editingCue) ?? null);
-	const anyUnlocked = $derived($entries.some((e) => !e.locked));
+
+	/** The groups rows are shown in, in the order a look is usually built. */
+	const GROUPS: { group: FadeGroup; label: string }[] = [
+		{ group: 'Intensity', label: 'Intensity' },
+		{ group: 'Position', label: 'Position' },
+		{ group: 'Color', label: 'Color' },
+		{ group: 'Beam', label: 'Beam' },
+		{ group: 'Other', label: 'Other' }
+	];
+	const grouped = $derived(
+		GROUPS.map((g) => ({ ...g, rows: rows.filter((row) => fadeGroup(row.key) === g.group) })).filter(
+			(g) => g.rows.length > 0 || (g.group === 'Position' && (panRow || tiltRow))
+		)
+	);
 
 	/// What this panel is showing, so it is evaluated every frame. The selection's
 	/// parameters and nothing else: a rig of thousands with a dozen selected costs a
 	/// dozen.
 	$effect(() => {
-		const keys = chosen.flatMap((fixture) => rows.map((row) => `${fixture.id}/${row.key}`));
+		const keys = rows.flatMap((row) => targetsOf(row.kind).map(targetKey));
 		const registered = watching(keys);
 		return () => registered.stop();
 	});
 
 	/** The value a control should be showing: what is held, else what is on stage. */
-	function valueOf(key: string, fallback: ParameterValue): ParameterValue {
-		const first = chosen[0];
-		const entry = first ? $byKey.get(`${first.id}/${key}`) : undefined;
+	function valueOf(kind: ParameterKind, fallback: ParameterValue): ParameterValue {
+		const targets = targetsOf(kind);
+		const first = targets[0];
+		const entry = first ? $byKey.get(targetKey(first)) : undefined;
 		if (entry) return entry.value;
-		return commonValue(chosen, key, $output).value ?? fallback;
+		return commonValueOf(targets, $output).value ?? fallback;
 	}
 
-	const isHeld = (key: string) => chosen.some((f) => $byKey.has(`${f.id}/${key}`));
+	const isHeld = (kind: ParameterKind) => targetsOf(kind).some((t) => $byKey.has(targetKey(t)));
 
-	const put = (kind: ParameterKind, value: ParameterValue) =>
-		setValue($selection, kind, value);
+	const put = (kind: ParameterKind, value: ParameterValue) => setValueOn(targetsOf(kind), value);
 
 	/// Pan and tilt also get a pad, because two numbers is not how anyone thinks
 	/// about where a light is pointing.
 	const panRow = $derived(rows.find((r) => r.kind === 'Pan') ?? null);
 	const tiltRow = $derived(rows.find((r) => r.kind === 'Tilt') ?? null);
-	const axisValue = (row: { key: string; defaultValue: ParameterValue } | null) => {
+	const axisValue = (row: { kind: ParameterKind; defaultValue: ParameterValue } | null) => {
 		if (!row) return null;
-		const value = valueOf(row.key, row.defaultValue);
+		const value = valueOf(row.kind, row.defaultValue);
 		return value.type === 'Float' ? value.value : null;
 	};
 
-	const nameOf = (fixtureId: string) =>
-		$fixtures.find((f) => f.id === fixtureId)?.name ?? fixtureId.slice(0, 6);
-
-	/// The buffer grouped the way an operator reads it: by fixture, in rig order.
-	const heldByFixture = $derived(
-		$fixtures
-			.map((fixture) => ({
-				fixture,
-				held: $entries.filter((entry) => entry.fixture_id === fixture.id)
-			}))
-			.filter((group) => group.held.length > 0)
-	);
 </script>
 
 <div class="values">
 	<header>
 		<h2>Programmer</h2>
 		<span class="count">
-			{$selection.length === 0 ? 'nothing selected' : `${$selection.length} selected`}
+			{$selection.length === 0
+				? 'nothing selected'
+				: cellCount > 0
+					? `${$selection.length} selected · ${cellCount} cells`
+					: `${$selection.length} selected`}
 		</span>
+		{#if $hasCellsSelected || ($query.cells ?? []).length > 0}
+			<!-- MA's `.`: which cells of every multi-cell fixture selected. Empty is all. -->
+			<label class="cells" title="Which cells: 1-20, 5, 20-1. Empty is every cell.">
+				cells
+				<input
+					class="input mono"
+					class:bad={cellError}
+					placeholder="all"
+					bind:value={cellText}
+					onchange={() => {
+						const spans = parseCellSpans(cellText);
+						if (spans) setCells(spans);
+					}}
+				/>
+			</label>
+		{/if}
 		<span class="spacer"></span>
 		<button
 			class="ghost"
@@ -117,15 +151,6 @@
 			title="Every parameter of the selection back to where it rests"
 		>
 			Home
-		</button>
-		<button class="ghost" disabled={!anyUnlocked} onclick={() => clear()}>Clear</button>
-		<button
-			class="ghost"
-			disabled={$entries.length === 0}
-			onclick={() => lockAll(anyUnlocked)}
-			title="Park these values so they survive Clear and Store"
-		>
-			{anyUnlocked ? 'Park all' : 'Release all'}
 		</button>
 		<button class="primary" disabled={$entries.length === 0} onclick={() => (storeOpen = true)}>
 			Store
@@ -138,7 +163,13 @@
 			<span class="name">{editing.number.toFixed(1)} · {editing.name}</span>
 			<span class="spacer"></span>
 			<button class="ghost" onclick={cancelEdit}>Cancel</button>
-			<button class="primary" onclick={updateEdit}>Update</button>
+			<button
+				class="primary"
+				onclick={() =>
+					update()
+						.then((u) => u.edited && addToast(`Updated cue ${u.edited.number.toFixed(1)} · ${u.edited.name}`, 'success'))
+						.catch((e) => addToast(e instanceof Error ? e.message : String(e)))}>Update</button
+			>
 		</div>
 	{/if}
 
@@ -150,129 +181,66 @@
 					: 'Nothing in this selection has a parameter that can be set.'}
 			</p>
 		{:else}
-			<div class="rows">
-			{#if panRow || tiltRow}
-				<div class="row pad">
-					<span class="label">Position</span>
-					<div class="control">
-						<PanTiltPad
-							pan={axisValue(panRow)}
-							tilt={axisValue(tiltRow)}
-							onpan={panRow ? (v) => put('Pan', { type: 'Float', value: v }) : undefined}
-							ontilt={tiltRow ? (v) => put('Tilt', { type: 'Float', value: v }) : undefined}
-						/>
-					</div>
-				</div>
-			{/if}
-
-			{#each rows as row (row.key)}
-				{@const value = valueOf(row.key, row.defaultValue)}
-				{@const unreachable = row.unreachable === row.count}
-				<div class="row" class:held={isHeld(row.key)} class:unreachable>
-					<span class="label">
-						{row.label}
-						{#if row.mixed}<span class="mixed" title="Not every selected fixture has this">mixed</span>{/if}
-						{#if row.unreachable > 0}
-							<!-- The light can do it; the mode it is patched in has nowhere to
-							     send it. Saying so beats a fader that silently does nothing. -->
-							<span
-								class="mixed"
-								title={unreachable
-									? 'The mode this fixture is patched in does not carry this parameter'
-									: `${row.unreachable} of ${row.count} are in a mode that does not carry this`}
-								>not in {unreachable ? 'this mode' : 'every mode'}</span
-							>
-						{/if}
-					</span>
-					<span class="readout mono">
-						{#if $output.at === null}
-							<span class="waiting" title="This browser has not yet placed itself on the station's clock"
-								>—</span
-							>
-						{:else if commonValue(chosen, row.key, $output).mixed}
-							—
-						{:else}
-							{formatValue(commonValue(chosen, row.key, $output).value ?? undefined)}
-						{/if}
-					</span>
-					<div class="control">
-						<ValueControl
-							{value}
-							label={row.label}
-							tint={isHeld(row.key) ? 'var(--live)' : 'var(--accent)'}
-							oninput={(next) => put(row.kind, next)}
-						/>
-					</div>
+			{#each grouped as g (g.group)}
+				<h3 class="group-head">{g.label}</h3>
+				<div class="rows">
+					{#if g.group === 'Position' && (panRow || tiltRow)}
+						<div class="row pad">
+							<span class="label">Pan / tilt</span>
+							<div class="control">
+								<PanTiltPad
+									pan={axisValue(panRow)}
+									tilt={axisValue(tiltRow)}
+									onpan={panRow ? (v) => put('Pan', { type: 'Float', value: v }) : undefined}
+									ontilt={tiltRow ? (v) => put('Tilt', { type: 'Float', value: v }) : undefined}
+								/>
+							</div>
+						</div>
+					{/if}
+					{#each g.rows as row (row.key)}
+						{@const value = valueOf(row.kind, row.defaultValue)}
+						{@const unreachable = row.unreachable === row.count}
+						{@const shown = commonValueOf(targetsOf(row.kind), $output)}
+						<div class="row" class:held={isHeld(row.kind)} class:unreachable>
+							<span class="label" title={row.label}>
+								<span class="name">{row.label}</span>
+								{#if row.mixed}<span class="mixed" title="Not every selected fixture has this">mixed</span>{/if}
+								{#if shown.mixed}<span class="mixed" title="The selected fixtures are at different values; the control shows the first">differs</span>{/if}
+								{#if ($query.cells ?? []).length > 0 && wholeForCells(row.kind)}
+									<!-- Cells are cut, but the mode has one of these for the whole
+									     fixture (a bar's one-color mode): the value goes there. -->
+									<span class="mixed" title="This fixture's mode has one of these for the whole fixture, not one per cell"
+										>whole</span
+									>
+								{/if}
+								{#if row.unreachable > 0}
+									<!-- The light can do it; the mode it is patched in has nowhere to
+									     send it. Saying so beats a fader that silently does nothing. -->
+									<span
+										class="mixed"
+										title={unreachable
+											? 'The mode this fixture is patched in does not carry this parameter'
+											: `${row.unreachable} of ${row.count} are in a mode that does not carry this`}
+										>not in mode</span
+									>
+								{/if}
+							</span>
+							<div class="control">
+								<ValueControl
+									{value}
+									label={row.label}
+									choices={row.choices}
+									range={row.physical}
+									flash
+									tint={isHeld(row.kind) ? 'var(--live)' : 'var(--accent)'}
+									oninput={(next) => put(row.kind, next)}
+								/>
+							</div>
+						</div>
+					{/each}
 				</div>
 			{/each}
-			</div>
 		{/if}
-
-		<section class="buffer">
-			<h3>In programmer</h3>
-			{#if $entries.length === 0}
-				<p class="empty small">Nothing held. Move a control above and it turns up here.</p>
-			{:else}
-				<div class="rows">
-				{#each heldByFixture as group (group.fixture.id)}
-					<div class="group">
-						<span class="fixture">{group.fixture.name}</span>
-						{#each group.held as entry (entry.id)}
-							<div class="entry" class:locked={entry.locked}>
-								<span class="param">{kindLabel(entry.parameter_kind)}</span>
-								{#if entry.effect}
-									<!-- The value under an effect is only where it falls back to, so
-									     showing it would be showing a number the light is not at.
-									     What is worth saying is that something periodic has this
-									     parameter, and what it is. -->
-									<button
-										class="chip-effect"
-										title="Open the effect on this parameter"
-										onclick={() => revealPanel('effects')}
-									>{effectSummary(entry.effect)}</button>
-								{:else}
-									<span class="mono value">{formatValue(entry.value)}</span>
-									<!-- Where it came from, if it came from a palette. A value
-									     moved by hand writes `preset: null` in the same write, so
-									     this chip disappears the moment somebody touches the fader —
-									     which is the whole of what "breaking the link" looks like. -->
-									{#if entry.preset}
-										<span class="chip-preset" title="From a preset — a store carries the reference">
-											{$presets.find((p) => p.id === entry.preset)?.name ?? 'preset missing'}
-										</span>
-									{/if}
-								{/if}
-								<button
-									class="icon"
-									title={entry.locked ? 'Release this value' : 'Park this value'}
-									aria-label={entry.locked ? 'Release' : 'Park'}
-									onclick={() => toggleLock(entry.id)}
-								>
-									{entry.locked ? '🔒' : '🔓'}
-								</button>
-								{#if entry.effect}
-									<button
-										class="icon"
-										title="Stop this effect, leaving the value where it is"
-										aria-label="Stop the effect"
-										onclick={() => removeEffect(entry.effect!.effect_id)}
-									>⏹</button>
-								{/if}
-								<button
-									class="icon drop"
-									title="Give this parameter back to playback"
-									aria-label="Remove {kindLabel(entry.parameter_kind)}"
-									onclick={() => remove(entry.id)}
-								>
-									✕
-								</button>
-							</div>
-						{/each}
-					</div>
-				{/each}
-				</div>
-			{/if}
-		</section>
 	</div>
 </div>
 
@@ -284,7 +252,6 @@
 	/* Dimmed, not hidden, and still movable: the value is stored and takes effect the
 	   moment the fixture is patched in a mode that carries it. */
 	.row.unreachable .label,
-	.row.unreachable .readout,
 	.row.unreachable .control { opacity: 0.45; }
 
 	.values {
@@ -315,6 +282,19 @@
 	.count {
 		color: var(--text-faint);
 		font-size: var(--font-xs);
+	}
+	.cells {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		color: var(--text-dim);
+		font-size: var(--font-xs);
+	}
+	.cells .input {
+		width: 7em;
+	}
+	.cells .bad {
+		border-color: var(--bad);
 	}
 	.spacer {
 		flex: 1;
@@ -361,7 +341,7 @@
 
 	.row {
 		display: grid;
-		grid-template-columns: 92px 52px minmax(0, 1fr);
+		grid-template-columns: 104px minmax(0, 1fr);
 		align-items: center;
 		gap: var(--pad);
 		padding: 4px 6px;
@@ -375,42 +355,40 @@
 	.row.held {
 		background: #f59e0b14;
 	}
-	/* The pad has no readout of its own, so it takes the readout column as well —
-	   otherwise it lands in the 52px one and comes out the size of a postage stamp. */
 	.row.pad {
 		align-items: start;
 	}
-	.row.pad .control {
-		grid-column: 2 / -1;
+	/* A heading per group, quiet: it says where Color starts, not what Color is. */
+	.group-head {
+		margin: 12px 0 4px;
+		font-size: 10px;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+		color: var(--text-faint);
+	}
+	.group-head:first-child {
+		margin-top: 2px;
 	}
 
 	.label {
 		color: var(--text);
 		font-size: var(--font-sm);
 		display: flex;
-		align-items: baseline;
-		gap: 5px;
+		flex-direction: column;
+		gap: 1px;
+		min-width: 0;
+	}
+	.label .name {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 	.mixed {
 		color: var(--live);
 		font-size: 9px;
 		text-transform: uppercase;
 		letter-spacing: 0.06em;
-	}
-
-	.readout {
-		color: var(--text-dim);
-		font-size: var(--font-xs);
-		text-align: right;
-	}
-	/* Nothing has been evaluated yet, because this browser cannot say what time the
-	   station thinks it is. Dimmer than "mixed", because it is not a fact about the
-	   rig — it is this page admitting it does not know. */
-	.waiting {
-		opacity: 0.45;
-	}
-	.mono {
-		font-family: monospace;
 	}
 
 	.control {
@@ -422,101 +400,6 @@
 		font-size: var(--font-sm);
 		font-style: italic;
 		padding: 12px 0;
-	}
-	.empty.small {
-		font-size: var(--font-xs);
-		padding: 6px 0;
-	}
-
-	.buffer {
-		margin-top: 14px;
-		padding-top: 10px;
-		border-top: 1px solid var(--line);
-	}
-	h3 {
-		font-size: var(--font-xs);
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.08em;
-		color: var(--text-dim);
-	}
-
-	.group {
-		margin-top: 8px;
-		min-width: 0;
-	}
-	.fixture {
-		color: var(--text-dim);
-		font-size: var(--font-xs);
-	}
-
-	.entry {
-		display: grid;
-		grid-template-columns: 1fr auto auto auto;
-		align-items: center;
-		gap: 6px;
-		padding: 2px 4px;
-		border-radius: 3px;
-		color: var(--text);
-		font-size: var(--font-sm);
-	}
-	.entry:hover {
-		background: var(--bg-hover);
-	}
-	/* Amber, like everything else the programmer is holding over playback. */
-	/* A reference rather than a number. Cyan, the same colour the fixture sheet uses
-	   for a value that came from somewhere other than here. */
-	.chip-preset {
-		font-size: 10px;
-		padding: 1px 7px;
-		border-radius: 999px;
-		border: 1px solid var(--src-tracked);
-		color: var(--src-tracked);
-		white-space: nowrap;
-	}
-
-	.chip-effect {
-		font-size: var(--font-xs);
-		padding: 2px 8px;
-		border-radius: 999px;
-		border: 1px solid var(--live);
-		background: none;
-		color: var(--live);
-		font-family: inherit;
-		cursor: pointer;
-		white-space: nowrap;
-	}
-	.chip-effect:hover {
-		background: var(--live);
-		color: var(--bg);
-	}
-
-	.entry.locked {
-		color: var(--live);
-	}
-	.entry .value {
-		color: var(--text-dim);
-		font-size: var(--font-xs);
-	}
-	.entry.locked .value {
-		color: inherit;
-	}
-
-	.icon {
-		background: none;
-		border: none;
-		color: var(--text-faint);
-		font: inherit;
-		font-size: var(--font-xs);
-		line-height: 1;
-		padding: 2px 3px;
-		cursor: pointer;
-	}
-	.icon:hover {
-		color: var(--text-bright);
-	}
-	.icon.drop:hover {
-		color: var(--bad);
 	}
 
 	.ghost {

@@ -1,11 +1,11 @@
 <script lang="ts">
 	/**
-	 * The rig as a table: fixture down, parameter across, and a colour per cell that
+	 * The rig as a table: fixture down, parameter across, and a color per cell that
 	 * says **where the value came from**.
 	 *
-	 * Every other desk has this and puts a flag on a value to colour it. This console
+	 * Every other desk has this and puts a flag on a value to color it. This console
 	 * does not have to: the model already keeps what is *driving* each parameter, so
-	 * the colour falls out of `driving.ts`'s four layers plus whether a take is rolling
+	 * the color falls out of `driving.ts`'s four layers plus whether a take is rolling
 	 * over the key — `lib/sheet.ts` is that rule, pure and tested, and the panel calls
 	 * it rather than restating it.
 	 *
@@ -19,11 +19,12 @@
 	 * - **A preset** — its values, and nothing where it says nothing.
 	 *
 	 * Rows are the selection, in the selection's own order, because that is the thing
-	 * an operator is working on. With nothing selected it is the whole patch, and the
-	 * *All* switch is there for the moment somebody wants the rig with their selection
-	 * marked in it rather than filtered to it.
+	 * an operator is working on — when *All fixtures* is off. It is on by default, so the
+	 * sheet is the whole rig with the selection marked in it; off, it is the selection
+	 * alone, or the whole patch when nothing is selected.
 	 */
 
+	import BlindBadge from '$lib/components/programmer/BlindBadge.svelte';
 	import type {
 		Cue,
 		Fixture,
@@ -35,7 +36,7 @@
 	import { drivenBy, drivingKey } from '$lib/driving.js';
 	import { recordingKeys } from '$lib/evaluator.js';
 	import { CURVE_LABELS, CURVES, fadeGroup } from '$lib/fade.js';
-	import { displayLabel, formatValue, parameterKey } from '$lib/patch.js';
+	import { formatValue, hasCells, inCell, parameterKey, parameterName, splitCell } from '$lib/patch.js';
 	import { asFloat, hexToRgb, rgbToHex, withFloat } from '$lib/programmer.js';
 	import { SOURCE_LABELS, source, trackedSource, type Source } from '$lib/sheet.js';
 	import { collection } from '$lib/stores/show.js';
@@ -43,33 +44,129 @@
 	import { setPresetValue } from '$lib/stores/programmer.js';
 	import { output, watching } from '$lib/stores/output.js';
 	import { byKey, setValue } from '$lib/stores/programmer.js';
-	import { select, selected, selection } from '$lib/stores/selection.js';
+	import { select, selectIds, selected, selection, toggle } from '$lib/stores/selection.js';
+	import { rangeOf } from '$lib/selection.js';
+	import { byNumber, numberTheRest, parseFixtureNumber, sharedNumbers } from '$lib/fixtureNumbers.js';
+	import { canEdit } from '$lib/stores/showLock.js';
+	import { beginGesture, endGesture } from '$lib/stores/gesture.js';
+	import { lasso } from '$lib/lasso.js';
+	import { addToast } from '$lib/toasts.js';
+	import { get } from 'svelte/store';
+
+	/**
+	 * Picking from the list the way a file list picks: a click is one, Ctrl or Cmd
+	 * adds or takes one out, Shift takes the range from the last click, and a lasso
+	 * dragged over the rows takes what it touches — added to what was picked with
+	 * Shift, Ctrl or Cmd held.
+	 */
+	let anchor = $state<string | null>(null);
+	const order = () => rows.map((f) => f.id);
+	/** The rows a lasso is over while it is dragged; selected when it is let go. */
+	let lassoed = $state<Set<string>>(new Set());
+	const lassoOptions = {
+		onpreview: (ids: string[]) => {
+			lassoed = new Set(ids);
+		},
+		onselect: (ids: string[], additive: boolean) => {
+			const base = additive ? get(selection) : [];
+			selectIds([...base, ...ids.filter((id) => !base.includes(id))]);
+		}
+	};
+	function pick(event: MouseEvent, id: string) {
+		if (event.metaKey || event.ctrlKey) {
+			toggle(id);
+			anchor = id;
+		} else if (event.shiftKey && anchor) {
+			const range = rangeOf(order(), anchor, id);
+			if (range) selectIds(range);
+		} else {
+			select(id);
+			anchor = id;
+		}
+	}
+
 	import { getDataContext } from '$lib/ws/context.js';
 
 	const data = getDataContext();
 	const fixtures = collection('fixtures');
+	/** Numbers two fixtures carry: allowed, since `fixture 5` then takes both, and marked. */
+	const shared = $derived(sharedNumbers($fixtures));
+	const unnumbered = $derived($fixtures.filter((f) => f.fixture_number === null).length);
+
+	/**
+	 * Every fixture without a number gets one, as one act. A show patched before the
+	 * station numbered fixtures needs this once; after that a patched fixture comes
+	 * with its number.
+	 */
+	async function numberUnnumbered() {
+		beginGesture();
+		try {
+			for (const { id, number } of numberTheRest($fixtures)) await data.fixtures.byId(id).fixture_number.set(number);
+		} catch (e) {
+			addToast(e instanceof Error ? e.message : String(e));
+		} finally {
+			endGesture();
+		}
+	}
+
+	/** The fixture whose number is being typed, edited where it is shown. */
+	let numbering = $state<string | null>(null);
+	async function renumber(fixture: Fixture, text: string) {
+		numbering = null;
+		const number = parseFixtureNumber(text);
+		if (number === undefined) return addToast(`${text.trim()} is not a fixture number — a whole number from 1`);
+		if (number === fixture.fixture_number) return;
+		try {
+			await data.fixtures.byId(fixture.id).fixture_number.set(number);
+		} catch (e) {
+			addToast(e instanceof Error ? e.message : String(e));
+		}
+	}
 	const types = collection('fixture_types');
 	const cues = collection('cues');
 	const sequences = collection('sequences');
 	const timelines = collection('timelines');
 	const presets = collection('presets');
 
-	/** Show the whole patch with the selection marked, rather than the selection alone. */
-	let all = $state(false);
+	/**
+	 * Show the whole patch with the selection marked, rather than the selection alone.
+	 * On by default (2026-10-25, at the gig): the sheet reads as the rig, and a table
+	 * that shrinks to two rows on every click read as fixtures going missing.
+	 */
+	let all = $state(true);
 	/** The cell an operator has picked, which is what the inspector strip edits. */
 	let picked = $state<{ fixtureId: string; key: string } | null>(null);
 
 	const typeOf = (fixture: Fixture) => $types.find((t) => t.id === fixture.fixture_type_id);
 
 	/**
+	 * Multi-cell fixtures opened into their cells. A strip is one row until somebody
+	 * asks to see its pixels: a thousand rows nobody asked for is a sheet nobody can read.
+	 */
+	let expanded = $state(new Set<string>());
+	function toggleCells(id: string) {
+		const next = new Set(expanded);
+		if (next.has(id)) next.delete(id);
+		else next.add(id);
+		expanded = next;
+	}
+	/** Whether this column is one the fixture holds per cell. */
+	const perCell = (fixture: Fixture, key: string) =>
+		!!typeOf(fixture)?.parameters.some((p) => p.per_cell && parameterKey(p.kind) === key);
+	const cellsOf = (fixture: Fixture) => {
+		const type = typeOf(fixture);
+		return hasCells(type) ? (type?.cells ?? 0) : 0;
+	};
+
+	/**
 	 * The rows.
 	 *
 	 * The selection in the order the selection is in — which is the order a chase runs
-	 * in and the order an operator dragged the panel into — and the patch order when
-	 * there is no selection to have an order.
+	 * in and the order an operator dragged the panel into — and the rig by fixture
+	 * number when there is no selection to have an order.
 	 */
 	const rows = $derived.by(() => {
-		if (all || $selection.length === 0) return $fixtures;
+		if (all || $selection.length === 0) return byNumber($fixtures);
 		const byId = new Map($fixtures.map((f) => [f.id, f]));
 		return $selection.map((id) => byId.get(id)).filter((f): f is Fixture => !!f);
 	});
@@ -80,7 +177,7 @@
 	 *
 	 * `fadeGroup` rather than a second ordering of its own — the console already has
 	 * one answer to "what sort of parameter is this" and a table with a different one
-	 * would put colour in two places on two screens.
+	 * would put color in two places on two screens.
 	 */
 	const GROUPS = ['Intensity', 'Position', 'Color', 'Beam', 'Other'] as const;
 
@@ -92,9 +189,9 @@
 		 * What kind of value this parameter is, as its type declares it.
 		 *
 		 * Carried on the column rather than read off the live reading, because the
-		 * inspector needs the *shape* — a colour or a number — and the reading is
+		 * inspector needs the *shape* — a color or a number — and the reading is
 		 * `null` for every parameter nothing is driving and until this browser knows
-		 * the station's clock. Deciding from it offered a percent box for a colour,
+		 * the station's clock. Deciding from it offered a percent box for a color,
 		 * which is a control that does nothing: `withFloat` answers a `Color`
 		 * unchanged, there being no single number in one to move.
 		 */
@@ -111,7 +208,8 @@
 					found.set(key, {
 						key,
 						kind: parameter.kind,
-						label: displayLabel(parameter.kind),
+						// The first row's word for it, where somebody named it.
+						label: parameterName(fixture, parameter.kind),
 						shape: parameter.default_value
 					});
 				}
@@ -141,7 +239,7 @@
 	 * The cue's own stack: the latest capture of every key over the cues up to it.
 	 *
 	 * The browser's `trackedThrough`, which mirrors `cue::tracked_through` and is held
-	 * to it by `testdata/tracking.json` — because a cue clicked in a list has to colour
+	 * to it by `testdata/tracking.json` — because a cue clicked in a list has to color
 	 * this table in the same frame, and a round trip inside that is a table that
 	 * flickers.
 	 */
@@ -178,9 +276,17 @@
 	/// parameters and nothing else, so a rig of thousands with a dozen on screen
 	/// costs a dozen.
 	$effect(() => {
-		const keys = rows.flatMap((fixture) =>
-			columns.map((column) => drivingKey(fixture.id, column.key))
-		);
+		const keys = rows.flatMap((fixture) => [
+			...columns.map((column) => drivingKey(fixture.id, column.key)),
+			// An open strip's cells, each its own key.
+			...(expanded.has(fixture.id)
+				? Array.from({ length: cellsOf(fixture) }, (_, i) =>
+						columns
+							.filter((c) => perCell(fixture, c.key))
+							.map((c) => drivingKey(fixture.id, `${c.key}@${i + 1}`))
+					).flat()
+				: [])
+		]);
 		const registered = watching(keys);
 		return () => registered.stop();
 	});
@@ -265,6 +371,23 @@
 		await data.cues.byId(cue.id).captures.set(next);
 	}
 
+	/**
+	 * Take the picked capture out of the cue in view — or every capture of its fixture.
+	 * One write of the column, so one Ctrl-Z. A cue that is standing lets the key go the
+	 * way an edit does (`repoint_edited_captures`): to what the stack beneath says.
+	 */
+	async function removeFromCue(what: 'key' | 'fixture') {
+		const cue = shownCue;
+		const capture = pickedCapture;
+		if (!cue || !capture) return;
+		const next = cue.captures.filter((c) =>
+			what === 'fixture'
+				? c.fixture_id !== capture.fixture_id
+				: !(c.fixture_id === capture.fixture_id && parameterKey(c.parameter_kind) === parameterKey(capture.parameter_kind))
+		);
+		await data.cues.byId(cue.id).captures.set(next);
+	}
+
 	/** Typing a number into a live cell is the programmer, which is what a sheet is for. */
 	async function typeInto(fixture: Fixture, column: { key: string; kind: ParameterKind }, text: string) {
 		const percent = Number(text);
@@ -276,26 +399,35 @@
 		setValue([fixture.id], column.kind, withFloat(current, percent / 100));
 	}
 
+	/** The picked column, as the cell it is where a cell was picked. */
+	const pickedColumn = $derived.by(() => {
+		if (!picked) return undefined;
+		const [base, cell] = splitCell(picked.key);
+		const column = columns.find((c) => c.key === base);
+		if (!column || cell === null) return column;
+		return { ...column, key: picked.key, kind: inCell(column.kind, cell), label: `${column.label} ${cell}` };
+	});
+
 	const percentOf = (value: ParameterCapture['value']) => {
 		const n = asFloat(value);
 		return n === null ? '' : String(Math.round(n * 100));
 	};
 
 	/**
-	 * A colour is not a percentage.
+	 * A color is not a percentage.
 	 *
-	 * `withFloat` answers a `Color` unchanged — deliberately, since a colour has no
+	 * `withFloat` answers a `Color` unchanged — deliberately, since a color has no
 	 * single number to move — so a percent box over one is a control that does nothing.
-	 * Every parameter an operator edits here is either a number or a colour, and the
+	 * Every parameter an operator edits here is either a number or a color, and the
 	 * inspector offers whichever it is.
 	 */
-	const isColour = (value: ParameterCapture['value']) => value.type === 'Color';
+	const isColor = (value: ParameterCapture['value']) => value.type === 'Color';
 
 	const withHex = (like: ParameterCapture['value'], hex: string): ParameterCapture['value'] | null => {
 		const rgb = hexToRgb(hex);
 		if (!rgb || like.type !== 'Color') return null;
 		// The per-emitter overrides are kept: they are somebody's answer about a
-		// particular head, and a colour picker is not the place to throw them away.
+		// particular head, and a color picker is not the place to throw them away.
 		return { type: 'Color', value: { ...rgb, overrides: like.value.overrides } };
 	};
 
@@ -304,6 +436,7 @@
 </script>
 
 <div class="sheet">
+	<BlindBadge />
 	<header>
 		{#if shownCue}
 			<span class="mode">
@@ -320,6 +453,11 @@
 			<span class="note">what the rig is doing, and what is driving it</span>
 		{/if}
 		<span class="spacer"></span>
+		{#if $canEdit && unnumbered > 0}
+			<button class="chip" onclick={numberUnnumbered} title="Give each a number, in patch order, counting on from the highest">
+				Number {unnumbered} unnumbered
+			</button>
+		{/if}
 		<label class="check">
 			<input type="checkbox" bind:checked={all} />
 			All fixtures
@@ -331,11 +469,11 @@
 	{:else if columns.length === 0}
 		<p class="empty">These fixtures have no parameters anybody can set.</p>
 	{:else}
-		<div class="scroll">
+		<div class="scroll" use:lasso={lassoOptions}>
 			<table>
 				<thead>
 					<tr>
-						<th class="name">Fixture</th>
+						<th class="name"><span class="index" title="What to type after FIXTURE">#</span> Fixture</th>
 						{#each columns as column (column.key)}
 							<th class="group-{fadeGroup(column.key).toLowerCase()}">{column.label}</th>
 						{/each}
@@ -343,12 +481,57 @@
 				</thead>
 				<tbody>
 					{#each rows as fixture (fixture.id)}
-						<tr class:picked={$selected.has(fixture.id)}>
+						<tr class:picked={$selected.has(fixture.id)} class:lassoed={lassoed.has(fixture.id)} data-lasso-id={fixture.id}>
 							<th class="name">
-								<button class="row-name" onclick={() => select(fixture.id)}>{fixture.name}</button>
+								<div class="name-cell">
+								{#if numbering === fixture.id}
+									<!-- svelte-ignore a11y_autofocus -->
+									<input
+										class="index-edit"
+										value={fixture.fixture_number ?? ''}
+										inputmode="numeric"
+										autofocus
+										onkeydown={(e) => {
+											if (e.key === 'Enter') e.currentTarget.blur();
+											else if (e.key === 'Escape') numbering = null;
+										}}
+										onblur={(e) => numbering === fixture.id && renumber(fixture, e.currentTarget.value)}
+									/>
+								{:else}
+									{@const n = fixture.fixture_number}
+									<span
+										class="index"
+										class:shared={n !== null && shared.has(n)}
+										role="button"
+										tabindex="-1"
+										title={n === null
+											? 'No number, so the command line and the wing cannot select it' + ($canEdit ? ' · double-click to number it' : '')
+											: `fixture ${n} on the command line and the wing` +
+												(shared.has(n) ? ' — and so is another fixture' : '') +
+												($canEdit ? ' · double-click to renumber' : '')}
+										ondblclick={() => $canEdit && (numbering = fixture.id)}
+										>{n ?? '–'}</span
+									>
+								{/if}
+								<button
+									class="row-name"
+									onclick={(e) => pick(e, fixture.id)}
+									title="Click to select · Ctrl/Cmd-click to add or remove · Shift-click for a range · drag a lasso over rows (on a touchscreen: one finger lassos, two fingers scroll)"
+								>{fixture.name}</button>
+								{#if cellsOf(fixture) > 0}
+									<button
+										class="cells-toggle"
+										aria-expanded={expanded.has(fixture.id)}
+										onclick={() => toggleCells(fixture.id)}
+										title="Show each of its {cellsOf(fixture)} cells"
+									>{expanded.has(fixture.id) ? '▾' : '▸'} {cellsOf(fixture)}</button>
+								{/if}
+								</div>
 							</th>
 							{#each columns as column (column.key)}
-								{@const c = cell(fixture, column.key)}
+								{@const c = perCell(fixture, column.key)
+									? { text: `${cellsOf(fixture)} cells`, source: 'none' as Source, from: null }
+									: cell(fixture, column.key)}
 								<td
 									class="src-{c.source}"
 									class:on={picked?.fixtureId === fixture.id && picked?.key === column.key}
@@ -366,6 +549,29 @@
 								</td>
 							{/each}
 						</tr>
+						{#if expanded.has(fixture.id)}
+							{#each Array.from({ length: cellsOf(fixture) }, (_, i) => i + 1) as n (n)}
+								<tr class="cell-row">
+									<th class="name"><span class="cell-name">{fixture.name} · {n}</span></th>
+									{#each columns as column (column.key)}
+										{#if perCell(fixture, column.key)}
+											{@const key = `${column.key}@${n}`}
+											{@const c = cell(fixture, key)}
+											<td
+												class="src-{c.source}"
+												class:on={picked?.fixtureId === fixture.id && picked?.key === key}
+											>
+												<button class="cell" onclick={() => (picked = { fixtureId: fixture.id, key })}>
+													{c.text}
+												</button>
+											</td>
+										{:else}
+											<td></td>
+										{/if}
+									{/each}
+								</tr>
+							{/each}
+						{/if}
 					{/each}
 				</tbody>
 			</table>
@@ -379,15 +585,15 @@
 		{@const fixture = rows.find((f) => f.id === picked?.fixtureId)}
 		<div class="inspector">
 			<span class="what">
-				<!-- `kindLabel`, not the raw map key: "Colour" is what an operator calls
+				<!-- `kindLabel`, not the raw map key: "Color" is what an operator calls
 				     it and `ColorRgb` is what `live_fades` calls it. -->
-				{fixture?.name ?? '—'} · {columns.find((c) => c.key === picked?.key)?.label ?? picked.key}
+				{fixture?.name ?? '—'} · {pickedColumn?.label ?? picked.key}
 			</span>
 			{#if pickedCapture}
 				{@const capture = pickedCapture}
 				<label>
 					value
-					{#if isColour(capture.value)}
+					{#if isColor(capture.value)}
 						<input
 							class="swatch"
 							type="color"
@@ -424,14 +630,14 @@
 						onchange={(e) => editCapture({ fade_in_ms: Number(e.currentTarget.value) || 0 })}
 					/>
 				</label>
-				<label>
+				<label title="How long this value takes to go when its cue ends. Empty is the cue's out time.">
 					out
 					<input
 						class="num"
 						type="number"
 						min="0"
 						step="100"
-						placeholder="in"
+						placeholder="cue"
 						value={capture.fade_out_ms || ''}
 						onchange={(e) => editCapture({ fade_out_ms: Number(e.currentTarget.value) || 0 })}
 					/>
@@ -463,13 +669,20 @@
 						{/each}
 					</select>
 				</label>
+				<!-- Out of the cue: the parameter then tracks from an earlier cue, or rests. -->
+				<button class="chip" title="This cue stops setting it; it tracks from an earlier cue or rests" onclick={() => void removeFromCue('key')}
+					>Remove from cue</button
+				>
+				<button class="chip" title="Every parameter of {fixture?.name ?? 'this fixture'} out of this cue" onclick={() => void removeFromCue('fixture')}
+					>Remove fixture from cue</button
+				>
 			{:else if shownPreset}
 				{@const value = presetCells.get(drivingKey(picked.fixtureId, picked.key))}
-				{@const column = columns.find((c) => c.key === picked?.key)}
+				{@const column = pickedColumn}
 				{#if value}
 					<label>
 						value
-						{#if isColour(value.value)}
+						{#if isColor(value.value)}
 							<input
 								class="swatch"
 								type="color"
@@ -522,20 +735,20 @@
 					This cue does not capture it — what is shown is tracked from an earlier one.
 				</span>
 			{:else if fixture}
-				{@const column = columns.find((c) => c.key === picked?.key)}
+				{@const column = pickedColumn}
 				{#if column}
 					{@const now = $output.value(fixture.id, column.key)}
 					<label>
 						set to
-						{#if isColour(column.shape)}
-							<!-- The colour it is showing, so the picker opens on it rather than
+						{#if isColor(column.shape)}
+							<!-- The color it is showing, so the picker opens on it rather than
 							     on black — and the declared shape when nothing is driving it. -->
 							<input
 								class="swatch"
 								type="color"
-								value={hexOf(now && isColour(now) ? now : column.shape)}
+								value={hexOf(now && isColor(now) ? now : column.shape)}
 								onchange={(e) => {
-									const next = withHex(now && isColour(now) ? now : column.shape, e.currentTarget.value);
+									const next = withHex(now && isColor(now) ? now : column.shape, e.currentTarget.value);
 									if (next) setValue([fixture.id], column.kind, next);
 								}}
 							/>
@@ -562,7 +775,7 @@
 		</div>
 	{/if}
 
-	<!-- The legend, which is what makes the colours readable to somebody who has not
+	<!-- The legend, which is what makes the colors readable to somebody who has not
 	     stood behind this desk before. -->
 	<footer>
 		{#each ['programmer', 'track', 'effect', 'cue', 'tracked', 'home'] as const as kind (kind)}
@@ -644,8 +857,8 @@
 		border-bottom: 1px solid var(--line-strong);
 		white-space: nowrap;
 	}
-	/* The fade groups, tinted only in the heading: a column of colour would fight
-	   the colours that carry the meaning. */
+	/* The fade groups, tinted only in the heading: a column of color would fight
+	   the colors that carry the meaning. */
 	.group-intensity { color: #d4d4d8; }
 	.group-position { color: #93c5fd; }
 	.group-color { color: #f0abfc; }
@@ -656,26 +869,77 @@
 		z-index: 2;
 		background: var(--bg-panel);
 		max-width: 14rem;
+		text-align: left;
 	}
 	tbody th.name {
 		position: sticky;
 		border-bottom: 1px solid #ffffff08;
 		font-weight: 400;
 	}
+	.index {
+		display: inline-block;
+		min-width: 2.2em;
+		padding-left: 6px;
+		text-align: right;
+		color: var(--text-faint, #666);
+		font-variant-numeric: tabular-nums;
+		user-select: none;
+	}
+	.index.shared {
+		color: var(--warn, #f59e0b);
+	}
+	.index-edit {
+		width: 3.4em;
+		margin-left: 4px;
+		font: inherit;
+		text-align: right;
+		font-variant-numeric: tabular-nums;
+	}
+	/* The whole cell picks, not only the name's letters: the button fills it. */
+	.name-cell {
+		display: flex;
+		align-items: center;
+	}
 	.row-name {
+		flex: 1;
+		min-width: 0;
+		align-self: stretch;
+		text-align: left;
+		user-select: none;
 		background: none;
 		border: none;
 		color: var(--text-dim);
 		font: inherit;
 		cursor: pointer;
-		padding: 0;
+		/* The same height as a value cell, so the whole row's name column picks. */
+		padding: 4px 8px 4px 6px;
 		max-width: 13rem;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
+	.cells-toggle {
+		margin-left: 6px;
+		background: none;
+		border: 1px solid var(--line);
+		border-radius: var(--radius);
+		color: var(--text-dim);
+		font-size: var(--font-xs);
+		cursor: pointer;
+		padding: 0 4px;
+	}
+	.cell-name {
+		color: var(--text-faint);
+		padding-left: 12px;
+		font-size: var(--font-xs);
+	}
 	tr.picked .row-name {
 		color: var(--text-bright);
+	}
+	/* Under a lasso that has not been let go yet: about to be picked. */
+	tr.lassoed th,
+	tr.lassoed td {
+		background: color-mix(in srgb, var(--accent) 12%, transparent);
 	}
 
 	td {
@@ -708,7 +972,7 @@
 		font-size: 9px;
 	}
 
-	/* The whole claim of this panel, in six colours. `lib/sheet.ts` decides which. */
+	/* The whole claim of this panel, in six colors. `lib/sheet.ts` decides which. */
 	.src-programmer { color: var(--src-programmer); }
 	.src-track { color: var(--src-track); }
 	.src-effect { color: var(--src-effect); }

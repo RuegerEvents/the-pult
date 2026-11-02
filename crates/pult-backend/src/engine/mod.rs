@@ -13,7 +13,7 @@ use pult_schema::{
         client::ClientStatsMap,
         devices::DevicesState,
         fixture::{
-            home_value, output_parameters, Fixture, FixtureType, ParameterDirection,
+            home_value, Fixture, FixtureType, ParameterDirection,
             ParameterKind, ParameterValue,
         },
         input::InputStatuses,
@@ -38,7 +38,7 @@ use crate::{
 /// How often a collection may be broadcast whole while a burst of writes is arriving.
 ///
 /// A create has to send the collection, and the collection is the whole rig. At five
-/// thousand fixtures that is an expensive thing to serialise, and doing it per created
+/// thousand fixtures that is an expensive thing to serialize, and doing it per created
 /// row is what made patching a rig cost 89 seconds against 3 for everything else on the
 /// path. Fifty milliseconds is twenty a second: faster than anybody reads a list filling
 /// up, and 1/64th of what an import used to pay.
@@ -82,6 +82,51 @@ pub struct ShowState {
     local: BTreeMap<String, serde_json::Value>,
 }
 
+/// Lay the SYNCED half of `theirs` over `ours`, leaving the PERSISTED half as it is.
+///
+/// A collection with no PERSISTED field at all — the programmer, the stations — is
+/// theirs whole. Otherwise each row both hold takes their SYNCED fields: a sequence's
+/// cue and master, a timeline's anchor, a fixture's fades. A row only they hold is not
+/// taken, since its create is an operation and arrives as one; a row only we hold is
+/// kept, since our file says it exists.
+fn running_state_over(
+    ours: &mut serde_json::Map<String, serde_json::Value>,
+    theirs: &serde_json::Map<String, serde_json::Value>,
+) {
+    for meta in EntityMeta::all_with_tables() {
+        let Some(table) = meta.table_name else { continue };
+        let Some(their_rows) = theirs.get(table) else { continue };
+        let lifecycles = (meta.field_lifecycles)();
+        if !lifecycles.iter().any(|(_, lc)| *lc == Lifecycle::Persisted) {
+            ours.insert(table.to_string(), their_rows.clone());
+            continue;
+        }
+        let synced: Vec<&str> =
+            lifecycles.iter().filter(|(_, lc)| *lc == Lifecycle::Synced).map(|(f, _)| *f).collect();
+        if synced.is_empty() {
+            continue;
+        }
+        let Some(our_rows) = ours.get_mut(table) else { continue };
+        let take = |ours: &mut serde_json::Value, theirs: &serde_json::Value| {
+            let (Some(ours), Some(theirs)) = (ours.as_object_mut(), theirs.as_object()) else { return };
+            for field in &synced {
+                if let Some(value) = theirs.get(*field) {
+                    ours.insert(field.to_string(), value.clone());
+                }
+            }
+        };
+        if meta.is_singleton {
+            take(our_rows, their_rows);
+        } else if let (Some(our_rows), Some(their_rows)) = (our_rows.as_object_mut(), their_rows.as_object()) {
+            for (id, row) in our_rows.iter_mut() {
+                if let Some(theirs) = their_rows.get(id) {
+                    take(row, theirs);
+                }
+            }
+        }
+    }
+}
+
 /// The LOCAL top-level paths and what an empty one looks like.
 ///
 /// Seeding matters: a frontend that asks for `devices` before the device manager
@@ -102,9 +147,25 @@ const LOCAL_STATE: &[(&str, fn() -> serde_json::Value)] = &[
     // else is playing it".
     ("audio_status", || serde_json::to_value(
         pult_schema::types::timeline::AudioStatuses::default()).unwrap_or_default()),
+    // The one device every clip on this station is mixed into: whether it is open,
+    // and how many channels it has, which is what a clip's destination is picked from.
+    ("audio_output", || serde_json::to_value(
+        pult_schema::types::timeline::AudioOutput::default()).unwrap_or_default()),
+    // What the station driving the OpenHaunt nodes has made of each one's clip store.
+    // LOCAL for the reason `audio_status` is: it is this station's conversation with
+    // the node, and a follower is having none.
+    // What is being recorded on this station, per timeline: keys and points so far.
+    // LOCAL because a take in progress is in this machine's memory and no other's.
+    ("takes", || serde_json::to_value(
+        pult_schema::types::timeline::TakeStatuses::default()).unwrap_or_default()),
+    ("node_audio", || serde_json::to_value(
+        pult_schema::types::devices::NodeAudioStates::default()).unwrap_or_default()),
     ("output_coverage", || serde_json::to_value(OutputCoverage::default()).unwrap_or_default()),
     ("peers", || serde_json::to_value(PeerLinks::default()).unwrap_or_default()),
     ("clients", || serde_json::to_value(ClientStatsMap::default()).unwrap_or_default()),
+    // The command wing on this machine, and which page is driving it. LOCAL because
+    // a wing is plugged into one station, and a page on another cannot drive it.
+    ("wing", || serde_json::to_value(pult_schema::types::wing::WingState::default()).unwrap_or_default()),
     ("plugins", || serde_json::to_value(PluginsState::default()).unwrap_or_default()),
     // What MVR-xchange is doing. LOCAL on every station and *pushed* here by whichever
     // one is holding the connections — see `infra/interop/xchange`. Not a SYNCED
@@ -352,6 +413,13 @@ pub enum EngineCommand {
         value: serde_json::Value,
         reply: oneshot::Sender<Result<(), BackendError>>,
     },
+    /// Change a show variable, unattributed. In the actor so two PIRs counting in the
+    /// same millisecond both count.
+    SetVariable {
+        variable_id: Uuid,
+        op: pult_schema::types::VariableOp,
+        reply: oneshot::Sender<Result<(), BackendError>>,
+    },
     /// How many driven parameters the flow sampler is keeping a sample of.
     ///
     /// Test-only, and the one thing about the sampler that cannot be observed from
@@ -369,6 +437,9 @@ pub enum EngineCommand {
     /// be cheaper than sending them.
     GetOperationsSince {
         known: VectorClock,
+        /// Every operation the log still holds, however many: for a peer that will
+        /// not be sent a whole show instead (`CatchUp::ReplayThenRunning`).
+        however_many: bool,
         reply: oneshot::Sender<Option<Vec<Operation>>>,
     },
     LoadFromShowfile,
@@ -379,6 +450,9 @@ pub enum EngineCommand {
     /// Apply a snapshot received from the session leader. Replaces in-memory state
     /// and broadcasts updates to connected frontends.
     ApplyStateSnapshot(serde_json::Value),
+    /// Take the SYNCED half of a peer's whole show, keeping this station's PERSISTED
+    /// half: see `SyncMessage::RunningState`.
+    ApplyRunningState(serde_json::Value),
     Stop,
 }
 
@@ -504,6 +578,21 @@ impl EngineHandle {
         rx.await?
     }
 
+    /// Change a show variable. Unattributed, so it is never a History row and nothing
+    /// Ctrl-Z can take back — the `variable.*` RPCs are this.
+    pub async fn set_variable(
+        &self,
+        variable_id: Uuid,
+        op: pult_schema::types::VariableOp,
+    ) -> Result<(), BackendError> {
+        let (tx, rx) = oneshot::channel();
+        self.0
+            .send(EngineCommand::SetVariable { variable_id, op, reply: tx })
+            .await
+            .map_err(|_| BackendError::ChannelClosed)?;
+        rx.await?
+    }
+
     /// How many driven parameters the flow sampler is keeping a sample of.
     #[cfg(test)]
     pub async fn sampled_parameters(&self) -> usize {
@@ -524,7 +613,15 @@ impl EngineHandle {
     /// would be the cheaper way to catch them up.
     pub async fn operations_since(&self, known: VectorClock) -> Option<Vec<Operation>> {
         let (tx, rx) = oneshot::channel();
-        let _ = self.0.send(EngineCommand::GetOperationsSince { known, reply: tx }).await;
+        let _ = self.0.send(EngineCommand::GetOperationsSince { known, however_many: false, reply: tx }).await;
+        rx.await.ok().flatten()
+    }
+
+    /// The same, with no point past which a whole show would be cheaper: `None` only
+    /// where the log has been pruned past what `known` last saw.
+    pub async fn every_operation_since(&self, known: VectorClock) -> Option<Vec<Operation>> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.0.send(EngineCommand::GetOperationsSince { known, however_many: true, reply: tx }).await;
         rx.await.ok().flatten()
     }
 
@@ -540,6 +637,10 @@ impl EngineHandle {
 
     pub async fn apply_state_snapshot(&self, snapshot: serde_json::Value) {
         let _ = self.0.send(EngineCommand::ApplyStateSnapshot(snapshot)).await;
+    }
+
+    pub async fn apply_running_state(&self, state: serde_json::Value) {
+        let _ = self.0.send(EngineCommand::ApplyRunningState(state)).await;
     }
 
     pub async fn call(
@@ -711,6 +812,8 @@ pub struct ShowEngine {
     edits_seen: u64,
     /// The version of the collections the timeline pass reads, when it last ran.
     timelines_seen: u64,
+    /// The speaker zones' version as the audio manager was last told it.
+    zones_seen: u64,
     /// When the next timeline event is due, as of the last pass.
     ///
     /// Cached rather than recomputed in `next_wake`, which runs once per command as
@@ -720,6 +823,17 @@ pub struct ShowEngine {
     /// `PLAYBACK_COLLECTIONS`, which already makes `next_wake` answer zero — so a pass
     /// always runs before this can be read stale.
     timelines_deadline: Option<u64>,
+    /// Whether the input manager was last told this station leads, so a failover
+    /// reaches it even when no timeline moved.
+    input_leading: Option<bool>,
+    /// The timelines' version as the input manager was last told it.
+    input_timelines_seen: u64,
+    /// A timeline armed at the programmer is running here, and this station leads:
+    /// every programmer write is a snapshot for the take. False on every station
+    /// nobody is recording on, which is what keeps an idle console from sending any.
+    programmer_armed: bool,
+    /// The programmer's version as the take was last told it.
+    programmer_fed: u64,
     /// Whether the plugins have been handed a patch with something in it. An
     /// empty show pushes nothing — except once, when the last fixture goes, so
     /// what the plugins know does not outlive it.
@@ -774,7 +888,7 @@ const APPENDS_BETWEEN_PRUNES: u32 = 1_000;
 /// collection missing from the list is a rig that stops updating, so anything added
 /// to that read belongs here too.
 const OUTPUT_COLLECTIONS: &[&str] =
-    &["fixtures", "fixture_types", "programmer_values", "timelines"];
+    &["fixtures", "fixture_types", "programmer_values", "timelines", "sequences", "show"];
 
 /// What `playback_pass` reads. `show` is in it for `home_fade_ms`, which decides how
 /// long a release takes.
@@ -799,6 +913,15 @@ const PLAYBACK_COLLECTIONS: &[&str] = &[
 /// What the timeline pass reads. Its own list rather than a share of the playback
 /// one, because a cue edit is not a reason to re-decide what a song has crossed.
 const TIMELINE_COLLECTIONS: &[&str] = &["timelines"];
+
+/// What a take recorded from the programmer reads: the programmer, and the sequences
+/// whose levels it records beside it.
+const TAKE_COLLECTIONS: &[&str] = &["programmer_values", "sequences"];
+
+/// What the audio manager is told about besides the timelines: where each speaker zone
+/// is, on every station. Its own list, so a zone re-mapped while nothing else moves
+/// still reaches the station playing it.
+const ZONE_COLLECTIONS: &[&str] = &["speaker_zones"];
 
 /// How often a watched parameter is looked at.
 ///
@@ -888,7 +1011,12 @@ impl ShowEngine {
             outputs_dirty: true,
             inputs_dirty: true,
             timelines_seen: 0,
+            zones_seen: u64::MAX,
             timelines_deadline: None,
+            input_leading: None,
+            input_timelines_seen: u64::MAX,
+            programmer_armed: false,
+            programmer_fed: 0,
             pushed_fixtures: false,
             flows_dirty: true,
             watched: Default::default(),
@@ -984,8 +1112,14 @@ impl ShowEngine {
                         self.flush_collections();
                     }
                     self.push_output_config().await;
+                    // Before the timelines pass, so the last move before a Stop that
+                    // arrived in the same burst is in the take rather than after it.
+                    self.feed_take();
                     // Before playback, so a Go a timeline fires is a change playback
                     // sees on the very next pass rather than a tick later.
+                    // Zones before the timelines, so a clip routed to a zone created in
+                    // the same burst is never resolved against a list without it.
+                    self.tell_audio_zones();
                     self.timelines_pass().await;
                     let moved = self.playback_pass().await;
                     // The output side hears about the show whether or not playback had
@@ -1040,42 +1174,20 @@ impl ShowEngine {
                         _ => authorship,
                     };
                     let mut result = Ok(());
+                    let mut written = Vec::new();
                     for (path, value) in resolved {
-                        let mut authorship = authorship.clone();
-                        // Read before writing: the oplog is otherwise a list of
-                        // destinations with no record of where anything came from, and
-                        // replaying that forwards works while running it backwards
-                        // does not. Only for a write somebody asked for — the engine's
-                        // own, at 40 Hz, would pay for a read nobody will ever undo.
-                        authorship.previous =
-                            authorship.user_id.map(|_| self.value_before(&path)).unwrap_or(None);
-                        // Read before the write, because a delete says which version
-                        // it is deleting only by naming it — and by the time the write
-                        // has been applied, the row it named is gone.
-                        let touched_versions = self.version_touched_by(&path, &value);
-                        result = self.apply_set(path.clone(), value.clone(), lifecycle).await;
+                        result = self.write_through(path.clone(), value, lifecycle, authorship.clone()).await;
                         if result.is_err() {
                             break;
                         }
-                        self.touch(&path);
-                        self.record_write(&path, lifecycle);
-                        // A version's row has landed in memory; the file follows it
-                        // once the row is on the disk. Here rather than in the verb
-                        // above, because a version arriving from a peer, or a delete
-                        // arriving from an undo, has to reach the same place.
-                        self.checkpoint(touched_versions).await;
-                        self.log_local_write(&path, &value, lifecycle, &authorship).await;
-                        self.broadcast_after_set(&path, value.clone());
-                        if lifecycle != Lifecycle::Local {
-                            if let Some(sync) = &self.sync {
-                                sync.broadcast_synced(path, value, self.clock.clone(), authorship)
-                                    .await;
-                            }
-                        }
+                        written.push(path);
+                    }
+                    for path in &written {
+                        self.record_sequence_act(path, &authorship).await;
                     }
                     // The caller waits for the disk; the actor does not. Everything
                     // this command enqueued is handed to a task that answers when it
-                    // is durable, so the acknowledgement means exactly what it always
+                    // is durable, so the acknowledgment means exactly what it always
                     // meant while the next command is already being read. That is what
                     // gives the writer a group to commit: before this, the actor sat
                     // on each fsync and the writer never held more than one.
@@ -1126,6 +1238,10 @@ impl ShowEngine {
                     self.touch_everything();
                     let _ = reply.send(result);
                 }
+                EngineCommand::SetVariable { variable_id, op, reply } => {
+                    let result = self.set_variable(variable_id, op).await;
+                    let _ = reply.send(result);
+                }
                 EngineCommand::SetSensedValue { fixture_id, key, value, reply } => {
                     let result = self.set_sensed_value(fixture_id, key, value).await;
                     if result.is_ok() {
@@ -1150,8 +1266,8 @@ impl ShowEngine {
                 EngineCommand::GetClock { reply } => {
                     let _ = reply.send(self.clock.clone());
                 }
-                EngineCommand::GetOperationsSince { known, reply } => {
-                    let _ = reply.send(self.operations_since(&known).await);
+                EngineCommand::GetOperationsSince { known, however_many, reply } => {
+                    let _ = reply.send(self.operations_since(&known, however_many).await);
                 }
                 EngineCommand::GetSnapshot { reply } => {
                     let snapshot = self.build_snapshot();
@@ -1159,6 +1275,10 @@ impl ShowEngine {
                 }
                 EngineCommand::ApplyStateSnapshot(snapshot) => {
                     self.apply_snapshot(snapshot).await;
+                    self.touch_everything();
+                }
+                EngineCommand::ApplyRunningState(state) => {
+                    self.apply_running_state(state);
                     self.touch_everything();
                 }
             }
@@ -1220,6 +1340,7 @@ impl ShowEngine {
             || self.inputs_dirty
             || self.version_of(PLAYBACK_COLLECTIONS) != self.playback_seen
             || self.version_of(OUTPUT_COLLECTIONS) != self.pushed_version
+            || (self.audio.is_some() && self.version_of(ZONE_COLLECTIONS) != self.zones_seen)
             || self.flows_dirty
             || !self.input_events.is_empty()
         {
@@ -1281,8 +1402,7 @@ impl ShowEngine {
         self.playback_seen = self.version_of(PLAYBACK_COLLECTIONS);
 
         let sequences: Vec<pult_schema::types::sequence::Sequence> = self.read_collection("sequences");
-        let programmer: Vec<pult_schema::types::programmer::ProgrammerValue> =
-            self.read_collection("programmer_values");
+        let programmer = self.programmer_on_stage();
 
         // Nothing is on, nothing is held, and nothing is remembered — so there is
         // nothing this pass could publish, and no reason to read the rig to find that
@@ -1312,6 +1432,7 @@ impl ShowEngine {
         // fixtures on the same cue a fraction of a cycle apart.
         let wall_ms = pult_schema::types::sequence::now_ms();
 
+        let levels = self.masters();
         let effects = {
             let view = ShowView::new(
                 &sequences,
@@ -1323,7 +1444,8 @@ impl ShowEngine {
                 home_fade_ms,
                 fade_curves,
                 &presets,
-            );
+            )
+            .with_levels(levels);
             self.playback.pass_after_edits(wall_ms, &view, edited)
         };
 
@@ -1343,6 +1465,11 @@ impl ShowEngine {
                 PlaybackEffect::SetLiveFades { fixture_id, fades } => {
                     let path = entity_field_path("fixtures", fixture_id, "live_fades");
                     self.apply_local(path, serde_json::to_value(fades).unwrap_or_default()).await;
+                    moved.push(fixture_id);
+                }
+                PlaybackEffect::SetLiveHtp { fixture_id, layers } => {
+                    let path = entity_field_path("fixtures", fixture_id, "live_htp");
+                    self.apply_local(path, serde_json::to_value(layers).unwrap_or_default()).await;
                     moved.push(fixture_id);
                 }
                 PlaybackEffect::SetCueActive { cue_id, is_active } => {
@@ -1383,6 +1510,7 @@ impl ShowEngine {
         // engine for an event nothing will fire.
         self.timelines_deadline = self.timelines.next_deadline(wall_ms, &timelines);
         let moved = self.version_of(TIMELINE_COLLECTIONS) != self.timelines_seen;
+        let told = self.input_leading != Some(!self.state.is_follower());
         // A running timeline is looked at on every tick it gets, and **not** gated on
         // its own next deadline having arrived. That was the first version and it
         // never fired anything: by the time the engine woke at the deadline, the
@@ -1391,27 +1519,32 @@ impl ShowEngine {
         // deadline's job is to decide *when* to wake — it is in `next_wake` — and the
         // pass's job is to decide what has been crossed. A running timeline with no
         // events left is not a cost either way: nothing schedules a wake for it.
-        if !moved && !timelines.iter().any(|timeline| timeline.running) {
+        if !moved && !told && !timelines.iter().any(|timeline| timeline.running) {
             return;
         }
         self.timelines_seen = self.version_of(TIMELINE_COLLECTIONS);
+        self.tell_input(&timelines);
+        // A take that has just started wants its baseline now.
+        self.feed_take();
         if moved {
-            // What is armed, and where its playhead is: the two things the listening
-            // side needs to know whether it is recording, and at what
-            // position each change point falls.
-            if let Some(input) = &self.input {
-                input.timelines(timelines.clone());
-            }
             if let Some(audio) = &self.audio {
                 audio.timelines(timelines.clone());
             }
         }
 
         let pass = self.timelines.pass(wall_ms, &timelines);
+        let acted = !self.state.is_follower() && !pass.ended.is_empty();
         if !self.state.is_follower() {
             for fire in pass.fire {
-                let path = entity_field_path("sequences", fire.sequence_id, fire.command);
-                self.run_synced_command(path, fire.args).await;
+                match fire {
+                    crate::model::timelines::TimelineFire::Sequence { sequence_id, command, args, .. } => {
+                        let path = entity_field_path("sequences", sequence_id, command);
+                        self.run_synced_command(path, args).await;
+                    }
+                    crate::model::timelines::TimelineFire::Act(action) => {
+                        self.run_flow_action(action).await;
+                    }
+                }
             }
             // A timeline driving a speed master, at a grid segment it has crossed. The
             // leader's alone, for the reason firing a Go is: the writes replicate, and
@@ -1426,11 +1559,113 @@ impl ShowEngine {
                 self.set_master_field(tempo.master_id, "bpm", serde_json::json!(tempo.bpm)).await;
                 self.set_master_field(tempo.master_id, "t0", serde_json::json!(tempo.t0)).await;
             }
+            // A timeline at its end stops there or starts again, as the timeline's own
+            // command — so it replicates as the one operation a Stop button would be —
+            // anchored on the millisecond the end fell at.
+            for ended in pass.ended {
+                let (command, args) = match ended.then {
+                    pult_schema::types::AtEnd::Stop => ("stop", serde_json::json!({ "at": ended.at })),
+                    pult_schema::types::AtEnd::Loop => {
+                        ("play", serde_json::json!({ "fromMs": 0, "at": ended.at }))
+                    }
+                };
+                let path = entity_field_path("timelines", ended.timeline_id, command);
+                self.run_synced_command(path, args).await;
+            }
         }
         for stopped in pass.stopped {
             self.let_go_of(stopped).await;
         }
+        // From the timelines as they are *now*, not as they were read above. A loop's
+        // own Play has just rewritten the transport, and the snapshot still has the
+        // playhead past the end — which schedules no wake at all, so the second lap ran
+        // on until something unrelated woke the engine. The writes above also leave the
+        // output version equal to what is pushed next, so nothing else wakes it either.
+        let timelines: Vec<pult_schema::types::timeline::Timeline> =
+            if acted { self.read_collection("timelines") } else { timelines };
         self.timelines_deadline = self.timelines.next_deadline(wall_ms, &timelines);
+    }
+
+    /// Hand the speaker zones to the audio manager when they moved.
+    fn tell_audio_zones(&mut self) {
+        let Some(audio) = &self.audio else { return };
+        let version = self.version_of(ZONE_COLLECTIONS);
+        if version == self.zones_seen {
+            return;
+        }
+        self.zones_seen = version;
+        let zones: Vec<pult_schema::types::SpeakerZone> = self.read_collection("speaker_zones");
+        audio.zones(zones);
+    }
+
+    /// Tell the input manager what is armed, where each playhead is, and who leads —
+    /// if any of it changed since it last heard. The leader records the programmer.
+    fn tell_input(&mut self, timelines: &[pult_schema::types::timeline::Timeline]) {
+        let leading = !self.state.is_follower();
+        let version = self.version_of(TIMELINE_COLLECTIONS);
+        if version == self.input_timelines_seen && self.input_leading == Some(leading) {
+            return;
+        }
+        self.input_timelines_seen = version;
+        self.input_leading = Some(leading);
+        if let Some(input) = &self.input {
+            input.timelines(timelines.to_vec(), leading);
+        }
+        let armed = leading
+            && timelines.iter().any(|timeline| {
+                timeline.running
+                    && matches!(
+                        timeline.recording,
+                        Some(pult_schema::types::timeline::RecordSource::Programmer { .. })
+                    )
+            });
+        // A take that has just started is handed the programmer as it is, which is
+        // the baseline its first look primes with rather than records.
+        if armed && !self.programmer_armed {
+            self.programmer_fed = self.version_of(TAKE_COLLECTIONS).wrapping_sub(1);
+        }
+        self.programmer_armed = armed;
+    }
+
+    /// Hand the programmer to a take recorded from it, if one is and it has moved.
+    ///
+    /// Here, at the moment the engine has applied the write, rather than on a
+    /// subscription somewhere else: the moment is the change point's position, and
+    /// this is the one place that knows it.
+    ///
+    /// A transport that moved since the input manager last heard is told *first*,
+    /// which is the whole of the ordering rule: a loop wraps inside one timelines pass
+    /// and the next write after it is seen by the next one, so a snapshot sent ahead of
+    /// the new transport would be placed on the lap that had already ended.
+    fn feed_take(&mut self) {
+        if self.version_of(TIMELINE_COLLECTIONS) != self.input_timelines_seen {
+            let timelines: Vec<pult_schema::types::timeline::Timeline> =
+                self.read_collection("timelines");
+            self.tell_input(&timelines);
+        }
+        if !self.programmer_armed {
+            return;
+        }
+        let version = self.version_of(TAKE_COLLECTIONS);
+        if version == self.programmer_fed {
+            return;
+        }
+        self.programmer_fed = version;
+        if let Some(input) = &self.input {
+            // Every sequence's level beside the programmer: the take writes only what
+            // moves, so a fader nobody touches costs nothing and one somebody does is
+            // recorded from that touch.
+            let levels = self
+                .read_collection::<pult_schema::types::sequence::Sequence>("sequences")
+                .into_iter()
+                .map(|sequence| (sequence.id, sequence.master.unwrap_or(1.0)))
+                .collect();
+            input.programmer(
+                self.read_collection("programmer_values"),
+                levels,
+                pult_schema::types::sequence::now_ms(),
+            );
+        }
     }
 
     /// One field of a speed master, written and replicated as the engine's own.
@@ -1446,7 +1681,7 @@ impl ShowEngine {
         };
         if self.apply_set(path.clone(), value.clone(), lifecycle).await.is_ok() {
             self.touch(&path);
-            self.record_write(&path, lifecycle);
+            self.record_write(&path, &value, lifecycle);
             self.broadcast_after_set(&path, value.clone());
             if let Some(sync) = &self.sync {
                 sync.broadcast_synced(path, value, self.clock.clone(), Authorship::none()).await;
@@ -1465,15 +1700,12 @@ impl ShowEngine {
         let Some(cache) = self.tracks.clone() else { return };
         let mut held: HashMap<(Uuid, String), pult_schema::types::fixture::ParameterValue> =
             HashMap::new();
-        for sha in &stopped.tracks {
-            let Some(track) = cache.get(sha).await else { continue };
-            for key in &track.keys {
-                if let Some(value) = pult_render::sample(&key.points, stopped.position_ms) {
-                    // A key in two takes takes the later one's word for it, which is
-                    // the same "latest anchor wins" the evaluator applies while they
-                    // are playing.
-                    held.insert((key.fixture_id, key.key.clone()), value.clone());
-                }
+        // The rows composed exactly as the output manager composed them, through the
+        // same cache, so what is let go of is what the wire was showing.
+        let (track, _) = cache.compose(stopped.timeline_id, &stopped.tracks, &stopped.flashes).await;
+        for key in &track.keys {
+            if let Some(value) = pult_render::sample(&key.points, stopped.position_ms) {
+                held.insert((key.fixture_id, key.key.clone()), value.clone());
             }
         }
         if held.is_empty() {
@@ -1492,11 +1724,14 @@ impl ShowEngine {
     /// minus the reply. Shared by follow cues and by triggers, so the two cannot
     /// drift into replicating differently.
     async fn run_synced_command(&mut self, path: Path, args: serde_json::Value) {
+        // A timeline event playing a timeline that streams to a node, as a Play from a
+        // person does: see `lead_a_streamed_play`.
+        let args = self.lead_a_streamed_play(&path, args);
         if self.apply_set(path.clone(), args.clone(), Lifecycle::Synced).await.is_ok() {
             // Everything, for the reason a `Call` is everything: the path is the
             // command's, and what running it wrote is not in it.
             self.touch_everything();
-            self.record_write(&path, Lifecycle::Synced);
+            self.record_write(&path, &args, Lifecycle::Synced);
             if let Some(sync) = &self.sync {
                 sync.broadcast_synced(path, args, self.clock.clone(), Authorship::none()).await;
             }
@@ -1508,7 +1743,7 @@ impl ShowEngine {
     /// Edge detection is the one thing that cannot be done from a function. A *Watch*
     /// node asks "when this parameter crosses a threshold", and answering that means
     /// having looked at it twice — so where everything else in the console stopped
-    /// materialising values, this keeps a sample, and only of what is actually
+    /// materializing values, this keeps a sample, and only of what is actually
     /// watched.
     ///
     /// Which is the whole difference from what it replaces. This used to be handed the
@@ -1527,9 +1762,9 @@ impl ShowEngine {
         self.watch_sampled_at = std::time::Instant::now();
 
         let now_ms = pult_schema::types::sequence::now_ms();
-        let programmer: Vec<pult_schema::types::programmer::ProgrammerValue> =
-            self.read_collection("programmer_values");
+        let programmer = self.programmer_on_stage();
         let held = pult_schema::types::fixture::HeldByProgrammer::of(&programmer);
+        let masters = self.masters();
 
         let watching: Vec<(Uuid, String)> = self.watched.iter().cloned().collect();
         for at in watching {
@@ -1546,6 +1781,7 @@ impl ShowEngine {
                 fixture_type.as_ref(),
                 held.get(at.0, &at.1),
                 &at.1,
+                &masters,
             );
             // A parameter nothing is driving is one a device reports, and those queue
             // their own events as they arrive. Sampling home values would fire a graph
@@ -1610,7 +1846,8 @@ impl ShowEngine {
         }
         let nodes: Vec<pult_schema::types::flow::FlowNode> = self.read_collection("flow_nodes");
         let edges: Vec<pult_schema::types::flow::FlowEdge> = self.read_collection("flow_edges");
-        let graph = FlowGraph { flows: &flows, nodes: &nodes, edges: &edges };
+        let variables: Vec<pult_schema::types::Variable> = self.read_collection("variables");
+        let graph = FlowGraph { flows: &flows, nodes: &nodes, edges: &edges, variables: &variables };
         let effects =
             self.flows.tick(tokio::time::Instant::now().into_std(), &graph, &inputs);
 
@@ -1623,6 +1860,22 @@ impl ShowEngine {
                 FlowEffect::SetActive { node_id, active } => {
                     let path = entity_field_path("flow_nodes", node_id, "active");
                     self.write_synced(path, serde_json::Value::Bool(active)).await;
+                }
+                FlowEffect::Pulsed { node_id } => {
+                    let path = entity_field_path("flow_nodes", node_id, "pulsed_at");
+                    self.write_synced(path, serde_json::json!(pult_schema::clock::now_ms())).await;
+                }
+                FlowEffect::Counting { node_id, ms } => {
+                    let path = entity_field_path("flow_nodes", node_id, "due_at");
+                    let due = ms.map(|ms| pult_schema::clock::now_ms() + ms as u64);
+                    self.write_synced(path, serde_json::json!(due)).await;
+                }
+                FlowEffect::ChainCut { variables } => {
+                    warn!(
+                        "[flows] cut a feedback loop: {} passes in a row reacted only to their own \
+                         variable writes, so the last change to {variables:?} reached nothing",
+                        crate::model::flows::MAX_CHAIN
+                    );
                 }
                 FlowEffect::Fire { node_id, action } => {
                     self.run_flow_action(action).await;
@@ -1645,12 +1898,39 @@ impl ShowEngine {
                 let path = entity_field_path("sequences", sequence_id, "goToCue");
                 self.run_synced_command(path, serde_json::json!({ "cueId": cue_id })).await;
             }
+            TriggerAction::Off { sequence_id } => {
+                let path = entity_field_path("sequences", sequence_id, "off");
+                self.run_synced_command(path, serde_json::json!({})).await;
+            }
+            TriggerAction::SetVariable { variable_id, op } => {
+                if let Err(e) = self.set_variable(variable_id, op).await {
+                    warn!("[flows] could not set variable {variable_id}: {e}");
+                }
+            }
+            TriggerAction::PlayTimeline { timeline_id, if_running } => {
+                let running = self
+                    .state
+                    .entity("timelines", timeline_id)
+                    .and_then(|row| row.get("running"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if running && if_running == pult_schema::types::flow::IfRunning::Ignore {
+                    return;
+                }
+                let at = pult_schema::types::sequence::now_ms();
+                let path = entity_field_path("timelines", timeline_id, "play");
+                self.run_synced_command(path, serde_json::json!({ "fromMs": 0, "at": at })).await;
+            }
+            TriggerAction::StopTimeline { timeline_id } => {
+                let at = pult_schema::types::sequence::now_ms();
+                let path = entity_field_path("timelines", timeline_id, "stop");
+                self.run_synced_command(path, serde_json::json!({ "at": at })).await;
+            }
             TriggerAction::SetParameter { fixture_id, parameter, value } => {
                 // A drive, not a stored value: it takes the key from whatever fade or
                 // effect had it and parks the parameter there, so a connector and a
                 // browser see the same thing every other layer produces. A cue taken
-                // afterwards takes the key back. Last writer wins, which is a design
-                // question and not a bug to fix in passing.
+                // afterwards takes the key back. Last writer wins, in both directions.
                 let key = crate::model::playback::parameter_key(&parameter);
                 self.playback.set_parameter(
                     fixture_id,
@@ -1666,13 +1946,34 @@ impl ShowEngine {
         }
     }
 
+    /// Change a show variable, resolved against what it holds now and clamped to its
+    /// bounds. Unattributed always, whoever asked — see `types::variable`.
+    pub(crate) async fn set_variable(
+        &mut self,
+        variable_id: Uuid,
+        op: pult_schema::types::VariableOp,
+    ) -> Result<(), BackendError> {
+        let path = entity_field_path("variables", variable_id, "value");
+        let variable: pult_schema::types::Variable = self
+            .state
+            .entity("variables", variable_id)
+            .and_then(|row| serde_json::from_value(row.clone()).ok())
+            .ok_or_else(|| BackendError::PathNotFound(path.clone()))?;
+        let next = variable.after(op);
+        if next == variable.value {
+            return Ok(());
+        }
+        self.write_synced(path, serde_json::to_value(next).unwrap_or_default()).await;
+        Ok(())
+    }
+
     /// Write one replicated field and tell everyone who needs to know.
     async fn write_synced(&mut self, path: Path, value: serde_json::Value) {
         if self.apply_set(path.clone(), value.clone(), Lifecycle::Synced).await.is_err() {
             return;
         }
         self.touch(&path);
-        self.record_write(&path, Lifecycle::Synced);
+        self.record_write(&path, &value, Lifecycle::Synced);
         self.log_local_write(&path, &value, Lifecycle::Synced, &Authorship::none()).await;
         self.broadcast_after_set(&path, value.clone());
         if let Some(sync) = &self.sync {
@@ -1721,13 +2022,13 @@ impl ShowEngine {
         // which fixtures nothing reaches — has to hear that there are none left.
         self.pushed_fixtures = !fixtures.is_empty();
         let fixture_types = self.read_collection("fixture_types");
-        let programmer = self.read_collection("programmer_values");
+        let programmer = self.programmer_on_stage();
         // The timelines go with the patch because a playing recording is a `Driving`
         // layer: a connector holding a patch is holding everything that decides what
         // leaves this station, and a track pushed separately would be a second thing
         // to keep in step with it.
         let timelines = self.read_collection("timelines");
-        output.push(fixtures, fixture_types, programmer, timelines, moved);
+        output.push(fixtures, fixture_types, programmer, timelines, self.masters(), moved);
     }
 
     /// Merge one key into what a fixture's devices have reported, and replicate the
@@ -1751,6 +2052,12 @@ impl ShowEngine {
             .cloned()
             .ok_or_else(|| BackendError::PathNotFound(path.clone()))?;
         let previous = values.get(&key).cloned();
+        // A repeat is not a change, and the stamp says when the value last *changed*:
+        // a node restating a closed contact every heartbeat must not keep a layout's
+        // decay from ever starting. Nor is a first report: after a restart every node
+        // reports in, and a contact whose first word is "off" would otherwise read as
+        // one somebody just stepped off — the whole maze glowing for half a minute.
+        let changed = previous.as_ref().is_some_and(|before| before != &value);
         set_field(&mut values, &key, value.clone());
 
         // Queued for the next flow pass rather than read back from the state there, so
@@ -1764,16 +2071,34 @@ impl ShowEngine {
             });
         }
 
-        self.apply_set(path.clone(), values.clone(), Lifecycle::Synced).await?;
-        self.record_write(&path, Lifecycle::Synced);
-        self.log_local_write(&path, &values, Lifecycle::Synced, &Authorship::none()).await;
-        self.broadcast_after_set(&path, values.clone());
-        if let Some(sync) = &self.sync {
-            sync.broadcast_synced(path, values, self.clock.clone(), Authorship::none()).await;
+        self.write_sensed(path, values).await?;
+        if changed {
+            let at_path = entity_field_path("fixtures", fixture_id, "sensed_at");
+            let mut stamps = self
+                .state
+                .entity("fixtures", fixture_id)
+                .and_then(|entity| entity.get("sensed_at"))
+                .cloned()
+                .filter(serde_json::Value::is_object)
+                .unwrap_or_else(|| serde_json::json!({}));
+            set_field(&mut stamps, &key, serde_json::json!(pult_schema::clock::now_ms()));
+            self.write_sensed(at_path, stamps).await?;
         }
         // The output side has to see it now: an input can arrive between two passes,
         // and a relay that follows a button should not wait for the next one.
         self.push_output(vec![fixture_id]).await;
+        Ok(())
+    }
+
+    /// One SYNCED write of a fixture's sensed state, unattributed, replicated.
+    async fn write_sensed(&mut self, path: Path, value: serde_json::Value) -> Result<(), BackendError> {
+        self.apply_set(path.clone(), value.clone(), Lifecycle::Synced).await?;
+        self.record_write(&path, &value, Lifecycle::Synced);
+        self.log_local_write(&path, &value, Lifecycle::Synced, &Authorship::none()).await;
+        self.broadcast_after_set(&path, value.clone());
+        if let Some(sync) = &self.sync {
+            sync.broadcast_synced(path, value, self.clock.clone(), Authorship::none()).await;
+        }
         Ok(())
     }
 
@@ -1916,7 +2241,7 @@ impl ShowEngine {
             }
             moved.push(inverse.path.clone());
             self.touch(&inverse.path);
-            self.record_write(&inverse.path, lifecycle);
+            self.record_write(&inverse.path, &inverse.value, lifecycle);
             self.log_local_write(&inverse.path, &inverse.value, lifecycle, &written).await;
             self.broadcast_after_set(&inverse.path, inverse.value.clone());
             if lifecycle != Lifecycle::Local {
@@ -1936,6 +2261,44 @@ impl ShowEngine {
     }
 
     /// Read one collection out of the state as typed entities.
+    /// The sequences' playback faders, for anything evaluating a parameter.
+    fn masters(&self) -> pult_schema::types::sequence::Masters {
+        let sequences: Vec<pult_schema::types::sequence::Sequence> = self.read_collection("sequences");
+        let faders = pult_schema::types::sequence::Masters::of(&sequences);
+        // With the levels a playing take records at this moment, where one does.
+        let Some(cache) = &self.tracks else { return faders };
+        let timelines: Vec<pult_schema::types::timeline::Timeline> = self.read_collection("timelines");
+        if !timelines.iter().any(|t| t.running && !t.tracks.is_empty()) {
+            return faders;
+        }
+        let recorded = crate::infra::connectors::recorded_levels_at(
+            cache,
+            &timelines,
+            pult_schema::types::sequence::now_ms(),
+        );
+        if recorded.is_empty() {
+            return faders;
+        }
+        faders.with_recorded(|sequence| recorded.get(&sequence).copied())
+    }
+
+    /// The programmer as the lamps have it: all of it, or none while the show is blind.
+    ///
+    /// For everything that answers what a lamp is doing — the playback pass, the push
+    /// to the connectors, a *Watch*, `__set_home`. Not for what the programmer *is*:
+    /// Store, Update, `__by` and a take recorded from it read the collection itself.
+    fn programmer_on_stage(&self) -> Vec<pult_schema::types::programmer::ProgrammerValue> {
+        if self.blind() {
+            return Vec::new();
+        }
+        self.read_collection("programmer_values")
+    }
+
+    /// Whether the show is blind. See `Show::blind`.
+    fn blind(&self) -> bool {
+        self.state.singleton("show").and_then(|show| show.get("blind")).and_then(|v| v.as_bool()).unwrap_or(false)
+    }
+
     fn read_collection<T: serde::de::DeserializeOwned>(&self, table: &str) -> Vec<T> {
         self.state
             .get_by_path(&vec![PathSegment::Key(table.into())])
@@ -2095,8 +2458,76 @@ impl ShowEngine {
                          write to [\"programmer_values\", \"__home\"]"
                     .into(),
             }),
-            _ => Ok(vec![(path, value)]),
+            // A fixture patched without a number gets the next one, here rather than in
+            // each of the places that patch — the dialog, the editor, a node being
+            // adopted, an import, a demo, a plugin — so every one of them yields a
+            // fixture the wing can type. Resolved before the oplog like the verbs, so a
+            // peer receives the number and does not count for itself.
+            [PathSegment::Key(table), PathSegment::Key(verb)]
+                if table == "fixtures"
+                    && verb == "__create"
+                    && value.get("fixture_number").is_none_or(serde_json::Value::is_null) =>
+            {
+                let mut value = value;
+                let fixtures: Vec<pult_schema::types::fixture::Fixture> = self.read_collection("fixtures");
+                if let Some(row) = value.as_object_mut() {
+                    row.insert("fixture_number".into(), pult_schema::types::fixture::next_fixture_number(&fixtures).into());
+                }
+                Ok(vec![(path, value)])
+            }
+            _ => {
+                let value = self.lead_a_streamed_play(&path, value);
+                Ok(vec![(path, value)])
+            }
         }
+    }
+
+    /// A Play on a stopped timeline that streams to a node, anchored where the stream
+    /// can first be heard: [`STREAM_LEAD_MS`] ahead at the least, so the node's first
+    /// audible sample is the clip's first sample rather than wherever the timeline had
+    /// got to by then. Resolved here, before the write is logged, so every station and
+    /// the oplog hold the one anchor — the reason `__by` is resolved here too. A count-in
+    /// further ahead is left as it is, and so is a Play on a timeline already running,
+    /// which would otherwise hold where it is for the lead.
+    ///
+    /// [`STREAM_LEAD_MS`]: pult_schema::types::timeline::STREAM_LEAD_MS
+    fn lead_a_streamed_play(&self, path: &Path, mut value: serde_json::Value) -> serde_json::Value {
+        use pult_schema::types::{
+            timeline::{NodeAudioMode, Timeline, STREAM_LEAD_MS},
+            zone::{clip_node_targets, SpeakerZone},
+        };
+        let [PathSegment::Key(table), PathSegment::Id(id), PathSegment::Key(verb)] = path.as_slice() else {
+            return value;
+        };
+        if table != "timelines" || verb != "play" {
+            return value;
+        }
+        let Some(timeline) =
+            self.state.entity("timelines", *id).and_then(|v| serde_json::from_value::<Timeline>(v.clone()).ok())
+        else {
+            return value;
+        };
+        if timeline.running {
+            return value;
+        }
+        let zones: Vec<SpeakerZone> = self.read_collection("speaker_zones");
+        let streams = timeline
+            .clips
+            .iter()
+            .any(|clip| clip_node_targets(clip, &zones).iter().any(|(_, mode)| *mode == NodeAudioMode::Stream));
+        if !streams {
+            return value;
+        }
+        let now = pult_schema::types::sequence::now_ms();
+        let earliest = now + STREAM_LEAD_MS;
+        let at = value.get("at").and_then(serde_json::Value::as_u64).unwrap_or(now);
+        if at < earliest {
+            if !value.is_object() {
+                value = serde_json::json!({});
+            }
+            value["at"] = serde_json::json!(earliest);
+        }
+        value
     }
 
     /// `["programmer_values", "__by"]` with `{ fixtureId, parameterKind, by }`.
@@ -2187,6 +2618,7 @@ impl ShowEngine {
                     fixture_type.as_ref(),
                     None, // nothing is held: that is the branch above
                     &key,
+                    &self.masters(),
                 );
                 pult_render::value_at(&driving, pult_schema::types::sequence::now_ms())
             })
@@ -2317,9 +2749,7 @@ impl ShowEngine {
         let kinds: Vec<ParameterKind> = match &named {
             Some(kind) => {
                 let definition = fixture_type
-                    .parameters
-                    .iter()
-                    .find(|p| p.kind == *kind)
+                    .parameter_for_kind(kind)
                     .ok_or_else(|| bad("that fixture has no such parameter"))?;
                 if definition.direction != ParameterDirection::Output {
                     return Err(bad(
@@ -2329,7 +2759,7 @@ impl ShowEngine {
                 }
                 vec![kind.clone()]
             }
-            None => output_parameters(&fixture_type).map(|p| p.kind.clone()).collect(),
+            None => fixture_type.controls().into_iter().map(|(kind, _)| kind).collect(),
         };
 
         let mut writes = Vec::new();
@@ -2446,9 +2876,7 @@ impl ShowEngine {
         let kinds: Vec<ParameterKind> = match &named {
             Some(kind) => {
                 let definition = fixture_type
-                    .parameters
-                    .iter()
-                    .find(|p| p.kind == *kind)
+                    .parameter_for_kind(kind)
                     .ok_or_else(|| bad("that fixture has no such parameter"))?;
                 if definition.direction != ParameterDirection::Output {
                     return Err(bad(
@@ -2458,16 +2886,16 @@ impl ShowEngine {
                 }
                 vec![kind.clone()]
             }
-            None => output_parameters(&fixture_type).map(|p| p.kind.clone()).collect(),
+            None => fixture_type.controls().into_iter().map(|(kind, _)| kind).collect(),
         };
 
         // Evaluated at one instant for the whole fixture, so a mover caught mid-fade
         // keeps the pose it was actually in rather than a pan from one millisecond and
         // a tilt from the next.
         let now_ms = pult_schema::types::sequence::now_ms();
-        let programmer: Vec<pult_schema::types::programmer::ProgrammerValue> =
-            self.read_collection("programmer_values");
+        let programmer = self.programmer_on_stage();
         let held = pult_schema::types::fixture::HeldByProgrammer::of(&programmer);
+        let masters = self.masters();
 
         let mut home = fixture.home_values.clone();
         let mut took = false;
@@ -2478,6 +2906,7 @@ impl ShowEngine {
                 Some(&fixture_type),
                 held.get(fixture_uuid, &key),
                 &key,
+                &masters,
             );
             // Only where something is actually driving it. A parameter resting at its
             // home value has nothing to take: taking it would write back what is
@@ -2516,7 +2945,7 @@ impl ShowEngine {
 
     /// Route a write to the right entity, generically.
     ///
-    /// Recognised shapes, for any registered table:
+    /// Recognized shapes, for any registered table:
     ///   `[table]`                      replace a singleton
     ///   `[table, field]`               patch a singleton field
     ///   `[table, "__create"]`          add to a collection
@@ -2567,7 +2996,9 @@ impl ShowEngine {
         // only woken by an input or a running delay. Named here for the same reason
         // `outputs` is: the alternative is polling every graph forty times a second
         // for something that almost never changes.
-        if table == "flow_nodes" {
+        // And a variable, which a flow reads and anybody may write — a flow, a phone,
+        // a peer — so the change is noticed here rather than at each of them.
+        if table == "flow_nodes" || table == "variables" {
             self.flows_dirty = true;
         }
 
@@ -2844,11 +3275,116 @@ impl ShowEngine {
             PathSegment::Key(command.into()),
         ];
         self.apply_set(path.clone(), args.clone(), Lifecycle::Synced).await?;
-        self.record_write(&path, Lifecycle::Synced);
+        self.record_write(&path, &args, Lifecycle::Synced);
+        self.record_sequence_act(&path, &Authorship::none()).await;
         if let Some(sync) = &self.sync {
             sync.broadcast_synced(path, args, self.clock.clone(), Authorship::none()).await;
         }
         Ok(serde_json::Value::Null)
+    }
+
+    /// One write, all the way through: applied, logged, broadcast to the browsers and
+    /// sent to the peers. What a client's `Set` does for each of its writes, and what
+    /// the engine does for a write of its own that has to land the same way.
+    async fn write_through(
+        &mut self,
+        path: Path,
+        value: serde_json::Value,
+        lifecycle: Lifecycle,
+        mut authorship: Authorship,
+    ) -> Result<(), BackendError> {
+        // Read before writing: the oplog is otherwise a list of destinations with no
+        // record of where anything came from, and replaying that forwards works while
+        // running it backwards does not. Only for a write somebody asked for — the
+        // engine's own, at 40 Hz, would pay for a read nobody will ever undo.
+        authorship.previous = authorship.user_id.map(|_| self.value_before(&path)).unwrap_or(None);
+        // Read before the write, because a delete says which version it is deleting
+        // only by naming it — and by the time the write has been applied, the row it
+        // named is gone.
+        let touched_versions = self.version_touched_by(&path, &value);
+        self.apply_set(path.clone(), value.clone(), lifecycle).await?;
+        self.touch(&path);
+        self.record_write(&path, &value, lifecycle);
+        // A version's row has landed in memory; the file follows it once the row is on
+        // the disk. Here rather than in the verb above, because a version arriving from
+        // a peer, or a delete arriving from an undo, has to reach the same place.
+        self.checkpoint(touched_versions).await;
+        self.log_local_write(&path, &value, lifecycle, &authorship).await;
+        self.broadcast_after_set(&path, value.clone());
+        if lifecycle != Lifecycle::Local {
+            if let Some(sync) = &self.sync {
+                sync.broadcast_synced(path, value, self.clock.clone(), authorship).await;
+            }
+        }
+        Ok(())
+    }
+
+    /// A sequence act taken while a timeline is recording from the programmer — a Go,
+    /// a Back, an Off, a jump to a cue — kept with the take as an event at its
+    /// playhead, so the take carries the cues as well as the faders and the review asks
+    /// about both.
+    ///
+    /// Recorded as the state the act left the sequence in rather than as the button:
+    /// a cue to go to, or Off. A recorded Go played back from somewhere else would go
+    /// to whatever came next *then*; this goes to the cue that came next when it was
+    /// played. The leader records, the way it records the programmer, and only an
+    /// operator's act reaches here — the timeline's own firing goes through
+    /// `run_synced_command`, or a recording timeline would record itself.
+    ///
+    /// Onto `pending` and not `events`, which is where it went until 2026-10-26: written
+    /// straight into the timeline, a Go was the one thing a take caught that skipped the
+    /// review. Unattributed, like the passes it waits beside: a take waiting is not an
+    /// edit anybody's Ctrl-Z should reach. The answer to the review is the edit.
+    async fn record_sequence_act(&mut self, path: &Path, _authorship: &Authorship) {
+        use pult_schema::types::timeline::{PendingTake, RecordSource, Timeline, TimelineAction, TimelineEvent};
+        if self.state.is_follower() {
+            return;
+        }
+        let [PathSegment::Key(table), PathSegment::Id(sequence_id), PathSegment::Key(act)] = path.as_slice()
+        else {
+            return;
+        };
+        if table != "sequences" || !matches!(act.as_str(), "goNext" | "goBack" | "off" | "goToCue") {
+            return;
+        }
+        let recording: Vec<Timeline> = self
+            .read_collection::<Timeline>("timelines")
+            .into_iter()
+            .filter(|t| t.running && matches!(t.recording, Some(RecordSource::Programmer { .. })))
+            .collect();
+        if recording.is_empty() {
+            return;
+        }
+        let Some(sequence) = self
+            .state
+            .entity("sequences", *sequence_id)
+            .and_then(|v| serde_json::from_value::<pult_schema::types::sequence::Sequence>(v.clone()).ok())
+        else {
+            return;
+        };
+        let action = match sequence.active_cue_index.and_then(|i| sequence.cue_ids.get(i)) {
+            Some(cue_id) => TimelineAction::GoToCue { sequence_id: *sequence_id, cue_id: *cue_id },
+            None => TimelineAction::Off { sequence_id: *sequence_id },
+        };
+        let now = pult_schema::types::sequence::now_ms();
+        for timeline in recording {
+            let mut pending =
+                timeline.pending.clone().unwrap_or_else(|| PendingTake { armed_by: timeline.armed_by.clone(), ..Default::default() });
+            pending.events.push(TimelineEvent {
+                id: Uuid::new_v4(),
+                at_ms: u32::try_from(timeline.position_at(now)).unwrap_or(u32::MAX),
+                action: action.clone(),
+            });
+            let Ok(value) = serde_json::to_value(&pending) else { continue };
+            let path = vec![
+                PathSegment::Key("timelines".into()),
+                PathSegment::Id(timeline.id),
+                PathSegment::Key("pending".into()),
+            ];
+            if let Err(e) = self.write_through(path, value, Lifecycle::Persisted, Authorship::none()).await {
+                warn!("[timelines] could not keep a sequence act with the take on {}: {e}", timeline.name);
+            }
+        }
     }
 
     async fn apply_peer_operation(&mut self, op: Operation) {
@@ -2856,7 +3392,8 @@ impl ShowEngine {
         // the sending node knew, and our next write has to be causally after it.
         self.clock.merge(&op.clock);
 
-        if !self.accepts(&op.path, &op.clock, op.node_id) {
+        let conflict = conflict_path(&op.path, &op.value);
+        if !self.accepts(&conflict, &op.clock, op.node_id) {
             debug!("[sync] dropping superseded write to {:?} from {}", op.path, op.node_id);
             return;
         }
@@ -2864,20 +3401,40 @@ impl ShowEngine {
         // write: a delete names the version it removes, and once the write has landed
         // the row it named is gone.
         let touched_versions = self.version_touched_by(&op.path, &op.value);
-        if self.apply_set(op.path.clone(), op.value.clone(), op.lifecycle).await.is_ok() {
+        let mut refused = self.apply_set(op.path.clone(), op.value.clone(), op.lifecycle).await.err();
+        // A peer's whole SYNCED row for an id this station has never held is the row it
+        // created before the two of them were a session — its own `stations`,
+        // `station_networks` or `station_audio` row, written at start and only replaced
+        // since. Its create was never sent here, and replaying the replace against
+        // nothing failed on every tick, so a station that joined late was never seen.
+        // Taken as the create it stands for. SYNCED only: a show's PERSISTED rows arrive
+        // with the snapshot or the oplog, and are never written without their create.
+        if refused.is_some() && op.lifecycle == Lifecycle::Synced {
+            if let [PathSegment::Key(table), PathSegment::Id(id)] = op.path.as_slice() {
+                let names_itself = op.value.get("id").and_then(|v| v.as_str()) == Some(&id.to_string());
+                if names_itself {
+                    let create = vec![PathSegment::Key(table.clone()), PathSegment::Key("__create".into())];
+                    refused = self.apply_set(create, op.value.clone(), op.lifecycle).await.err();
+                }
+            }
+        }
+        if refused.is_none() {
+            // A follower's operator pressing Go while the leader records is still an
+            // operator's act, and the leader is the one that records it.
+            self.record_sequence_act(&op.path, &Authorship::by(op.user_id, None)).await;
             // Here rather than at the call site, because only here is the path known —
             // and a peer's own `stations` row is a write this station must not read as
             // its rig having moved.
             self.touch(&op.path);
             self.log_operation(&op).await;
-            self.path_clocks.insert(op.path.clone(), (op.clock, op.node_id));
+            self.path_clocks.insert(conflict, (op.clock, op.node_id));
             self.broadcast_after_set(&op.path, op.value);
             // A peer saved, so this station saves too — its own showfile, which is
             // the only thing it could honestly copy. That is what makes a version a
             // point in the *show's* history rather than in one console's.
             self.checkpoint(touched_versions).await;
         } else {
-            warn!("failed to apply peer operation: {:?}", op.path);
+            warn!("failed to apply peer operation: {:?}: {}", op.path, refused.map(|e| e.to_string()).unwrap_or_default());
         }
     }
 
@@ -2886,8 +3443,8 @@ impl ShowEngine {
     ///
     /// A node that has never heard from anyone has an empty clock and would be sent
     /// every operation ever recorded, which is strictly worse than a snapshot.
-    async fn operations_since(&self, known: &VectorClock) -> Option<Vec<Operation>> {
-        if known.0.is_empty() {
+    async fn operations_since(&self, known: &VectorClock, however_many: bool) -> Option<Vec<Operation>> {
+        if known.0.is_empty() && !however_many {
             return None;
         }
         // Anything below a prune floor is gone, so the rows that survive are not the
@@ -2900,7 +3457,7 @@ impl ShowEngine {
         let missing = oplog::since(&self.pool, known).await.ok()?;
         let total = oplog::len(&self.pool).await.unwrap_or(0);
         // Replaying most of the log is not catch-up, it is a slow snapshot.
-        if total > 0 && missing.len() as u64 * 2 > total {
+        if !however_many && total > 0 && missing.len() as u64 * 2 > total {
             return None;
         }
         Some(missing)
@@ -2927,11 +3484,11 @@ impl ShowEngine {
 
     /// Note that this node wrote a replicated path, so a peer's concurrent write to
     /// the same path can be ordered against it.
-    fn record_write(&mut self, path: &Path, lifecycle: Lifecycle) {
+    fn record_write(&mut self, path: &Path, value: &serde_json::Value, lifecycle: Lifecycle) {
         if lifecycle == Lifecycle::Local {
             return;
         }
-        self.path_clocks.insert(path.clone(), (self.clock.clone(), self.node_id));
+        self.path_clocks.insert(conflict_path(path, value), (self.clock.clone(), self.node_id));
     }
 
     /// Note a replicated write in the operation log, so a peer that reconnects can be
@@ -3020,6 +3577,12 @@ impl ShowEngine {
     /// Load the showfile into memory.
     /// Driven by the EntityMeta registry — no entity types enumerated here.
     async fn load_from_showfile(&mut self) {
+        // Counting goes on from where the log got to, before anything below writes:
+        // see `oplog::clock` for what starting from zero did.
+        match oplog::clock(&self.pool).await {
+            Ok(reached) => self.clock.merge(&reached),
+            Err(e) => warn!("[engine] could not read how far the oplog got: {e}"),
+        }
         let mut state_map = serde_json::Map::new();
         for meta in EntityMeta::all_with_tables() {
             let (Some(table), Some(load)) = (meta.table_name, meta.load_all) else { continue };
@@ -3049,8 +3612,11 @@ impl ShowEngine {
             Err(e) => warn!("[engine] load_from_showfile: ShowState deserialization failed: {e}"),
         }
         self.seed_default_user().await;
-        self.seed_the_show().await;
+        let new_show = self.seed_the_show().await;
         self.seed_the_sheets().await;
+        if new_show {
+            self.seed_the_effect_pool().await;
+        }
         // A showfile that has been round a long tech week arrives past both
         // retentions, and this is the largest cut it will ever take.
         self.prune_the_log();
@@ -3097,7 +3663,7 @@ impl ShowEngine {
     /// **Only when absent.** `create_entity` does not check whether the id is already
     /// there, so an unconditional create at every load would rewrite the row on every
     /// start — and on a second station, replicate "Operator" over a name somebody
-    /// chose. The check is the guard, not an optimisation.
+    /// chose. The check is the guard, not an optimization.
     ///
     /// Unattributed, like the engine's other writes: nobody asked for it. An operator
     /// pressing Ctrl-Z on a fresh show should reach their own first change, not the
@@ -3113,7 +3679,7 @@ impl ShowEngine {
             warn!("[engine] could not seed the default user: {e}");
             return;
         }
-        self.record_write(&path, Lifecycle::Persisted);
+        self.record_write(&path, &value, Lifecycle::Persisted);
         self.log_local_write(&path, &value, Lifecycle::Persisted, &Authorship::none()).await;
         self.broadcast_after_set(&path, value.clone());
         if let Some(sync) = &self.sync {
@@ -3192,17 +3758,17 @@ impl ShowEngine {
     ///
     /// Unattributed, like the default user beside it: nobody asked for it, and an
     /// operator pressing Ctrl-Z on a fresh show should reach their own first change.
-    async fn seed_the_show(&mut self) {
+    async fn seed_the_show(&mut self) -> bool {
         use pult_schema::types::show::Show;
 
         let path: Path = vec![PathSegment::Key("show".into())];
         if self.state.get_by_path(&path).is_some_and(|v| !v.is_null()) {
-            return;
+            return false;
         }
         // No name to seed with is a station with no bundle open: an in-memory show
         // that nothing will ever read again, and giving it a row would be inventing a
         // show nobody asked for.
-        let Some(name) = self.seed_name.clone() else { return };
+        let Some(name) = self.seed_name.clone() else { return false };
 
         let prefs = crate::infra::preferences::load();
         let show = Show {
@@ -3210,28 +3776,31 @@ impl ShowEngine {
             name,
             created_at: chrono::Utc::now(),
             editing_cue: None,
+            blind: false,
             history_depth: prefs.history_depth,
             home_fade_ms: prefs.home_fade_ms,
             haze_density: prefs.haze_density,
             haze_turbulence: prefs.haze_turbulence,
             fade_curves: prefs.fade_curves,
             production: Default::default(),
+            default_state: None,
             mvr_xchange: pult_schema::types::XchangeSettings {
                 group: prefs.mvr_xchange_group.clone(),
                 ..Default::default()
             },
         };
-        let Ok(value) = serde_json::to_value(&show) else { return };
+        let Ok(value) = serde_json::to_value(&show) else { return false };
         if let Err(e) = self.apply_set(path.clone(), value.clone(), Lifecycle::Persisted).await {
             warn!("[engine] could not seed the show: {e}");
-            return;
+            return false;
         }
-        self.record_write(&path, Lifecycle::Persisted);
+        self.record_write(&path, &value, Lifecycle::Persisted);
         self.log_local_write(&path, &value, Lifecycle::Persisted, &Authorship::none()).await;
         self.broadcast_after_set(&path, value.clone());
         if let Some(sync) = &self.sync {
             sync.broadcast_synced(path, value, self.clock.clone(), Authorship::none()).await;
         }
+        true
     }
 
     /// The six default paperwork sheets, into a show that has none.
@@ -3276,7 +3845,37 @@ impl ShowEngine {
                 warn!("[engine] could not seed the paperwork sheets: {e}");
                 return;
             }
-            self.record_write(&path, Lifecycle::Persisted);
+            self.record_write(&path, &value, Lifecycle::Persisted);
+            self.log_local_write(&path, &value, Lifecycle::Persisted, &Authorship::none())
+                .await;
+            self.broadcast_after_set(&path, value.clone());
+            if let Some(sync) = &self.sync {
+                sync.broadcast_synced(path, value, self.clock.clone(), Authorship::none())
+                    .await;
+            }
+        }
+    }
+
+    /// The effect pool's Halloween templates, into a show that has just been made.
+    ///
+    /// Gated on the show row having been created by this open rather than on the
+    /// collection being empty, so it is *new only* in the strict sense: a show whose
+    /// pool somebody emptied on purpose stays empty, and a show made before the pool
+    /// existed is not handed one. Unattributed, like the show row it rides with.
+    async fn seed_the_effect_pool(&mut self) {
+        for template in pult_schema::types::default_effect_templates() {
+            let path: Path = vec![
+                PathSegment::Key("effect_templates".into()),
+                PathSegment::Key("__create".into()),
+            ];
+            let Ok(value) = serde_json::to_value(&template) else { continue };
+            if let Err(e) =
+                self.apply_set(path.clone(), value.clone(), Lifecycle::Persisted).await
+            {
+                warn!("[engine] could not seed the effect pool: {e}");
+                return;
+            }
+            self.record_write(&path, &value, Lifecycle::Persisted);
             self.log_local_write(&path, &value, Lifecycle::Persisted, &Authorship::none())
                 .await;
             self.broadcast_after_set(&path, value.clone());
@@ -3294,6 +3893,33 @@ impl ShowEngine {
     async fn apply_snapshot(&mut self, data: serde_json::Value) {
         if let Ok(mut state) = serde_json::from_value::<ShowState>(data) {
             state.post_load_init();
+            // What this station holds that the show it is taking on does not: gone from
+            // the file too, not only from memory. Saving a snapshot upserts every row it
+            // has and deletes none, so a row only this station had — a wing binding on
+            // the Pi and in nobody else's show — came back from its own file at the
+            // next restart.
+            for meta in EntityMeta::all_with_tables() {
+                let (Some(table), Some(delete_one)) = (meta.table_name, meta.delete_one) else { continue };
+                if meta.is_singleton {
+                    continue;
+                }
+                let theirs = state.entities.get(table).and_then(|v| v.as_object());
+                let stale: Vec<Uuid> = self
+                    .state
+                    .entities
+                    .get(table)
+                    .and_then(|v| v.as_object())
+                    .into_iter()
+                    .flat_map(|ours| ours.keys())
+                    .filter(|id| !theirs.is_some_and(|t| t.contains_key(*id)))
+                    .filter_map(|id| id.parse().ok())
+                    .collect();
+                for id in stale {
+                    if let Err(e) = delete_one(self.pool.as_ref().clone(), id).await {
+                        warn!("[engine] could not drop {table} {id} the show no longer has: {e}");
+                    }
+                }
+            }
             // LOCAL state belongs to this node: its session, and what it can see on
             // its own network segment. A leader's copy of either means nothing here.
             state.local = std::mem::take(&mut self.state.local);
@@ -3319,6 +3945,33 @@ impl ShowEngine {
         }
     }
 
+    /// Take what is running from a peer's whole show and nothing else: see
+    /// [`running_state_over`]. Nothing is written to the showfile, since nothing it
+    /// holds has changed.
+    fn apply_running_state(&mut self, data: serde_json::Value) {
+        let Ok(theirs) = serde_json::from_value::<ShowState>(data) else {
+            warn!("[sync] could not read what a peer says is running");
+            return;
+        };
+        running_state_over(&mut self.state.entities, &theirs.entities);
+        // A row that came in this way is in the entities and not yet in its collection's
+        // order, and a collection is read through its order: the leader's own `stations`
+        // row, handed back by the follower that still held it, was there by id and
+        // missing from the list — so the leader drew itself as offline, and writing the
+        // row by id afterwards never put it in (HHG, 2026-10-28).
+        self.state.post_load_init();
+        self.outputs_dirty = true;
+        self.inputs_dirty = true;
+        self.flows_dirty = true;
+        self.path_clocks.clear();
+        for key in ShowState::frontend_paths() {
+            let path = vec![PathSegment::Key(key)];
+            if let Some(val) = self.state.get_by_path(&path) {
+                let _ = self.broadcast.0.send((path, val));
+            }
+        }
+    }
+
     /// Persist the entire in-memory state to the local showfile.
     /// Driven by the EntityMeta registry — no entity types enumerated here.
     async fn save_to_showfile(&self) {
@@ -3334,6 +3987,21 @@ impl ShowEngine {
 }
 
 // ── JSON helpers ──────────────────────────────────────────────────────────────
+
+/// The path two writes conflict on. A create is written to `[table, "__create"]`, and
+/// keyed by that every create in a table was one path: two stations each creating a row
+/// at once had one of the two dropped as "superseded" on the other, though they were
+/// two rows. A create conflicts with what else touches *its* row, `[table, id]`.
+fn conflict_path(path: &Path, value: &serde_json::Value) -> Path {
+    if let [PathSegment::Key(table), PathSegment::Key(verb)] = path.as_slice() {
+        if verb == "__create" {
+            if let Some(id) = value.get("id").and_then(|v| v.as_str()).and_then(|v| v.parse().ok()) {
+                return vec![PathSegment::Key(table.clone()), PathSegment::Id(id)];
+            }
+        }
+    }
+    path.clone()
+}
 
 /// `[table, id, field]`.
 fn entity_field_path(table: &str, id: Uuid, field: &str) -> Path {

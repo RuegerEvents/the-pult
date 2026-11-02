@@ -187,6 +187,10 @@ pub struct ResolvedChannel<'a> {
     /// The attribute the first logical channel names, which is what the console maps
     /// onto a parameter kind.
     pub attribute: Option<&'a Node>,
+    /// Which copy of a referenced geometry this channel belongs to, counted from 1 in
+    /// the order the mode's references are expanded: the cell of a multi-cell bar.
+    /// `None` for a channel on a geometry the mode reaches directly.
+    pub instance: Option<u16>,
 }
 
 impl ResolvedChannel<'_> {
@@ -283,12 +287,13 @@ pub fn expand_mode<'a>(
                 channel,
                 geometry_path: direct.get(name).cloned().unwrap_or_default(),
                 attribute: first_attribute(channel),
+                instance: None,
             });
             continue;
         }
 
         let mut placed = false;
-        for instance in expanded.iter().filter(|instance| instance.covers(name)) {
+        for (index, instance) in expanded.iter().enumerate().filter(|(_, instance)| instance.covers(name)) {
             placed = true;
             let (break_number, base) = instance.place(channel);
             out.push(ResolvedChannel {
@@ -301,6 +306,7 @@ pub fn expand_mode<'a>(
                 channel,
                 geometry_path: instance.path.clone(),
                 attribute: first_attribute(channel),
+                instance: Some(index as u16 + 1),
             });
         }
 
@@ -318,6 +324,7 @@ pub fn expand_mode<'a>(
                 channel,
                 geometry_path: geometry.0.clone(),
                 attribute: first_attribute(channel),
+                instance: None,
             });
         }
     }

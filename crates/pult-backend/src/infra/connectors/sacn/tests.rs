@@ -135,8 +135,10 @@ fn a_dimmer_patch(universe: u16, level: f32) -> Patch {
         address: FixtureAddress::dmx(universe, 1),
         position: None,
         sensed_values: HashMap::new(),
+        sensed_at: Default::default(),
         live_effects: Default::default(),
         live_fades: Default::default(),
+        live_htp: Default::default(),
         home_values: Default::default(),
         ..Fixture::default()
     };
@@ -231,7 +233,7 @@ async fn a_fixture_on_a_node_puts_nothing_on_a_universe() {
     // settles. Moving a fixture after the fact moves nothing.
     let mut patch = a_dimmer_patch(1, 1.0);
     let mut fixture = patch.fixtures.remove(0);
-    fixture.address = FixtureAddress::OpenHaunt { serial: "1a2b3c".into(), universe: Some(1) };
+    fixture.address = FixtureAddress::node("1a2b3c", Some(1));
     let patch = Patch::new(vec![fixture], patch.fixture_types.into_values().collect(), vec![]);
     output.send(&patch, &[], 0).await.unwrap();
 

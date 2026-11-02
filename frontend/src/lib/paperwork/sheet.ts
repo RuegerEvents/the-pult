@@ -49,7 +49,7 @@ import {
 	depthOf,
 	extentIn,
 	fittedDenominator,
-	mmPerMetre,
+	mmPerMeter,
 	silhouette,
 	toPage,
 	wireframe,
@@ -81,9 +81,9 @@ export interface SheetContext {
 	layers: Layer[];
 
 	/**
-	 * How big each scene object is, in metres, as a box.
+	 * How big each scene object is, in meters, as a box.
 	 *
-	 * Measured by the browser: a catalogue piece from its own dimensions, a drawing's
+	 * Measured by the browser: a catalog piece from its own dimensions, a drawing's
 	 * mesh from the bounds `geometry.ts` took when it loaded it. **A box rather than
 	 * the mesh itself**, which is the one honest limitation of a drafting viewport and
 	 * is worth being plain about: a truss draws as its outline rather than as its
@@ -97,7 +97,7 @@ export interface SheetContext {
 	tables: Map<number, Table>;
 	/** Rendered pictures, keyed the same way, with the dpi actually achieved. */
 	rasters: Map<number, { data: Uint8Array; dpi: number }>;
-	/** A fixture type's thumbnail, rasterised, keyed by type id. */
+	/** A fixture type's thumbnail, rasterized, keyed by type id. */
 	thumbnails: Map<string, Uint8Array>;
 }
 
@@ -385,8 +385,8 @@ function viewportItems(block: ViewportBlock, ctx: SheetContext, index: number): 
 		block.scale.type === 'Ratio' ? Math.max(block.scale.denominator, 1) : snap(fitted);
 	const camera: Camera = {
 		basis,
-		centre: extent.centre,
-		scale: mmPerMetre(denominator),
+		center: extent.center,
+		scale: mmPerMeter(denominator),
 		rect
 	};
 
@@ -674,23 +674,23 @@ function furniture(
 	}
 	if (block.orientation_mark) {
 		// Far enough in that the arrow and its label are both inside the frame: the
-		// mark is 6 mm long and its text sits a millimetre past the tip.
+		// mark is 6 mm long and its text sits a millimeter past the tip.
 		items.push(...upstageMark({ x: rect.x + rect.w - 10, y: rect.y + 12 }, camera));
 	}
 	return items;
 }
 
 /**
- * A bar of a round number of metres, chosen so it is between 20 and 60 mm long.
+ * A bar of a round number of meters, chosen so it is between 20 and 60 mm long.
  *
  * A drawing carries both a stated ratio and a bar because they fail differently: a
  * ratio is wrong if anybody rescales the file, and a bar is right whatever happens to
  * it — it is the one thing on the sheet a photocopier cannot lie about.
  */
 export function scaleBar(at: Pt, denominator: number): DrawItem[] {
-	const perMetre = mmPerMetre(denominator);
-	const metres = [1, 2, 5, 10, 20, 50, 100].find((m) => m * perMetre >= 20) ?? 100;
-	const length = metres * perMetre;
+	const perMeter = mmPerMeter(denominator);
+	const meters = [1, 2, 5, 10, 20, 50, 100].find((m) => m * perMeter >= 20) ?? 100;
+	const length = meters * perMeter;
 	const h = 1.4;
 	return [
 		{
@@ -726,7 +726,7 @@ export function scaleBar(at: Pt, denominator: number): DrawItem[] {
 		{
 			kind: 'text',
 			at: { x: at.x + length, y: at.y - 0.6 },
-			text: `${metres} m`,
+			text: `${meters} m`,
 			size: 2,
 			anchor: 'end',
 			baseline: 'baseline'

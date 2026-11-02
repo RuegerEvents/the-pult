@@ -8,7 +8,7 @@
     "where a demo hangs a rig, and in a browser on every frame of a drag, so there are",
     "two of it. This file is what holds them to each other.",
     "",
-    "The browser is the *writer* for every parent, catalogue piece or imported mesh",
+    "The browser is the *writer* for every parent, catalog piece or imported mesh",
     "alike, because resolving a mount on a drawing's truss means measuring its mesh",
     "and the station never loads one. Which makes the agreement below the only thing",
     "keeping a station's own arithmetic honest.",
@@ -34,7 +34,7 @@
   },
   "transforms": [
     {
-      "name": "hung under the bottom chord, a metre and a half along",
+      "name": "hung under the bottom chord, a meter and a half along",
       "chords": "f34",
       "mount": { "chord": 0, "along": 1.5, "roll": 0.0 },
       "transform": {
@@ -64,7 +64,7 @@
       }
     },
     {
-      "name": "a pipe hangs from its own centre line",
+      "name": "a pipe hangs from its own center line",
       "chords": "pipe",
       "mount": { "chord": 0, "along": 2.0, "roll": 270.0 },
       "transform": {

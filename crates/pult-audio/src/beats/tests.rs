@@ -10,11 +10,11 @@
 //! is megabytes — and a click at a known tempo is the one signal whose right answer is
 //! known without a human listening.
 //!
-//! It runs in the ordinary suite, and that was in the balance. Unoptimised it took
+//! It runs in the ordinary suite, and that was in the balance. Unoptimized it took
 //! **63 seconds**, which is an `#[ignore]` and therefore a guard nobody runs; the
 //! `[profile.dev.package.rten]` entries in the workspace manifest bring it to **one
 //! second**, because what was slow was a SIMD matrix kernel compiled as scalar Rust and
-//! not the model. Optimising one dependency was the cheaper of the two answers, and it
+//! not the model. Optimizing one dependency was the cheaper of the two answers, and it
 //! also means the *console* can detect beats in a debug build without somebody
 //! deciding the feature is broken.
 
@@ -85,11 +85,11 @@ fn a_missed_beat_does_not_move_the_tempo() {
 }
 
 /// The defect a real song found. The model works at 50 frames a second, so every beat
-/// it reports is quantised to 20 ms — and at 128 bpm a 468.75 ms beat lands on 460 or
+/// it reports is quantized to 20 ms — and at 128 bpm a 468.75 ms beat lands on 460 or
 /// 480. A tempo taken from one interval is then 130.4 or 125, either of which walks a
 /// whole bar out of step inside a minute. Taken from the *span*, it is right.
 #[test]
-fn quantised_beats_still_give_the_tempo_they_came_from() {
+fn quantized_beats_still_give_the_tempo_they_came_from() {
     let true_interval = 60_000.0 / 128.0;
     // Thirty-two bars of 128 bpm, each beat snapped to the detector's 20 ms grid.
     let beats: Vec<u32> = (0..128)

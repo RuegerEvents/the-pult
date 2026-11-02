@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
+	import { page } from '$app/state';
 	import { onMount } from 'svelte';
 	import { PultWsClient } from '$lib/ws/client.js';
 	import { backendOrigin, wsUrl } from '$lib/ws/endpoint.js';
@@ -16,25 +17,53 @@
 	import { initShowStores } from '$lib/stores/show.js';
 	import { identifyOnConnect } from '$lib/stores/user.js';
 	import { isTextField, redo, shortcutFor, undo } from '$lib/stores/undo.js';
-	import { focusConsole } from '$lib/stores/plugins.js';
-	import { restoreLayout } from '$lib/stores/layout.js';
+	import { restoreWorkspace } from '$lib/stores/workspace.js';
 	import { reportBrowserErrors } from '$lib/errors.js';
 	import { reportBrowserStats } from '$lib/stats.js';
 	import { frameMeter } from '$lib/stores/output.js';
 	import { beginSwitch, endSwitch, switching } from '$lib/stores/switching.js';
 	import { switchFromClose } from '$lib/switching.js';
-	import LayoutBar from '$lib/components/layout/LayoutBar.svelte';
+	import WorkspaceBar from '$lib/components/workspace/WorkspaceBar.svelte';
 	import Setup from '$lib/components/setup/Setup.svelte';
 	import { closeSetup, setupSection, toggleSetup } from '$lib/stores/setup.js';
 	import Verbs from '$lib/components/programmer/Verbs.svelte';
-	import { focusedCueSheet } from '$lib/stores/cues.js';
-	import { clear } from '$lib/stores/programmer.js';
-	import { clearSelection } from '$lib/stores/selection.js';
+	import { goOnFocusedSheet } from '$lib/stores/cues.js';
+	import { startWing } from '$lib/stores/wing.js';
+	import { checkBuild } from '$lib/stores/build.js';
+	import { clearStep } from '$lib/stores/clear.js';
 	import UserBar from '$lib/components/UserBar.svelte';
+	import TakeReview from '$lib/components/timeline/TakeReview.svelte';
+	import { startTakeReview } from '$lib/stores/takeReview.js';
+	import { connection } from '$lib/stores/connection.js';
+	import { isSurfacePath } from '$lib/surface.js';
+	import { isLayoutPath } from '$lib/layoutView.js';
+	import CommandPalette from '$lib/components/CommandPalette.svelte';
+	import ContextMenu from '$lib/components/objects/ContextMenu.svelte';
+	import MoveToFolder from '$lib/components/objects/MoveToFolder.svelte';
+	import { registerBuiltInCommands } from '$lib/commands.js';
+	import { showLocked, toggleShowLock } from '$lib/stores/showLock.js';
+	import Lock from '@lucide/svelte/icons/lock';
+	import LockOpen from '@lucide/svelte/icons/lock-open';
+	import Search from '@lucide/svelte/icons/search';
+	import Settings from '@lucide/svelte/icons/settings';
+	// Every object kind registers itself when its module loads; see `$lib/kinds/`.
+	import '$lib/kinds/index.js';
 	import '$lib/styles/tokens.css';
 	import '$lib/styles/controls.css';
+	import '$lib/styles/topbar.css';
+	import { show as showRow } from '$lib/stores/show.js';
 
 	let { children } = $props();
+
+	/**
+	 * A phone surface (`/surface/<id>`) is the console with none of the desk around
+	 * it: no top bar, no keymap — Space is Go on a desk and a stray keyboard on a
+	 * phone must not be — and no cover over the page when the socket drops. The
+	 * surface draws its own disconnected state, over the last known values, because
+	 * a maze runner needs to see what the page last said and that it is stale. A
+	 * layout's shared page (`/layout/<id>`) is the same, for the same people.
+	 */
+	const chromeless = $derived(isSurfacePath(page.url.pathname) || isLayoutPath(page.url.pathname));
 
 	// The backend serves this page, so where it is is where we came from. `?port=`
 	// still names a second station on the same host, which is what demo.sh --two
@@ -56,16 +85,24 @@
 		client,
 		browser ? backendOrigin(window.location) : 'http://localhost:7700',
 		undefined,
-		endSwitch
+		endSwitch,
+		// A tab left open across a redeploy reloads onto the new build.
+		checkBuild
 	);
 	setStationContext(station);
 	// One store per collection, shared by every panel: a tiled workspace can have the
 	// same fixtures on screen four times, and four deep subscriptions to them is
 	// four copies of every update forty times a second.
 	initShowStores(data, client);
-	// Which tiles this browser had up last time. The layouts themselves are the
+	// The command wing, if this station has one and this page drives it.
+	startWing();
+	// A recording this page armed opens its review here when it stops.
+	startTakeReview();
+	// Which tiles this browser had up last time. The workspaces themselves are the
 	// show's; which one is on screen is this operator's.
-	restoreLayout();
+	restoreWorkspace();
+	// What ⌘K can find: the panels, every object, the console's own verbs.
+	registerBuiltInCommands();
 	// And who this browser is, so its writes can be taken back. Said again on every
 	// reconnect by the client itself — a socket that came back anonymous would keep
 	// working and quietly stop being undoable.
@@ -79,19 +116,11 @@
 	// with nobody in front of it, so this cannot be something a panel opts into.
 	reportBrowserStats(client, frameMeter);
 
+	/** Whether the ⌘K palette is open. */
+	let palette = $state(false);
+
 	/** The verbs in the top bar, so the keymap can press the same buttons. */
 	let verbs = $state<ReturnType<typeof Verbs> | null>(null);
-	/**
-	 * When Escape was last pressed, for the second one.
-	 *
-	 * Esc gives the rig back to playback; Esc Esc also drops the selection. Two acts
-	 * rather than one because they are separate on purpose — the spec keeps the buffer
-	 * and the selection apart, so a look can be parked and reached again from a
-	 * different selection — and because dropping a hard-won selection by reflex is a
-	 * minute of clicking to get back.
-	 */
-	let lastEscape = 0;
-	const ESCAPE_AGAIN_MS = 600;
 
 	/**
 	 * Ctrl-Z anywhere that is not a text field.
@@ -101,12 +130,13 @@
 	 * means that fixture.
 	 */
 	function onKey(event: KeyboardEvent) {
-		// Ctrl/Cmd+K lands in a command line, wherever one is open. Allowed even
-		// from a text field: the browsers' own use of the key is a search bar,
-		// and stealing it from an input is exactly what an operator mid-rename
-		// pressing it means.
+		if (chromeless) return;
+		// Ctrl/Cmd+K opens the palette — panels, objects, verbs, and the command line
+		// among them. Allowed even from a text field: the browsers' own use of the key
+		// is a search bar, and an operator pressing it mid-rename means the console.
 		if (event.key.toLowerCase() === 'k' && (event.ctrlKey || event.metaKey)) {
-			if (focusConsole()) event.preventDefault();
+			event.preventDefault();
+			if ($station?.show) palette = !palette;
 			return;
 		}
 		// Ctrl/Cmd+S is Save, which on this console means "take a version" — there is
@@ -137,12 +167,10 @@
 				void verbs?.update();
 				return;
 			}
+			// Esc is Clear: the selection, then the programmer (`stores/clear.ts`).
 			if (event.key === 'Escape') {
 				event.preventDefault();
-				const now = Date.now();
-				if (now - lastEscape < ESCAPE_AGAIN_MS) clearSelection();
-				lastEscape = now;
-				void clear({ keepLocked: true });
+				void clearStep();
 				return;
 			}
 			if (event.key === ' ') {
@@ -157,26 +185,6 @@
 		event.preventDefault();
 		if (action === 'undo') undo();
 		else redo();
-	}
-
-	/**
-	 * Space: Go on the cue sheet touched last.
-	 *
-	 * With none focused there is **no Go and a toast**, never a guess. A console with
-	 * three cue sheets open has to answer which one Space means, and answering it by
-	 * picking one is a look on stage nobody asked for.
-	 */
-	async function goOnFocusedSheet() {
-		const sequenceId = $focusedCueSheet;
-		if (!sequenceId) {
-			addToast('Space is Go on a cue sheet — click one first');
-			return;
-		}
-		try {
-			await data.sequences.byId(sequenceId).goNext({ at: Date.now() });
-		} catch (e) {
-			addToast(`${e}`);
-		}
 	}
 
 	/** Save: a checkpoint, with no name. The Show panel is where one is given a name. */
@@ -221,7 +229,7 @@
 			covering = true;
 			return;
 		}
-		if (connected) {
+		if (connected || (chromeless && everConnected)) {
 			covering = false;
 			return;
 		}
@@ -234,8 +242,15 @@
 	});
 
 	onMount(() => {
-		client.onConnect = () => { connected = true; everConnected = true; };
-		client.onDisconnect = () => { connected = false; };
+		client.onConnect = () => {
+			connected = true;
+			everConnected = true;
+			connection.set({ connected, everConnected });
+		};
+		client.onDisconnect = () => {
+			connected = false;
+			connection.set({ connected, everConnected });
+		};
 		// A station making way for another says so in its close frame, which is how
 		// the tablet on somebody else's socket draws "Opening Festival…" rather than
 		// "the console stopped answering".
@@ -251,27 +266,67 @@
 
 <svelte:window onkeydown={onKey} />
 
+<!-- The show's name in the tab and the dock, the way an editor names its window after
+     its file; a phone surface sets its own. -->
+<svelte:head>
+	{#if !chromeless}
+		<title>{($showRow?.name ?? $station?.show?.name) ? `${$showRow?.name ?? $station?.show?.name} | the-pult` : 'the-pult'}</title>
+	{/if}
+</svelte:head>
+
 <div class="shell">
-	<header class="topbar">
-		<span class="brand" title={$station ? `station ${$station.nodeId}` : address}>
-			the-pult{#if $station}<span class="version">{$station.version}</span>{/if}
-		</span>
-		{#if $station?.show}
-			<ShowMenu show={$station.show} />
-			<LayoutBar />
-			<!-- Setup is a mode, not a tile. See `components/setup/Setup.svelte`. -->
-			<button class="setup-btn" class:on={$setupSection !== null} onclick={toggleSetup}>
-				Setup<span class="caret">▾</span>
-			</button>
-			<!-- The three verbs, in the chrome rather than in a panel: an operator
-			     programming in the rig, in the plan or from the command line means the
-			     same three things. -->
-			<Verbs bind:this={verbs} />
-		{/if}
-		<span class="spacer"></span>
-		<UserBar />
-		<ConnectionStatus {connected} />
-	</header>
+	{#if !chromeless}
+		<header class="topbar">
+			<span
+				class="brand"
+				title={$station ? `the-pult ${$station.version} · station ${$station.nodeId}` : address}
+			>the-pult</span>
+			{#if $station?.show}
+				<span class="tb-sep"></span>
+				<ShowMenu show={$station.show} />
+				<WorkspaceBar />
+				<span class="tb-sep"></span>
+				<!-- The three verbs, in the chrome rather than in a panel: an operator
+				     programming in the rig, in the plan or from the command line means the
+				     same three things. -->
+				<!-- Where a phone's bar breaks onto a second row: the verbs and the tools
+				     under the show, the operator and the link. Nothing on a desk. -->
+				<span class="tb-break"></span>
+				<Verbs bind:this={verbs} />
+			{/if}
+			<span class="spacer"></span>
+			{#if $station?.show}
+				<button class="tb-icon" title="Find anything (⌘K)" aria-label="Find" onclick={() => (palette = true)}>
+					<Search size={16} /><kbd>⌘K</kbd>
+				</button>
+				<!-- The one lock there is. Off, every edit handle is where its object is;
+				     on, the console still acts and changes nothing — and says so in words,
+				     because a locked desk somebody does not know is locked looks broken.
+				     See `stores/showLock.ts`. -->
+				<button
+					class="tb-icon lock"
+					class:on={$showLocked}
+					aria-pressed={$showLocked}
+					aria-label={$showLocked ? 'Unlock the show' : 'Lock the show'}
+					title={$showLocked
+						? 'Show lock is on: acts work, nothing can be edited. Click to unlock.'
+						: 'Lock the show: hide every edit handle on this screen'}
+					onclick={toggleShowLock}
+				>
+					{#if $showLocked}<Lock size={16} /><span>Show locked</span>{:else}<LockOpen size={16} />{/if}
+				</button>
+				<!-- Setup is a mode, not a tile, and not a menu either: it opens the
+				     full-screen dialog. See `components/setup/Setup.svelte`. -->
+				<button class="tb-icon" class:on={$setupSection !== null} title="Setup: patch, devices, I/O, network, stations…" onclick={toggleSetup}>
+					<Settings size={16} /><span>Setup</span>
+				</button>
+				<span class="tb-sep"></span>
+			{/if}
+			<TakeReview />
+			<UserBar />
+			<ConnectionStatus {connected} />
+		</header>
+	{/if}
 	<main>
 		{@render children()}
 	</main>
@@ -292,6 +347,14 @@
 {/if}
 
 <Toasts />
+
+<!-- One context menu for every object, at the root so no tile can clip it. -->
+<ContextMenu />
+<MoveToFolder />
+
+{#if palette}
+	<CommandPalette onclose={() => (palette = false)} />
+{/if}
 
 <!-- Everything that is done once, over the workspace rather than inside it. At the
      root because it is a mode of the whole window, and because the menu that opens
@@ -320,11 +383,21 @@
 		padding: 0;
 	}
 
+	/* A console is controls, not a document: a drag that misses a fader would
+	   otherwise paint every label it crossed. What somebody does copy — a field, a
+	   log line, a plugin's output — says so. */
 	:global(body) {
-		background: #1a1a1a;
-		color: #e0e0e0;
+		user-select: none;
+		-webkit-user-select: none;
+		background: var(--bg);
+		color: var(--text);
 		font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
 		font-size: 14px;
+	}
+
+	:global(input, textarea, [contenteditable], pre, .selectable) {
+		user-select: text;
+		-webkit-user-select: text;
 	}
 
 	.shell {
@@ -336,11 +409,11 @@
 	.topbar {
 		display: flex;
 		align-items: center;
-		gap: 16px;
-		padding: 0 16px;
-		height: 40px;
-		background: #111;
-		border-bottom: 1px solid #333;
+		gap: 4px;
+		padding: 0 12px;
+		height: 44px;
+		background: var(--bg-chrome);
+		border-bottom: 1px solid var(--line-strong);
 		flex-shrink: 0;
 	}
 
@@ -348,39 +421,70 @@
 		flex: 1;
 	}
 
-	.setup-btn {
-		background: none;
-		border: none;
-		color: var(--text-dim, #888);
-		font: inherit;
-		font-size: var(--font-sm, 12px);
-		font-weight: 600;
-		cursor: pointer;
-		padding: 4px 2px;
-		white-space: nowrap;
-	}
-	.setup-btn:hover,
-	.setup-btn.on {
-		color: var(--text-bright, #fff);
-	}
-	.caret {
-		margin-left: 5px;
-		color: var(--text-faint, #555);
+	/* On is amber, the console's color for something holding. */
+	.lock.on,
+	.lock.on:hover {
+		color: var(--live);
+		background: color-mix(in srgb, var(--live) 12%, transparent);
 	}
 
 	.brand {
+		padding: 0 6px;
 		font-weight: 600;
 		letter-spacing: 0.05em;
-		color: #fff;
+		color: var(--text-bright);
 		white-space: nowrap;
 	}
 
-	.version {
-		margin-left: 6px;
-		font-weight: 400;
-		font-size: 0.7rem;
-		letter-spacing: 0;
-		color: #666;
+	.tb-break {
+		display: none;
+	}
+
+	/* A phone: the bar wraps rather than running off the screen, and says with icons
+	   what a desk says in words. Wrapped rather than scrolled, because the menus hang
+	   out of it and a scrolling box would clip them. */
+	@media (max-width: 720px) {
+		.topbar {
+			flex-wrap: wrap;
+			height: auto;
+			min-height: 44px;
+			padding: 4px 6px;
+			row-gap: 2px;
+		}
+		.brand,
+		.topbar :global(.tb-sep),
+		.topbar :global(.tb-icon > span:not(.avatar)),
+		.topbar :global(.tb-icon kbd),
+		.topbar :global(.tb-sub) {
+			display: none;
+		}
+		/* The layout menu is its icon; the show keeps its name, shortened. */
+		.topbar :global(.tb-label) {
+			display: none;
+		}
+		.topbar :global(.tb-menu .name) {
+			max-width: 10em;
+			overflow: hidden;
+			text-overflow: ellipsis;
+		}
+		.topbar :global(.tb-menu) {
+			padding: 0 6px;
+		}
+		/* Two rows: what is open and who is here, then what to do. */
+		.tb-break {
+			display: block;
+			order: 1;
+			flex-basis: 100%;
+		}
+		.topbar > :global(.verbs) {
+			order: 2;
+		}
+		.topbar > :global(.tb-icon) {
+			order: 3;
+		}
+		.topbar > :global(.tb-icon:first-of-type) {
+			margin-left: auto;
+		}
 	}
 
 	main {

@@ -46,7 +46,7 @@ impl FromRef<AppState> for ConfigState {
     }
 }
 
-/// What a show travelling in or out touches: where the show is, where new ones go,
+/// What a show traveling in or out touches: where the show is, where new ones go,
 /// and the pool to copy the database through.
 #[derive(Clone)]
 pub struct ShowsState {
@@ -91,9 +91,9 @@ where
     ShowsState: FromRef<S>,
 {
     Router::new()
-        .route("/assets", post(upload))
+        .route("/assets", post(upload).get(list_assets))
         .route("/assets/{sha}", get(download))
-        // The catalogue's own pieces, generated rather than stored. Beside the asset
+        // The catalog's own pieces, generated rather than stored. Beside the asset
         // store and deliberately not in it: the store refuses a write with no show
         // open and the welcome screen still draws a rig, a generated mesh that
         // outlived the code that generated it would be a stale asset nobody could
@@ -104,6 +104,8 @@ where
         // bytes in a body, too large for the WebSocket, and the answer is what
         // the show now says about it.
         .route("/api/plugins", post(install_plugin))
+        .route("/api/plugins/builtin", get(builtin_plugins))
+        .route("/api/plugins/builtin/{id}", post(install_builtin_plugin))
         // A fixture definition, in and out. The same shape as a plugin bundle: bytes
         // in a body, too large for the WebSocket, and the answer is what the show now
         // says about it.
@@ -114,6 +116,13 @@ where
         // go through a WebSocket frame.
         .route("/api/import/mvr", post(import_mvr))
         .route("/api/export/mvr", get(export_mvr))
+        // An OctoBanger prop, in two steps because somebody has to say where each of
+        // its channels goes before it can go anywhere: what is in the upload, and then
+        // the upload again with the answer. The bytes travel twice rather than waiting
+        // on the station between the two, so a dialog closed half way leaves nothing
+        // behind.
+        .route("/api/import/obc/read", post(read_obc))
+        .route("/api/import/obc", post(import_obc))
         // The Share. A search is a read and could have been an RPC; importing from it
         // is a write, and the rule that the RPC table is read-only is worth more than
         // the symmetry — so all three are here, where writes belong.
@@ -142,63 +151,29 @@ async fn install_plugin(
     State(state): State<AssetState>,
     body: Bytes,
 ) -> Result<Json<serde_json::Value>, Response> {
-    use pult_schema::{lifecycle::Lifecycle, path::PathSegment, types::plugin::PluginPackage};
-
-    // Validated against where it *would* be unpacked, so the relative paths in
-    // it are checked the same way they will be when it is.
-    let would_be = infra::plugins::cache::root()
-        .unwrap_or_else(std::env::temp_dir)
-        .join(assets::digest(&body));
-    let info = infra::plugins::bundle::read_manifest(&body, &would_be)
-        .map_err(|e| bad_request(&format!("{e:#}")))?;
-    let manifest = info.manifest;
-
-    let sha256 = state
-        .assets
-        .put(assets::BUNDLE_MIME, &body)
+    let (value, replaced) = infra::plugins::builtin::install(&state.engine, &state.assets, &body)
         .await
-        .map_err(|e| bad_request(&e.to_string()))?;
+        .map_err(|e| bad_request(&e))?;
+    Ok(Json(json!({ "installed": value, "replaced": replaced })))
+}
 
-    // One row per plugin id. Replacing rather than adding is what makes
-    // installing a new build of something an upgrade instead of a conflict.
-    let roster: Vec<PluginPackage> = state
-        .engine
-        .get(vec![PathSegment::Key("plugin_packages".into())])
+/// The plugins this station carries inside itself, for the Plugins panel to offer
+/// without a file picker.
+async fn builtin_plugins() -> Json<serde_json::Value> {
+    Json(serde_json::Value::Array(infra::plugins::builtin::listed()))
+}
+
+/// Install one of them into the show.
+async fn install_builtin_plugin(
+    State(state): State<AssetState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let bytes = infra::plugins::builtin::bundle(&id)
+        .ok_or_else(|| bad_request(&format!("this station carries no plugin called {id}")))?;
+    let (value, replaced) = infra::plugins::builtin::install(&state.engine, &state.assets, bytes)
         .await
-        .ok()
-        .and_then(|v| serde_json::from_value(v).ok())
-        .unwrap_or_default();
-    let existing = roster.iter().find(|p| p.plugin_id == manifest.plugin.id);
-
-    let package = PluginPackage {
-        id: existing.map(|p| p.id).unwrap_or_else(uuid::Uuid::new_v4),
-        plugin_id: manifest.plugin.id.clone(),
-        name: manifest.plugin.name.clone(),
-        version: manifest.plugin.version.clone(),
-        api: manifest.plugin.api.clone(),
-        sha256: sha256.clone(),
-        // An upgrade keeps whatever the operator had chosen: switching a plugin
-        // off and installing a new build of it should not switch it back on.
-        enabled: existing.map(|p| p.enabled).unwrap_or(true),
-        stage: existing.map(|p| p.stage).unwrap_or_default(),
-        config: existing.map(|p| p.config.clone()).unwrap_or(serde_json::Value::Null),
-    };
-    let value = serde_json::to_value(&package).map_err(|e| bad_request(&e.to_string()))?;
-
-    let path = match existing {
-        Some(p) => vec![PathSegment::Key("plugin_packages".into()), PathSegment::Id(p.id)],
-        None => vec![
-            PathSegment::Key("plugin_packages".into()),
-            PathSegment::Key("__create".into()),
-        ],
-    };
-    state
-        .engine
-        .set(path, Lifecycle::Persisted, value.clone())
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response())?;
-
-    Ok(Json(json!({ "installed": value, "replaced": existing.is_some() })))
+        .map_err(|e| bad_request(&e))?;
+    Ok(Json(json!({ "installed": value, "replaced": replaced })))
 }
 
 /// Whether this console can talk to the Share, and how fresh its list is.
@@ -400,6 +375,38 @@ async fn import_mvr(
     })))
 }
 
+/// Say what an OctoBanger upload holds — an `.OBC`, or a project archive with its
+/// sounds — without writing anything.
+async fn read_obc(State(state): State<AssetState>, body: Bytes) -> Result<Json<serde_json::Value>, Response> {
+    let description = infra::interop::octobanger::describe_upload(&state.engine, &body)
+        .await
+        .map_err(|error| bad_request(&error))?;
+    Ok(Json(serde_json::to_value(description).unwrap_or_default()))
+}
+
+/// Import one controller of an OctoBanger upload. `?mapping=` is the dialog's answer,
+/// as JSON: which controller, and where its channels, trigger and sound go.
+async fn import_obc(
+    State(state): State<AssetState>,
+    headers: HeaderMap,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    body: Bytes,
+) -> Result<Json<serde_json::Value>, Response> {
+    let mapping: infra::interop::octobanger::Mapping = match params.get("mapping") {
+        Some(text) => serde_json::from_str(text).map_err(|error| bad_request(&format!("the mapping does not read: {error}")))?,
+        None => Default::default(),
+    };
+    let report = infra::interop::octobanger::import(&state.engine, &state.assets, &body, &mapping, user_for_writes(&headers))
+        .await
+        .map_err(|error| bad_request(&error))?;
+    Ok(Json(json!({
+        "created": report.created,
+        "updated": report.updated,
+        "missing": report.missing,
+        "warnings": report.warnings,
+    })))
+}
+
 /// Hand the whole rig back as an `.mvr`.
 ///
 /// `?layers=<uuid>,<uuid>` writes only those; with none named it writes everything,
@@ -494,6 +501,9 @@ async fn config(State(state): State<ConfigState>) -> Json<serde_json::Value> {
         "syncPort": state.sync_port,
         "nodeId": state.node_id.0,
         "version": crate::VERSION,
+        // Which build of the page this station serves. A tab running another one is
+        // stale — a tablet left open across a redeploy — and reloads itself.
+        "build": crate::api::spa::build_id(),
         // Which show, or none. A page compares this with the one it loaded under and
         // reloads when they differ: opening a show is a new console for this tab,
         // and that holds whether the tab is on this machine or is the tablet at the
@@ -737,7 +747,7 @@ async fn upload(
     }
 }
 
-/// One catalogue piece as a `.glb`.
+/// One catalog piece as a `.glb`.
 ///
 /// `?p=<json>` is what the piece was asked for — a deck's leg height. It is brought
 /// to its canonical form before anything is generated, so a browser that spelled the
@@ -755,7 +765,7 @@ async fn stock(
     headers: HeaderMap,
 ) -> Response {
     let Some(id) = file.strip_suffix(".glb") else {
-        return (StatusCode::NOT_FOUND, "the catalogue is served as .glb").into_response();
+        return (StatusCode::NOT_FOUND, "the catalog is served as .glb").into_response();
     };
     // A malformed `p` is treated as nothing said rather than refused: the properties
     // are a request about how to draw a deck, and a deck drawn at its default height
@@ -766,7 +776,7 @@ async fn stock(
         .unwrap_or(serde_json::Value::Null);
 
     let Some(bytes) = pult_schema::stock::stock_glb(id, &properties) else {
-        return (StatusCode::NOT_FOUND, format!("this console has no {id} in its catalogue"))
+        return (StatusCode::NOT_FOUND, format!("this console has no {id} in its catalog"))
             .into_response();
     };
 
@@ -791,6 +801,19 @@ async fn stock(
         header::HeaderValue::from_static("public, max-age=0, must-revalidate"),
     );
     (out, bytes).into_response()
+}
+
+/// The shas this station can serve, for a peer mirroring it. Local storage only,
+/// whatever the request says: a list relayed from a peer would be a promise of bytes
+/// this station would then have to go and fetch.
+async fn list_assets(State(state): State<AssetState>) -> Response {
+    match state.assets.list().await {
+        Ok(shas) => axum::Json(shas).into_response(),
+        Err(e) => {
+            debug!("[assets] could not list: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
 }
 
 async fn download(

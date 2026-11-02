@@ -47,6 +47,22 @@ async fn a_node() -> Node {
 /// estimate to converge on. Skewing what one of them *answers* is what gives a test a
 /// disagreement to watch being measured.
 async fn a_node_reporting_skew(skew_ms: i64) -> Node {
+    a_node_built(skew_ms, false).await
+}
+
+/// A node that has been up and linked for a while, so it is not fresh: see
+/// `peer::Freshness`. Every other node a test makes has just started, and two of those
+/// catch each other up the way stations always did.
+async fn a_node_already_linked() -> Node {
+    a_node_built(0, true).await
+}
+
+async fn a_node_built(skew_ms: i64, linked: bool) -> Node {
+    a_node_following(skew_ms, linked, None).await
+}
+
+/// A station whose leader went away: `lost` is the one it was following.
+async fn a_node_following(skew_ms: i64, linked: bool, lost: Option<NodeId>) -> Node {
     let pool = Arc::new(showfile::open_in_memory().await.expect("open in-memory showfile"));
     let id = NodeId(Uuid::new_v4());
     let (tx, rx) = tokio::sync::mpsc::channel(256);
@@ -55,6 +71,10 @@ async fn a_node_reporting_skew(skew_ms: i64) -> Node {
     let (mut manager, sync, addr) =
         SyncManager::bind(id, 0, engine.clone(), None).await.expect("bind an ephemeral sync port");
     manager.reporting_clock_skew(skew_ms);
+    if linked {
+        manager.watched.fresh.linked();
+    }
+    *manager.watched.lost_leader.lock().unwrap() = lost;
     let sync_mgr_links = manager.peer_links();
     tokio::spawn(manager.run());
 
@@ -74,7 +94,7 @@ fn seq_path(id: Uuid, field: &str) -> Path {
 }
 
 fn a_sequence(name: &str) -> Sequence {
-    Sequence { id: Uuid::new_v4(), name: name.into(), cue_ids: vec![], active_cue_index: None, went_at: None }
+    Sequence { merge: None, wrap: None, folder: None, id: Uuid::new_v4(), name: name.into(), cue_ids: vec![], active_cue_index: None, went_at: None, master: None }
 }
 
 async fn create(node: &Node, seq: &Sequence) {
@@ -388,6 +408,153 @@ async fn a_brand_new_node_is_sent_a_snapshot() {
     .await;
 }
 
+/// A station restarted mid-show: its clock, rebuilt from its oplog, says it has seen
+/// the leader's writes, but what those writes did to SYNCED state went with its
+/// process. Replaying only what came after that clock left it without the row; having
+/// just started, it is sent the whole show instead — whichever side dials.
+#[tokio::test]
+async fn a_station_that_has_just_started_is_sent_a_snapshot_whatever_its_clock_says() {
+    for joiner_dials in [true, false] {
+        let leader = a_node_already_linked().await;
+        let seq = a_sequence("Act 1");
+        create(&leader, &seq).await;
+
+        // The restarted station: it has the leader's clock and none of its state.
+        let restarted = a_node().await;
+        let unrelated = seq_path(Uuid::new_v4(), "name");
+        peer_write(&restarted, leader.id, leader.engine.get_clock().await, unrelated, "x").await;
+        assert_eq!(name_of(&restarted, seq.id).await, None, "the row went with the process");
+
+        if joiner_dials {
+            restarted.sync.connect_peer(vec![leader.addr], Uuid::new_v4(), Uuid::new_v4()).await.expect("answers");
+        } else {
+            leader.sync.connect_peer(vec![restarted.addr], Uuid::new_v4(), Uuid::new_v4()).await.expect("answers");
+        }
+        eventually("the restarted station to have the show again", || async {
+            name_of(&restarted, seq.id).await.as_deref() == Some("Act 1")
+        })
+        .await;
+    }
+}
+
+/// The leader restarts, and the station that stood in for it never heard of a rename
+/// the leader's own file holds — at the gig it had never been linked to the laptop
+/// the rename was made at. It hands back what it did meanwhile and what is running,
+/// never its copy of the show, so the rename stays.
+#[tokio::test]
+async fn a_restarted_leader_keeps_its_show_and_takes_what_is_running() {
+    let leader = a_node().await;
+    let renamed = a_sequence("Old name");
+    create(&leader, &renamed).await;
+
+    // The stand-in heard the sequence made and nothing after it — it heard it *from
+    // the leader*, which is what makes the rename later than what it holds. Written by
+    // the stand-in itself, the old name would be a concurrent edit, and which of two
+    // concurrent edits wins is the higher node id: a coin toss between two random ids,
+    // which is how this test used to fail two runs in three.
+    let stand_in = a_node_following(0, true, Some(leader.id)).await;
+    let then = leader.engine.get_clock().await;
+    let heard = Operation {
+        id: Uuid::new_v4(),
+        node_id: leader.id,
+        seq: then.0.get(&leader.id).copied().unwrap_or(1),
+        clock: then,
+        lifecycle: Lifecycle::Persisted,
+        path: vec![PathSegment::Key("sequences".into()), PathSegment::Key("__create".into())],
+        value: serde_json::to_value(&renamed).unwrap(),
+        timestamp: Utc::now(),
+        user_id: None,
+        previous: None,
+        undoes: None,
+        gesture: None,
+    };
+    stand_in.engine.0.send(EngineCommand::ApplyPeerOperation(heard)).await.unwrap();
+    assert_eq!(name_of(&stand_in, renamed.id).await.as_deref(), Some("Old name"));
+
+    // The rename the stand-in never hears about.
+    leader
+        .engine
+        .set(seq_path(renamed.id, "name"), Lifecycle::Persisted, serde_json::json!("Renamed"))
+        .await
+        .unwrap();
+    let added = a_sequence("Made while the leader was away");
+    create(&stand_in, &added).await;
+
+    stand_in.sync.connect_peer(vec![leader.addr], Uuid::new_v4(), Uuid::new_v4()).await.expect("answers");
+    eventually("the leader to have what was made while it was away", || async {
+        name_of(&leader, added.id).await.as_deref() == Some("Made while the leader was away")
+    })
+    .await;
+    assert_eq!(name_of(&leader, renamed.id).await.as_deref(), Some("Renamed"), "its own show stays");
+}
+
+/// Two followers linked only to the leader — the Pi with the wing and the audio laptop
+/// at the gig — still see each other's writes, because the leader passes them on.
+#[tokio::test]
+async fn a_write_at_one_follower_reaches_the_other_through_the_leader() {
+    let leader = a_node_already_linked().await;
+    let seq = a_sequence("Act 1");
+    create(&leader, &seq).await;
+    let wing = a_node_already_linked().await;
+    let laptop = a_node_already_linked().await;
+    for follower in [&wing, &laptop] {
+        follower.sync.connect_peer(vec![leader.addr], Uuid::new_v4(), Uuid::new_v4()).await.expect("answers");
+        eventually("the follower to have the show", || async {
+            name_of(follower, seq.id).await.as_deref() == Some("Act 1")
+        })
+        .await;
+    }
+
+    wing.engine.set(seq_path(seq.id, "name"), Lifecycle::Persisted, serde_json::json!("Cleared at the wing")).await.unwrap();
+    eventually("the laptop to have the wing's write", || async {
+        name_of(&laptop, seq.id).await.as_deref() == Some("Cleared at the wing")
+    })
+    .await;
+    assert_eq!(name_of(&leader, seq.id).await.as_deref(), Some("Cleared at the wing"));
+}
+
+/// A follower takes the leader's whole show, so a row only it had — the Pi's wing
+/// binding at the gig — is gone from it after joining, from memory and from its file.
+/// A replay since a clock carried what changed and never that.
+#[tokio::test]
+async fn a_follower_drops_what_the_leader_does_not_have() {
+    let leader = a_node_already_linked().await;
+    let follower = a_node_already_linked().await;
+    let shared = a_sequence("Act 1");
+    create(&leader, &shared).await;
+    let stray = a_sequence("Only on the Pi");
+    create(&follower, &stray).await;
+
+    follower.sync.connect_peer(vec![leader.addr], Uuid::new_v4(), Uuid::new_v4()).await.expect("answers");
+    eventually("the follower to take the leader's show", || async {
+        name_of(&follower, shared.id).await.as_deref() == Some("Act 1") && name_of(&follower, stray.id).await.is_none()
+    })
+    .await;
+    // And not only in memory: the next restart reads the file.
+    eventually("the stray row to leave the follower's file", || async {
+        let rows: Vec<(String,)> = sqlx::query_as("SELECT id FROM sequences").fetch_all(follower.pool.as_ref()).await.unwrap_or_default();
+        !rows.iter().any(|(id,)| *id == stray.id.to_string())
+    })
+    .await;
+}
+
+#[test]
+fn who_catches_whom_up() {
+    use super::peer::{catch_up, CatchUp::*};
+    // (we lead, they lead, we are fresh, they are fresh, they were our leader)
+    assert_eq!(catch_up(false, true, false, false, false), ReplayThenRequest, "a follower takes the leader's show");
+    assert_eq!(catch_up(true, false, false, false, false), Wait, "and the leader is asked for it");
+    assert_eq!(catch_up(false, true, false, true, false), SendSnapshot, "unless the other has just restarted");
+    assert_eq!(
+        catch_up(false, true, false, true, true),
+        ReplayThenRunning,
+        "and a restarted leader keeps its own file, and is told what it missed"
+    );
+    assert_eq!(catch_up(true, false, true, false, false), Replay, "which then waits for the follower's");
+    assert_eq!(catch_up(false, false, false, false, false), Replay, "two followers replay as before");
+    assert_eq!(catch_up(false, true, true, true, false), ReplayThenRequest, "a venue powered up at once");
+}
+
 /// The point of the oplog: a node that was connected, missed a few writes, and came
 /// back should be told those writes rather than re-sent the whole show.
 #[tokio::test]
@@ -507,7 +674,7 @@ async fn local_writes_never_reach_the_operation_log() {
     );
 }
 
-/// The behavioural catch-up tests above would also pass if every peer were sent a
+/// The behavioral catch-up tests above would also pass if every peer were sent a
 /// snapshot, so these pin the decision itself.
 mod catch_up_decision {
     use super::*;
@@ -802,11 +969,13 @@ async fn a_sensor_reading_on_the_leader_reaches_the_follower() {
         id: Uuid::new_v4(),
         name: "Doorbell".into(),
         fixture_type_id: Uuid::new_v4(),
-        address: FixtureAddress::OpenHaunt { serial: "1a2b3c".into(), universe: None },
+        address: FixtureAddress::node("1a2b3c", None),
         position: None,
         sensed_values: Default::default(),
+        sensed_at: Default::default(),
         live_effects: Default::default(),
         live_fades: Default::default(),
+        live_htp: Default::default(),
         home_values: Default::default(),
         ..Fixture::default()
     };
@@ -870,6 +1039,8 @@ async fn a_station_row_reaches_the_other_console() {
         is_leader: true,
         sync_addr: one.addr.to_string(),
         http_addr: String::new(),
+        broker_addr: String::new(),
+        broker_doors: Vec::new(),
         cpu_percent: 3.5,
         mem_used: 100,
         mem_total: 1000,
@@ -879,11 +1050,13 @@ async fn a_station_row_reaches_the_other_console() {
         total_fixtures: 0,
         frame_costs: Vec::new(),
         machine: Default::default(),
+        audio_cache: Default::default(),
         net_received: 0,
         net_sent: 0,
         net_window_ms: 0,
         clock: Default::default(),
         sacn_slot: None,
+        wing: None,
         last_seen: Utc::now(),
     };
     one.engine
@@ -922,6 +1095,8 @@ async fn each_station_reports_its_own_frame_cost_and_not_the_others() {
         is_leader: false,
         sync_addr: String::new(),
         http_addr: String::new(),
+        broker_addr: String::new(),
+        broker_doors: Vec::new(),
         cpu_percent: 0.0,
         mem_used: 0,
         mem_total: 0,
@@ -931,11 +1106,13 @@ async fn each_station_reports_its_own_frame_cost_and_not_the_others() {
         total_fixtures: 0,
         frame_costs: vec![cost],
         machine: Default::default(),
+        audio_cache: Default::default(),
         net_received: 0,
         net_sent: 0,
         net_window_ms: 0,
         clock: Default::default(),
         sacn_slot: None,
+        wing: None,
         last_seen: Utc::now(),
     };
 
@@ -1408,12 +1585,14 @@ async fn two_stations_agree_about_what_the_rig_is_doing() {
         is_active: false,
     };
     put(&one, "cues", serde_json::to_value(&cue).unwrap()).await;
-    let sequence = Sequence {
+    let sequence = Sequence { merge: None, wrap: None,
+        folder: None,
         id: Uuid::new_v4(),
         name: "Act 1".into(),
         cue_ids: vec![cue.id],
         active_cue_index: None,
         went_at: None,
+        master: None,
     };
     put(&one, "sequences", serde_json::to_value(&sequence).unwrap()).await;
 
@@ -1471,6 +1650,7 @@ async fn two_stations_agree_about_what_the_rig_is_doing() {
             log_watchers: Default::default(),
             sync: None,
             caller: None,
+            acting_for: None,
             clients: None,
             node_id: pult_schema::events::operation::NodeId::new(),
             viewers: Default::default(),
@@ -1479,6 +1659,7 @@ async fn two_stations_agree_about_what_the_rig_is_doing() {
             ws_registry: None,
             shows: crate::ShowsHandle::detached(),
             xchange: None,
+            wing: None,
         };
         async move {
             crate::api::rpcs::dispatch(

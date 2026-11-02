@@ -1,6 +1,6 @@
 //! Engine tests.
 //!
-//! These pin down the behaviour of `ShowEngine::apply_set` and its path dispatch
+//! These pin down the behavior of `ShowEngine::apply_set` and its path dispatch
 //! before that code is rewritten to be registry-driven. Each test drives a real
 //! engine task through `EngineHandle` against an in-memory showfile.
 
@@ -89,18 +89,20 @@ fn a_show() -> Show {
         name: "Hamlet".into(),
         created_at: Utc::now(),
         editing_cue: None,
+        blind: false,
         history_depth: pult_schema::types::show::HISTORY_DEPTH_DEFAULT,
         home_fade_ms: 0,
         haze_density: pult_schema::types::show::HAZE_DENSITY_DEFAULT,
         haze_turbulence: pult_schema::types::show::HAZE_TURBULENCE_DEFAULT,
         fade_curves: pult_schema::types::show::FadeCurves::default(),
         production: Default::default(),
+        default_state: None,
         mvr_xchange: Default::default(),
     }
 }
 
 fn a_sequence(name: &str, cue_ids: Vec<Uuid>) -> Sequence {
-    Sequence { id: Uuid::new_v4(), name: name.into(), cue_ids, active_cue_index: None, went_at: None }
+    Sequence { merge: None, wrap: None, folder: None, id: Uuid::new_v4(), name: name.into(), cue_ids, active_cue_index: None, went_at: None, master: None }
 }
 
 fn a_cue(name: &str, number: f64) -> Cue {
@@ -129,8 +131,10 @@ fn a_fixture(name: &str, address: u16) -> Fixture {
         address: FixtureAddress::dmx(1, address),
         position: None,
         sensed_values: Default::default(),
+        sensed_at: Default::default(),
         live_effects: Default::default(),
         live_fades: Default::default(),
+        live_htp: Default::default(),
         home_values: Default::default(),
         ..Fixture::default()
     }
@@ -152,6 +156,24 @@ async fn set_show_then_get_it_back() {
     let got = h.engine.get(key("show")).await.unwrap();
     assert_eq!(got["name"], "Hamlet");
     assert_eq!(got["id"], show.id.to_string());
+}
+
+#[tokio::test]
+async fn a_show_with_another_id_replaces_the_one_on_disk() {
+    // A follower joining is handed the leader's show, under the leader's id. Written as
+    // a row beside its own, the next start loaded whichever came first: the stale one.
+    let mut h = harness().await;
+    let mine = a_show();
+    h.engine.set(key("show"), Lifecycle::Persisted, json(&mine)).await.unwrap();
+    let leaders = Show { id: Uuid::new_v4(), name: "HHG 2026".into(), ..a_show() };
+    h.engine.set(key("show"), Lifecycle::Persisted, json(&leaders)).await.unwrap();
+    let _ = h.engine.get(key("show")).await;
+
+    let rows: Vec<String> = sqlx::query_scalar("SELECT id FROM show").fetch_all(&*h.pool).await.unwrap();
+    assert_eq!(rows, vec![leaders.id.to_string()], "one row, the one written last");
+
+    h.reload().await;
+    assert_eq!(h.engine.get(key("show")).await.unwrap()["name"], "HHG 2026");
 }
 
 #[tokio::test]
@@ -220,6 +242,24 @@ async fn cues_and_fixtures_support_the_same_create_read_delete_cycle() {
         .await
         .unwrap();
     assert!(h.engine.get(key("cues")).await.unwrap().as_array().unwrap().is_empty());
+}
+
+/// A fixture patched with no number gets one past the highest in the rig, so the wing
+/// can type it; one that came with a number keeps it, duplicate or not.
+#[tokio::test]
+async fn a_fixture_patched_without_a_number_gets_the_next_one() {
+    let h = harness().await;
+    let numbered = Fixture { fixture_number: Some(101), ..a_fixture("Spot L", 1) };
+    let first = a_fixture("Spot R", 13);
+    let twin = Fixture { fixture_number: Some(101), ..a_fixture("Spot C", 25) };
+    for fixture in [&numbered, &first, &twin] {
+        h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(fixture)).await.unwrap();
+    }
+    let mut numbers = Vec::new();
+    for id in [numbered.id, first.id, twin.id] {
+        numbers.push(h.engine.get(entity_path("fixtures", id)).await.unwrap()["fixture_number"].clone());
+    }
+    assert_eq!(numbers, [json(&101), json(&102), json(&101)], "a number given is kept, even one already taken");
 }
 
 // ── Field patches ─────────────────────────────────────────────────────────────
@@ -620,6 +660,47 @@ async fn a_peer_operation_is_applied_and_broadcast_locally() {
     );
 }
 
+/// Two stations each creating a row is two rows. A create used to conflict on
+/// `[table, "__create"]`, one path for the whole table, so a peer's create with a clock
+/// this station's own create had not seen was dropped as superseded — a spare's own
+/// `station_audio` row, or a cue programmed on the other console at the same moment.
+#[tokio::test]
+async fn a_peer_create_beside_a_local_one_is_another_row() {
+    use pult_schema::events::operation::{Operation, VectorClock};
+
+    let h = harness().await;
+    let here = a_sequence("Made here", vec![]);
+    h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&here)).await.unwrap();
+
+    let there = a_sequence("Made there", vec![]);
+    let op = Operation {
+        id: Uuid::new_v4(),
+        node_id: NodeId(Uuid::nil()),
+        seq: 1,
+        clock: VectorClock::default(),
+        path: create_path("sequences"),
+        value: json(&there),
+        lifecycle: Lifecycle::Persisted,
+        timestamp: Utc::now(),
+        user_id: None,
+        previous: None,
+        undoes: None,
+        gesture: None,
+    };
+    h.engine.0.send(EngineCommand::ApplyPeerOperation(op)).await.unwrap();
+
+    let mut held = serde_json::Value::Null;
+    for _ in 0..50 {
+        held = h.engine.get(entity_path("sequences", there.id)).await.unwrap_or_default();
+        if !held.is_null() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(held["name"], "Made there", "the peer's row arrived");
+    assert_eq!(h.engine.get(entity_path("sequences", here.id)).await.unwrap()["name"], "Made here");
+}
+
 // ── Registry-driven dispatch ──────────────────────────────────────────────────
 //
 // The engine names no entity type. These tests hold it to that.
@@ -756,7 +837,7 @@ async fn writing_a_field_the_schema_does_not_have_is_rejected() {
 
     let err = h
         .engine
-        .set(field_path("sequences", seq.id, "colour"), Lifecycle::Persisted, json(&"red"))
+        .set(field_path("sequences", seq.id, "color"), Lifecycle::Persisted, json(&"red"))
         .await
         .unwrap_err();
     assert!(matches!(err, BackendError::PathNotFound(_)));
@@ -921,6 +1002,31 @@ async fn a_later_reading_replaces_the_earlier_one_on_the_same_key() {
 }
 
 #[tokio::test]
+async fn a_reading_is_stamped_when_it_changes_and_only_then() {
+    let h = harness().await;
+    let fixture = a_fixture("Sensor", 1);
+    h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
+    let contact = |value: bool| serde_json::json!({ "type": "Bool", "value": value });
+    let stamp = || async {
+        h.engine.get(field_path("fixtures", fixture.id, "sensed_at")).await.unwrap()["Contact:0"].as_u64()
+    };
+
+    // A node reporting in says what it is, not that anything happened.
+    h.engine.set_sensed_value(fixture.id, "Contact:0".into(), contact(false)).await.unwrap();
+    assert_eq!(stamp().await, None, "a first report is not a change");
+    h.engine.set_sensed_value(fixture.id, "Contact:0".into(), contact(false)).await.unwrap();
+    assert_eq!(stamp().await, None, "nor is a repeat");
+
+    let before = pult_schema::clock::now_ms();
+    h.engine.set_sensed_value(fixture.id, "Contact:0".into(), contact(true)).await.unwrap();
+    let stepped_on = stamp().await.expect("a change is stamped");
+    assert!(stepped_on >= before);
+
+    h.engine.set_sensed_value(fixture.id, "Contact:0".into(), contact(true)).await.unwrap();
+    assert_eq!(stamp().await, Some(stepped_on), "a heartbeat restating it moves nothing");
+}
+
+#[tokio::test]
 async fn a_live_value_for_a_fixture_that_is_not_patched_is_refused() {
     let h = harness().await;
     let result = h
@@ -962,6 +1068,9 @@ mod flows {
 
     fn a_node(flow_id: Uuid, kind: FlowNodeKind) -> FlowNode {
         FlowNode {
+            name: None,
+            due_at: None,
+            disabled: None,
             id: Uuid::new_v4(),
             flow_id,
             kind,
@@ -969,6 +1078,7 @@ mod flows {
             y: 0.0,
             active: false,
             last_fired_at: None,
+            pulsed_at: None,
         }
     }
 
@@ -985,7 +1095,7 @@ mod flows {
 
     /// A doorbell wired to an action: source → rising edge → whatever it does.
     async fn a_flow(h: &Harness, fixture_id: Uuid, action: TriggerAction) -> (Flow, FlowNode) {
-        let flow = Flow { id: Uuid::new_v4(), name: "Doorbell".into(), enabled: true };
+        let flow = Flow { folder: None, id: Uuid::new_v4(), name: "Doorbell".into(), enabled: true };
         h.engine.set(create_path("flows"), Lifecycle::Persisted, json(&flow)).await.unwrap();
 
         let source = a_node(
@@ -1185,7 +1295,7 @@ mod flows {
         let sequence = a_sequence("Act 1", vec![Uuid::new_v4(), Uuid::new_v4()]);
         h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&sequence)).await.unwrap();
 
-        let flow = Flow { id: Uuid::new_v4(), name: "Panic".into(), enabled: true };
+        let flow = Flow { folder: None, id: Uuid::new_v4(), name: "Panic".into(), enabled: true };
         h.engine.set(create_path("flows"), Lifecycle::Persisted, json(&flow)).await.unwrap();
         let button = a_node(flow.id, FlowNodeKind::Button);
         let act = a_node(
@@ -1408,6 +1518,7 @@ async fn value_of(h: &Harness, fixture_id: Uuid, parameter: &str) -> Option<Para
         types.iter().find(|t| t.id == fixture.fixture_type_id),
         held.get(fixture_id, parameter),
         parameter,
+        &Default::default(),
         pult_schema::types::sequence::now_ms(),
     )
 }
@@ -1720,6 +1831,89 @@ async fn playback_hands_the_patch_to_the_output_plugins() {
         Some(ParameterValue::Float(1.0)),
         "output must see what playback just put on the parameter",
     );
+}
+
+/// Blind: the connectors are handed no programmer, so no lamp sees it, and playback
+/// runs the stage as though the programmer were empty — a cue taken on a key the
+/// programmer holds still starts its fade. Switched off, the programmer is in the push
+/// again and the lamps take it.
+#[tokio::test]
+async fn a_blind_show_hands_the_output_no_programmer() {
+    use crate::infra::connectors::{OutputCommand, OutputHandle};
+
+    let pool = Arc::new(showfile::open_in_memory().await.expect("open in-memory showfile"));
+    let (mut engine, handle, _broadcast) = ShowEngine::new(NodeId(Uuid::new_v4()), pool, None);
+    let (tx, mut output_rx) = tokio::sync::mpsc::channel(64);
+    engine.set_output(OutputHandle(tx));
+    tokio::spawn(engine.run());
+
+    handle
+        .set(
+            vec![PathSegment::Key("show".into())],
+            Lifecycle::Persisted,
+            serde_json::json!({ "id": Uuid::new_v4(), "name": "Blind", "created_at": "2026-10-29T00:00:00Z" }),
+        )
+        .await
+        .unwrap();
+    let fixture = a_fixture("Spot L", 1);
+    let cue = an_intensity_cue(fixture.id, 1.0, 0);
+    let seq = a_sequence("Act 1", vec![cue.id]);
+    handle.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
+    handle.set(create_path("cues"), Lifecycle::Persisted, json(&cue)).await.unwrap();
+    handle.set(create_path("sequences"), Lifecycle::Persisted, json(&seq)).await.unwrap();
+    let entry = serde_json::json!({
+        "id": Uuid::new_v4(),
+        "fixture_id": fixture.id,
+        "parameter_kind": "Intensity",
+        "value": { "type": "Float", "value": 0.2 },
+        "locked": false,
+    });
+    handle.set(create_path("programmer_values"), Lifecycle::Synced, entry).await.unwrap();
+
+    let blind = |on: bool| {
+        handle.set(
+            vec![PathSegment::Key("show".into()), PathSegment::Key("blind".into())],
+            Lifecycle::Synced,
+            serde_json::Value::Bool(on),
+        )
+    };
+    blind(true).await.unwrap();
+    handle
+        .set(field_path("sequences", seq.id, "goNext"), Lifecycle::Synced, serde_json::json!({}))
+        .await
+        .unwrap();
+
+    // The push that carries the cue's fade.
+    let (fixtures, programmer) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while let Some(cmd) = output_rx.recv().await {
+            let OutputCommand::Patch { fixtures, programmer, .. } = cmd else { continue };
+            if fixtures.iter().any(|f| f.live_fades.contains_key("Intensity")) {
+                return (fixtures, programmer);
+            }
+        }
+        panic!("output channel closed");
+    })
+    .await
+    .expect("the cue's fade should reach the plugins");
+    assert!(programmer.is_empty(), "blind: the connectors are handed no programmer");
+    assert_eq!(
+        fixtures[0].live_fades.get("Intensity").map(|fade| fade.to.clone()),
+        Some(ParameterValue::Float(1.0)),
+        "and playback was not held back under the key the programmer holds",
+    );
+
+    blind(false).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while let Some(cmd) = output_rx.recv().await {
+            let OutputCommand::Patch { programmer, .. } = cmd else { continue };
+            if !programmer.is_empty() {
+                return;
+            }
+        }
+        panic!("output channel closed");
+    })
+    .await
+    .expect("switched off, the programmer reaches the plugins again");
 }
 
 #[tokio::test]
@@ -2131,9 +2325,12 @@ mod watching_playback {
         let sequence = a_sequence("Act 1", vec![cue.id]);
         h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&sequence)).await.unwrap();
 
-        let flow = Flow { id: Uuid::new_v4(), name: "Siren".into(), enabled: true };
+        let flow = Flow { folder: None, id: Uuid::new_v4(), name: "Siren".into(), enabled: true };
         h.engine.set(create_path("flows"), Lifecycle::Persisted, json(&flow)).await.unwrap();
         let node = |kind| FlowNode {
+            name: None,
+            due_at: None,
+            disabled: None,
             id: Uuid::new_v4(),
             flow_id: flow.id,
             kind,
@@ -2141,6 +2338,7 @@ mod watching_playback {
             y: 0.0,
             active: false,
             last_fired_at: None,
+            pulsed_at: None,
         };
         let source = node(FlowNodeKind::Source(TriggerSource::Parameter {
             fixture_id: lamp.id,
@@ -2230,9 +2428,12 @@ mod watching_playback {
         let sequence = a_sequence("Act 1", vec![cue.id]);
         h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&sequence)).await.unwrap();
 
-        let flow = Flow { id: Uuid::new_v4(), name: "Siren".into(), enabled: true };
+        let flow = Flow { folder: None, id: Uuid::new_v4(), name: "Siren".into(), enabled: true };
         h.engine.set(create_path("flows"), Lifecycle::Persisted, json(&flow)).await.unwrap();
         let node = |kind| FlowNode {
+            name: None,
+            due_at: None,
+            disabled: None,
             id: Uuid::new_v4(),
             flow_id: flow.id,
             kind,
@@ -2240,6 +2441,7 @@ mod watching_playback {
             y: 0.0,
             active: false,
             last_fired_at: None,
+            pulsed_at: None,
         };
         let source = node(FlowNodeKind::Source(TriggerSource::Parameter {
             fixture_id: watched.id,
@@ -2354,9 +2556,12 @@ mod watching_playback {
         );
 
         // Now one lamp of the two thousand is watched, and the cue is retaken.
-        let flow = Flow { id: Uuid::new_v4(), name: "Siren".into(), enabled: true };
+        let flow = Flow { folder: None, id: Uuid::new_v4(), name: "Siren".into(), enabled: true };
         h.engine.set(create_path("flows"), Lifecycle::Persisted, json(&flow)).await.unwrap();
         let source = FlowNode {
+            name: None,
+            due_at: None,
+            disabled: None,
             id: Uuid::new_v4(),
             flow_id: flow.id,
             kind: FlowNodeKind::Source(TriggerSource::Parameter {
@@ -2367,6 +2572,7 @@ mod watching_playback {
             y: 0.0,
             active: false,
             last_fired_at: None,
+            pulsed_at: None,
         };
         h.engine.set(create_path("flow_nodes"), Lifecycle::Persisted, json(&source)).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
@@ -2784,7 +2990,7 @@ async fn an_empty_showfile_gains_an_operator() {
 }
 
 /// `create_entity` does not check whether the id is already there, so this is the
-/// guard rather than an optimisation: without it every load would rewrite the row,
+/// guard rather than an optimization: without it every load would rewrite the row,
 /// and on a second station replicate "Operator" over a name somebody chose.
 #[tokio::test]
 async fn loading_a_show_that_has_one_writes_nothing() {
@@ -3203,6 +3409,7 @@ mod groups {
             log_watchers: Default::default(),
             sync: None,
             caller: None,
+            acting_for: None,
             clients: None,
             node_id: pult_schema::events::operation::NodeId::new(),
             viewers: Default::default(),
@@ -3211,6 +3418,7 @@ mod groups {
             ws_registry: None,
             shows: crate::ShowsHandle::detached(),
             xchange: None,
+            wing: None,
         }
     }
 
@@ -3228,6 +3436,7 @@ mod groups {
                 term: SelectionTerm::OfType { type_id },
             }],
             order: SelectionOrder::ByName,
+            cells: Vec::new(),
         }
     }
 
@@ -3241,7 +3450,7 @@ mod groups {
             h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
         }
 
-        let group = Group { id: Uuid::new_v4(), name: "Movers".into(), query: of_type(movers) };
+        let group = Group { folder: None, id: Uuid::new_v4(), name: "Movers".into(), query: of_type(movers), color: None };
         h.engine.set(create_path("groups"), Lifecycle::Persisted, json(&group)).await.unwrap();
 
         let resolved = rpcs::dispatch(
@@ -3284,7 +3493,7 @@ mod groups {
 
         // Whereas a group whose query currently matches nothing resolves to nothing.
         let empty =
-            Group { id: Uuid::new_v4(), name: "Nothing".into(), query: of_type(Uuid::new_v4()) };
+            Group { folder: None, id: Uuid::new_v4(), name: "Nothing".into(), query: of_type(Uuid::new_v4()), color: None };
         h.engine.set(create_path("groups"), Lifecycle::Persisted, json(&empty)).await.unwrap();
         let resolved =
             rpcs::dispatch("selection.resolve", json!({ "groupId": empty.id }), &deps(&h.engine))
@@ -3303,7 +3512,7 @@ mod groups {
             .set(create_path("fixtures"), Lifecycle::Persisted, json(&at("Spot", 0.0, type_id)))
             .await
             .unwrap();
-        let group = Group { id: Uuid::new_v4(), name: "Spots".into(), query: of_type(type_id) };
+        let group = Group { folder: None, id: Uuid::new_v4(), name: "Spots".into(), query: of_type(type_id), color: None };
         h.engine.set(create_path("groups"), Lifecycle::Persisted, json(&group)).await.unwrap();
 
         let before = showfile::oplog::len(&h.pool).await.unwrap();
@@ -3346,6 +3555,8 @@ mod groups {
         }
 
         let group = Group {
+            folder: None,
+            color: None,
             id: Uuid::new_v4(),
             name: "Movers".into(),
             query: SelectionQuery {
@@ -3356,6 +3567,7 @@ mod groups {
                 // A hand order, which is exactly the one that used to live in a
                 // browser store and could not travel.
                 order: SelectionOrder::Manual { order: vec![rig[1].id, rig[0].id] },
+                cells: Vec::new(),
             },
         };
         here.engine.set(create_path("groups"), Lifecycle::Persisted, json(&group)).await.unwrap();
@@ -3395,7 +3607,7 @@ mod groups {
         assert_eq!(
             serde_json::from_value::<Vec<Uuid>>(mine).unwrap(),
             vec![rig[1].id, rig[0].id],
-            "and in the order somebody dragged, which travelled inside the query"
+            "and in the order somebody dragged, which traveled inside the query"
         );
     }
 
@@ -3408,6 +3620,8 @@ mod groups {
         let h = harness().await;
         let user = Uuid::new_v4();
         let group = Group {
+            folder: None,
+            color: None,
             id: Uuid::new_v4(),
             name: "Specials".into(),
             query: of_type(Uuid::new_v4()),
@@ -3466,7 +3680,7 @@ mod groups {
         for f in [at("B", 1.0, type_id), at("A", -1.0, type_id)] {
             h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&f)).await.unwrap();
         }
-        let group = Group { id: Uuid::new_v4(), name: "All".into(), query: of_type(type_id) };
+        let group = Group { folder: None, id: Uuid::new_v4(), name: "All".into(), query: of_type(type_id), color: None };
         h.engine.set(create_path("groups"), Lifecycle::Persisted, json(&group)).await.unwrap();
 
         let before =
@@ -3683,6 +3897,7 @@ mod relative {
             phase: 0.0,
             spread: Spread::Even,
             t0: None,
+            template: None,
         });
         h.engine
             .set(create_path("programmer_values"), Lifecycle::Synced, json(&entry))
@@ -3841,7 +4056,7 @@ mod relative {
     }
 
     /// Two stations, one of them showing something else entirely. The one that made
-    /// the nudge decided the number; the other takes it. If the delta travelled, they
+    /// the nudge decided the number; the other takes it. If the delta traveled, they
     /// would part company on the first press.
     #[tokio::test]
     async fn a_peer_showing_something_else_still_lands_on_the_same_number() {
@@ -4278,6 +4493,8 @@ mod home {
                 .await;
 
         let preset = Preset {
+            folder: None,
+            color: None,
             id: Uuid::new_v4(),
             name: "Warm".into(),
             values: vec![PresetValue {
@@ -4865,4 +5082,359 @@ mod pushing_the_rig {
             "last_seen": Utc::now().to_rfc3339(),
         })
     }
+}
+
+// ── Timelines ─────────────────────────────────────────────────────────────────
+
+/// A looping timeline goes round for ever with nothing else happening on the station.
+///
+/// The defect this pins: the pass that acted on an end worked the next deadline out
+/// from the timelines it had read *before* the loop's own Play, where the playhead sat
+/// past the end — so it scheduled no wake at all, and the second lap ran on until
+/// something unrelated woke the engine. A rig view or a fader moving usually did, which
+/// is why it only showed on an idle station.
+#[tokio::test]
+async fn a_loop_goes_round_on_an_idle_station() {
+    use pult_schema::types::timeline::{AtEnd, Timeline, TimelineEnd, TimelineSource};
+    let h = harness().await;
+    let ambience = Timeline {
+        folder: None,
+        id: Uuid::new_v4(),
+        name: "Ambience".into(),
+        clips: Vec::new(),
+        detected: None,
+        source: TimelineSource::Internal,
+        grid: Vec::new(),
+        markers: Vec::new(),
+        events: Vec::new(),
+        tracks: Vec::new(),
+        flashes: None,
+        pending: None,
+        speed_master: None,
+        node_id: None,
+        end: Some(TimelineEnd { at_ms: 200, then: AtEnd::Loop }),
+        running: false,
+        anchor_ms: 0,
+        position_at_anchor_ms: 0,
+        rate: 1.0,
+        recording: None,
+        armed_by: None,
+    };
+    h.engine.set(create_path("timelines"), Lifecycle::Persisted, json(&ambience)).await.unwrap();
+    h.engine
+        .set(field_path("timelines", ambience.id, "play"), Lifecycle::Synced, serde_json::json!({ "fromMs": 0 }))
+        .await
+        .unwrap();
+
+    // Five laps' worth, with nothing at all writing to the station meanwhile.
+    tokio::time::sleep(std::time::Duration::from_millis(1_050)).await;
+    let got: Timeline =
+        serde_json::from_value(h.engine.get(entity_path("timelines", ambience.id)).await.unwrap()).unwrap();
+    let position = got.position_at(pult_schema::types::sequence::now_ms());
+    assert!(got.running);
+    assert!(position < 200 + 50, "still going round rather than running on: at {position} ms");
+}
+
+/// A station already running when the session formed sends its row as a replace,
+/// never as the create it made before there was anybody to tell. The lifecycle is
+/// worked out from the path on arrival, as the sync layer does, and the row is taken.
+#[tokio::test]
+async fn a_peers_station_row_is_seen_without_its_create() {
+    use pult_schema::events::operation::{Operation, VectorClock};
+    use pult_schema::types::station::Station;
+
+    let h = harness().await;
+    let id = Uuid::new_v4();
+    let station = Station {
+        id,
+        hostname: "pi".into(),
+        is_leader: false,
+        sync_addr: "10.0.0.6:7701".into(),
+        http_addr: "10.0.0.6:7700".into(),
+        broker_addr: String::new(),
+        broker_doors: Vec::new(),
+        cpu_percent: 0.0,
+        mem_used: 0,
+        mem_total: 0,
+        uptime_s: 0,
+        output_plugins: Vec::new(),
+        computes_fixtures: 0,
+        total_fixtures: 0,
+        frame_costs: Vec::new(),
+        machine: Default::default(),
+        audio_cache: Default::default(),
+        net_received: 0,
+        net_sent: 0,
+        net_window_ms: 0,
+        clock: Default::default(),
+        sacn_slot: None,
+        wing: None,
+        last_seen: Utc::now(),
+    };
+    let path = vec![PathSegment::Key("stations".into()), PathSegment::Id(id)];
+    let op = Operation {
+        id: Uuid::new_v4(),
+        node_id: NodeId(id),
+        seq: 1,
+        clock: VectorClock::default(),
+        lifecycle: pult_schema::registry::path_lifecycle(&path),
+        path: path.clone(),
+        value: json(&station),
+        timestamp: Utc::now(),
+        user_id: None,
+        previous: None,
+        undoes: None,
+        gesture: None,
+    };
+    h.engine.0.send(EngineCommand::ApplyPeerOperation(op)).await.unwrap();
+    assert_eq!(h.engine.get(path).await.unwrap()["hostname"], "pi");
+}
+
+// ── Recording a sequence act onto a timeline ─────────────────────────────────
+
+mod recording_sequence_acts {
+    use super::*;
+    use pult_schema::types::timeline::{RecordSource, Timeline, TimelineAction, TimelineSource};
+
+    fn a_timeline(recording: Option<RecordSource>) -> Timeline {
+        Timeline {
+            folder: None,
+            id: Uuid::new_v4(),
+            name: "Song".into(),
+            clips: Vec::new(),
+            detected: None,
+            source: TimelineSource::Internal,
+            grid: Vec::new(),
+            markers: Vec::new(),
+            events: Vec::new(),
+            tracks: Vec::new(),
+            flashes: None,
+            pending: None,
+            speed_master: None,
+            node_id: None,
+            end: None,
+            running: true,
+            anchor_ms: pult_schema::types::sequence::now_ms(),
+            position_at_anchor_ms: 5_000,
+            rate: 1.0,
+            recording,
+            armed_by: None,
+        }
+    }
+
+    async fn a_sequence_with_two_cues(h: &Harness) -> (Sequence, Cue, Cue) {
+        let (one, two) = (a_cue("One", 1.0), a_cue("Two", 2.0));
+        for cue in [&one, &two] {
+            h.engine.set(create_path("cues"), Lifecycle::Persisted, json(cue)).await.unwrap();
+        }
+        let sequence = a_sequence("Act", vec![one.id, two.id]);
+        h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&sequence)).await.unwrap();
+        (sequence, one, two)
+    }
+
+    async fn events_of(h: &Harness, id: Uuid) -> Vec<pult_schema::types::timeline::TimelineEvent> {
+        serde_json::from_value(h.engine.get(field_path("timelines", id, "events")).await.unwrap()).unwrap()
+    }
+
+    /// A Go pressed while a timeline records from the programmer waits with the take, at
+    /// the playhead and naming the cue it went to — and an Off is an Off. Nothing reaches
+    /// the timeline's events until the take is answered: it used to, and was the one
+    /// thing a take caught that skipped the review.
+    #[tokio::test]
+    async fn a_go_and_an_off_while_recording_wait_with_the_take() {
+        let h = harness().await;
+        let (sequence, one, _) = a_sequence_with_two_cues(&h).await;
+        let timeline = a_timeline(Some(RecordSource::Programmer { release: true }));
+        h.engine.set(create_path("timelines"), Lifecycle::Persisted, json(&timeline)).await.unwrap();
+
+        let user = Uuid::new_v4();
+        let go = field_path("sequences", sequence.id, "goNext");
+        h.engine.set_as(user, None, go, Lifecycle::Synced, serde_json::json!({})).await.unwrap();
+        let off = field_path("sequences", sequence.id, "off");
+        h.engine.set_as(user, None, off, Lifecycle::Synced, serde_json::json!({})).await.unwrap();
+
+        assert!(events_of(&h, timeline.id).await.is_empty(), "not on the timeline yet");
+        let pending: Option<pult_schema::types::timeline::PendingTake> =
+            serde_json::from_value(h.engine.get(field_path("timelines", timeline.id, "pending")).await.unwrap()).unwrap();
+        let events = pending.expect("a take is waiting").events;
+        assert_eq!(events.len(), 2, "{events:?}");
+        assert_eq!(events[0].action, TimelineAction::GoToCue { sequence_id: sequence.id, cue_id: one.id });
+        assert_eq!(events[1].action, TimelineAction::Off { sequence_id: sequence.id });
+        assert!(events[0].at_ms >= 5_000, "at the playhead, which started at 5 s");
+    }
+
+    /// Not recording, or recording from an input, leaves the timeline alone.
+    #[tokio::test]
+    async fn a_go_with_nothing_recording_writes_nothing() {
+        let h = harness().await;
+        let (sequence, _, _) = a_sequence_with_two_cues(&h).await;
+        let idle = a_timeline(None);
+        let from_input = a_timeline(Some(RecordSource::Input(Uuid::new_v4())));
+        for t in [&idle, &from_input] {
+            h.engine.set(create_path("timelines"), Lifecycle::Persisted, json(t)).await.unwrap();
+        }
+        let go = field_path("sequences", sequence.id, "goNext");
+        h.engine.set_as(Uuid::new_v4(), None, go, Lifecycle::Synced, serde_json::json!({})).await.unwrap();
+        assert!(events_of(&h, idle.id).await.is_empty());
+        assert!(events_of(&h, from_input.id).await.is_empty());
+        for t in [&idle, &from_input] {
+            let pending = h.engine.get(field_path("timelines", t.id, "pending")).await.unwrap();
+            assert!(pending.is_null(), "nothing waits either: {pending}");
+        }
+    }
+}
+
+// ── A Play on a timeline that streams to a node ──────────────────────────────
+
+mod streamed_play {
+    use super::*;
+    use pult_schema::types::timeline::{
+        AudioClip, AudioDestination, NodeAudioMode, Timeline, TimelineSource, STREAM_LEAD_MS,
+    };
+
+    fn a_timeline(destination: AudioDestination) -> Timeline {
+        Timeline {
+            folder: None,
+            id: Uuid::new_v4(),
+            name: "Scare".into(),
+            clips: vec![AudioClip {
+                id: Uuid::new_v4(),
+                name: "Scream".into(),
+                asset: "00".into(),
+                peaks: None,
+                start_ms: 0,
+                offset_ms: 0,
+                length_ms: None,
+                gain_db: 0.0,
+                fade_in_ms: 0,
+                fade_out_ms: 0,
+                repeats: 1,
+                stored: false,
+                destination,
+            }],
+            detected: None,
+            source: TimelineSource::Internal,
+            grid: Vec::new(),
+            markers: Vec::new(),
+            events: Vec::new(),
+            tracks: Vec::new(),
+            flashes: None,
+            pending: None,
+            speed_master: None,
+            node_id: None,
+            end: None,
+            running: false,
+            anchor_ms: 0,
+            position_at_anchor_ms: 0,
+            rate: 1.0,
+            recording: None,
+            armed_by: None,
+        }
+    }
+
+    async fn played_at(h: &Harness, timeline: &Timeline, at: u64) -> u64 {
+        h.engine.set(create_path("timelines"), Lifecycle::Persisted, json(timeline)).await.unwrap();
+        let play = field_path("timelines", timeline.id, "play");
+        h.engine.set_as(Uuid::new_v4(), None, play, Lifecycle::Synced, serde_json::json!({ "at": at })).await.unwrap();
+        h.engine.get(field_path("timelines", timeline.id, "anchor_ms")).await.unwrap().as_u64().unwrap()
+    }
+
+    /// A stream is heard a delay after it starts, so a Play anchored at the press lost
+    /// the clip's head on the node. It is anchored the lead ahead instead.
+    #[tokio::test]
+    async fn a_play_that_streams_to_a_node_is_anchored_where_the_stream_is_heard() {
+        let h = harness().await;
+        let now = pult_schema::types::sequence::now_ms();
+        let streamed = a_timeline(AudioDestination::Node { serial: "gate".into(), mode: NodeAudioMode::Stream });
+        assert!(played_at(&h, &streamed, now).await >= now + STREAM_LEAD_MS);
+
+        // A count-in already further ahead is left alone.
+        let counted = a_timeline(AudioDestination::Node { serial: "gate".into(), mode: NodeAudioMode::Stream });
+        assert_eq!(played_at(&h, &counted, now + 3_000).await, now + 3_000);
+
+        // A clip played from the node's flash is scheduled ahead by the node itself.
+        let stored = a_timeline(AudioDestination::Node { serial: "gate".into(), mode: NodeAudioMode::Clip });
+        assert_eq!(played_at(&h, &stored, now).await, now);
+    }
+}
+
+/// A station restarted on its own showfile counts on from where its log got to. It
+/// used to start again from zero: the next write collided with a row from early in
+/// the show (`UNIQUE` on `(node_id, seq)`, toasted and lost), and a peer that had
+/// seen the higher numbers would take every new one as already seen.
+#[tokio::test]
+async fn a_restarted_station_counts_on_from_where_its_log_got_to() {
+    let pool = Arc::new(showfile::open_in_memory().await.expect("open in-memory showfile"));
+    let me = NodeId(Uuid::new_v4());
+    let start = || async {
+        let (engine, handle, _broadcast) = ShowEngine::new(me, pool.clone(), None);
+        tokio::spawn(engine.run());
+        let _ = handle.0.send(EngineCommand::LoadFromShowfile).await;
+        let _ = handle.get(key("show")).await;
+        handle
+    };
+    let first = start().await;
+    for n in 0..5 {
+        first
+            .set(field_path("users", User::DEFAULT_ID, "name"), Lifecycle::Persisted, serde_json::json!(format!("Sam {n}")))
+            .await
+            .unwrap();
+    }
+    let _ = first.0.send(EngineCommand::Stop).await;
+    let before = showfile::oplog::clock(&pool).await.unwrap().0[&me];
+
+    let second = start().await;
+    second
+        .set(field_path("users", User::DEFAULT_ID, "name"), Lifecycle::Persisted, serde_json::json!("Alex"))
+        .await
+        .expect("the write after a restart reaches the log");
+    let after = showfile::oplog::clock(&pool).await.unwrap().0[&me];
+    assert!(after > before, "numbered past {before}, not from zero: {after}");
+}
+
+/// A restarted leader takes what is running from a follower and keeps its own show: a
+/// follower that never heard of a rename must not take it back.
+#[test]
+fn what_is_running_is_laid_over_the_show_and_leaves_it_alone() {
+    let id = Uuid::new_v4();
+    let cue = Uuid::new_v4();
+    let mut ours = serde_json::json!({
+        "sequences": { id.to_string(): { "id": id, "name": "Renamed", "cue_ids": [cue], "active_cue_index": null } },
+        "programmer_values": {},
+    });
+    let theirs = serde_json::json!({
+        "sequences": {
+            id.to_string(): { "id": id, "name": "Old name", "cue_ids": [cue], "active_cue_index": 0 },
+            Uuid::new_v4().to_string(): { "name": "Only theirs" },
+        },
+        "programmer_values": { "k": { "value": 1 } },
+    });
+    super::running_state_over(ours.as_object_mut().unwrap(), theirs.as_object().unwrap());
+    let row = &ours["sequences"][id.to_string()];
+    assert_eq!(row["name"], "Renamed", "the show is this station's");
+    assert_eq!(row["active_cue_index"], 0, "what is running is theirs");
+    assert_eq!(ours["sequences"].as_object().unwrap().len(), 1, "a create arrives as an operation");
+    assert_eq!(ours["programmer_values"]["k"]["value"], 1, "a SYNCED collection is theirs whole");
+}
+
+/// A row a peer hands back with what is running is in its collection, not only by id.
+///
+/// The running state replaces a SYNCED-only collection whole, and a collection is read
+/// through its order: a restarted leader got its own `stations` row back from the
+/// follower that still held it, could read it by id, and drew itself as offline
+/// because the collection did not list it (HHG, 2026-10-28).
+#[tokio::test]
+async fn a_row_handed_back_with_the_running_state_is_listed() {
+    use pult_schema::types::devices::NodeHealthReport;
+    let peer = harness().await;
+    let row = NodeHealthReport { id: Uuid::new_v4(), driving: true, nodes: Default::default() };
+    peer.engine.set(create_path("node_health"), Lifecycle::Synced, json(&row)).await.unwrap();
+    let running = peer.engine.get_snapshot().await;
+
+    let h = harness().await;
+    h.engine.apply_running_state(running).await;
+    let one = h.engine.get(entity_path("node_health", row.id)).await.unwrap();
+    assert_eq!(one["driving"], true);
+    let all = h.engine.get(key("node_health")).await.unwrap();
+    assert_eq!(all.as_array().map(Vec::len), Some(1), "listed, not only there by id");
 }

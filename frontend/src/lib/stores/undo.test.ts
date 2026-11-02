@@ -22,7 +22,7 @@ describe('what a keystroke means', () => {
 		expect(shortcutFor(press('y', { ctrlKey: true }), false)).toBe('redo');
 	});
 
-	it('takes the key however it is capitalised', () => {
+	it('takes the key however it is capitalized', () => {
 		expect(shortcutFor(press('Z', { metaKey: true }), false)).toBe('undo');
 	});
 

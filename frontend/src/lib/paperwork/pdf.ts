@@ -3,7 +3,7 @@
  *
  * The only renderer with arithmetic in it, and all of the arithmetic is one flip. PDF
  * measures in points from the *bottom* left with y upwards; the drawing model measures
- * in millimetres from the top left with y downwards. So every y becomes
+ * in millimeters from the top left with y downwards. So every y becomes
  * `(height - y) · mm`, and nothing else about a page changes between the preview and
  * the file.
  *
@@ -19,10 +19,10 @@ import { degrees, PDFDocument, rgb, type PDFFont, type PDFPage } from 'pdf-lib';
 import type { DrawItem, Drawing, Mm } from './drawing.js';
 import { textOrigin, type Metrics } from './font.js';
 
-/** Points per millimetre. */
+/** Points per millimeter. */
 export const MM = 72 / 25.4;
 
-function colour(hex: string) {
+function color(hex: string) {
 	const value = hex.replace('#', '');
 	const full =
 		value.length === 3
@@ -57,10 +57,10 @@ function place(item: DrawItem, page: PDFPage, height: Mm, faces: Faces, metrics:
 				x: 0,
 				y: height * MM,
 				scale: 1,
-				borderColor: item.stroke ? colour(item.stroke.color) : undefined,
+				borderColor: item.stroke ? color(item.stroke.color) : undefined,
 				borderWidth: item.stroke ? item.stroke.width * MM : 0,
 				borderDashArray: item.stroke?.dash?.map((d) => d * MM),
-				color: item.fill ? colour(item.fill) : undefined
+				color: item.fill ? color(item.fill) : undefined
 			});
 		}
 		return;
@@ -82,7 +82,7 @@ function place(item: DrawItem, page: PDFPage, height: Mm, faces: Faces, metrics:
 		y: up(y),
 		size: item.size * MM,
 		font,
-		color: colour(item.color ?? '#000000'),
+		color: color(item.color ?? '#000000'),
 		rotate: item.rotate ? degrees(-item.rotate) : undefined
 	});
 }

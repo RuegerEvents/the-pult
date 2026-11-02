@@ -57,7 +57,6 @@
 
 <style>
 	.prompt {
-		padding: 16px;
 		max-width: 46ch;
 	}
 	p { margin: 0 0 12px; color: #ccc; font-size: 13px; line-height: 1.5; }

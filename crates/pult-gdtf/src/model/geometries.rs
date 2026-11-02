@@ -22,7 +22,7 @@ pub struct Geometries {
 
 /// One node of the geometry tree.
 ///
-/// Every kind the spec names, because an unrecognised element inside `<Geometries>`
+/// Every kind the spec names, because an unrecognized element inside `<Geometries>`
 /// stops the parse dead — there is no lenient position to fall back to when the
 /// children are a `$value` list.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -200,7 +200,7 @@ pub struct Beam {
         deserialize_with = "de_number_opt"
     )]
     pub rectangle_ratio: Option<f32>,
-    /// Metres, at the aperture.
+    /// Meters, at the aperture.
     #[serde(
         rename = "@BeamRadius",
         default,

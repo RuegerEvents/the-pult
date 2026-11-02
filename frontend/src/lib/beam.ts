@@ -28,7 +28,7 @@
  *   the edges fade to nothing over most of the width. Down the barrel the power
  *   goes to zero and the whole disc lights up, which is the flare a lamp gives when
  *   it catches your eye. One term, both effects.
- * - **attenuation** along the throw, in metres, and steeper for a wider beam: a
+ * - **attenuation** along the throw, in meters, and steeper for a wider beam: a
  *   wash thins out where a beam carries. Not inverse-square, which goes to nothing
  *   far too fast to read on a screen.
  * - **haze**, below.
@@ -38,7 +38,7 @@
  * shader with no post-processing chain — the prior art this technique came from
  * credits a post-processing library in its README and has none in its source, and
  * the cheaper lesson is the one worth taking. The fragment's alpha is one: with
- * additive blending the source colour is scaled by its alpha, and writing the
+ * additive blending the source color is scaled by its alpha, and writing the
  * strength there as well squared everything and made every beam a ghost.
  *
  * ## Haze
@@ -58,10 +58,10 @@
  * A cone from a point reads as a pin. Light leaves a lantern across the width of
  * its lens, so the radius at the origin is the lens and widens from there.
  *
- * ## Colour is scaled in HSV, value only
+ * ## Color is scaled in HSV, value only
  *
  * A dim beam keeps its hue. Scaling RGB towards black crushes a saturated blue
- * towards grey on the way down, which is exactly backwards from what a real dimmer
+ * towards gray on the way down, which is exactly backwards from what a real dimmer
  * does and makes every fade end looking wrong.
  */
 
@@ -80,7 +80,7 @@ const RADIAL_SEGMENTS = 32;
  */
 const HEIGHT_SEGMENTS = 1;
 
-/** Radius of the lens the beam leaves, in metres. The width of the beam at the lantern. */
+/** Radius of the lens the beam leaves, in meters. The width of the beam at the lantern. */
 export const LENS_RADIUS = 0.1;
 
 /**
@@ -120,7 +120,7 @@ const VERTEX = /* glsl */ `
 	varying vec3 vColor;
 	varying float vLevel;
 	varying float vAlong;      // 0 at the lantern, 1 at the far end
-	varying float vLength;     // the throw, in metres
+	varying float vLength;     // the throw, in meters
 	varying float vSpread;
 	varying vec3 vWorld;
 	varying vec3 vAxis;        // the beam's direction, in world space
@@ -134,7 +134,7 @@ const VERTEX = /* glsl */ `
 		vSpread = beamSpread;
 
 		// The cone, made here rather than in a geometry. The radius starts at the
-		// lens and grows by tan(angle) per metre of throw, which is the entire trick:
+		// lens and grows by tan(angle) per meter of throw, which is the entire trick:
 		// changing a zoom changes an attribute, and no buffer is rebuilt.
 		float radius = uLensRadius + along * beamSpread * beamLength;
 		vec3 shaped = vec3(position.x * radius, position.y * beamLength, position.z * radius);
@@ -144,7 +144,7 @@ const VERTEX = /* glsl */ `
 
 		// The cone's own normal, worked out rather than read off the geometry — the
 		// geometry is a cylinder, and this vertex is no longer on it. A cone whose
-		// radius grows by beamSpread per metre has a normal leaning back along the
+		// radius grows by beamSpread per meter has a normal leaning back along the
 		// axis by the same amount. Interpolated across the face, so the surface
 		// reads as round rather than as the thirty-two flat strips it is made of.
 		vec3 radial = normalize(vec3(position.x, 0.0, position.z));
@@ -183,7 +183,7 @@ const FRAGMENT = /* glsl */ `
 
 	// ── Turbulence, four octaves of value noise ──────────────────────────────
 	// Sampled in world space with time as the third axis, so the haze drifts through
-	// the room rather than travelling with the beam. Turbulence rather than plain
+	// the room rather than traveling with the beam. Turbulence rather than plain
 	// noise: the absolute value of a signed field folds it into streaks, which is
 	// what haze in a beam looks like, where smooth noise is blobs.
 	float hash(vec3 p) {
@@ -231,10 +231,10 @@ const FRAGMENT = /* glsl */ `
 		float facing = abs(dot(normal, toEye));
 		float silhouette = pow(facing, 4.0 * sideOn);
 
-		// 2. Attenuation along the throw, in metres. Steeper for a wider beam, so a
+		// 2. Attenuation along the throw, in meters. Steeper for a wider beam, so a
 		//    wash thins where a beam carries — the spread is tan of the half-angle.
-		float metres = vAlong * vLength;
-		float attenuation = 1.3 / (1.0 + 0.5 * metres + 0.9 * vSpread * metres * metres);
+		float meters = vAlong * vLength;
+		float attenuation = 1.3 / (1.0 + 0.5 * meters + 0.9 * vSpread * meters * meters);
 
 		float intensity = silhouette * attenuation;
 
@@ -254,12 +254,12 @@ const FRAGMENT = /* glsl */ `
 
 		// Fade out over the last stretch above the deck rather than clipping through
 		// it. A beam that ends in a hard disc where it meets the floor reads as a
-		// modelling error, which is what it is.
+		// modeling error, which is what it is.
 		strength *= smoothstep(0.0, 0.45, vWorld.y - uFloorY);
 
 		if (strength <= 0.001) discard;
 
-		// Alpha is one: additive blending scales the colour by it, and putting the
+		// Alpha is one: additive blending scales the color by it, and putting the
 		// strength there as well squares every beam into a ghost.
 		gl_FragColor = vec4(vColor * strength * uGain, 1.0);
 	}
@@ -308,7 +308,7 @@ export function beamMaterial(): THREE.ShaderMaterial & { uniforms: BeamUniforms 
  *
  * Where the beam shader answers "what is in the air", this answers "where is
  * everything pointing" and nothing else — a translucent cone in the fixture's
- * colour, with no haze, no attenuation and no addition. Ordinary alpha blending,
+ * color, with no haze, no attenuation and no addition. Ordinary alpha blending,
  * so a hundred cones crossing stay a hundred cones rather than going to white, and
  * a fragment shader of six lines, so a machine short of GPU has a mode that costs
  * it almost nothing. Shares the vertex shader, because the cone *is* the vertex
@@ -352,15 +352,15 @@ export function coneMaterial(): THREE.ShaderMaterial & { uniforms: BeamUniforms 
 }
 
 /**
- * Scale a colour's *value* only, keeping its hue and saturation.
+ * Scale a color's *value* only, keeping its hue and saturation.
  *
- * The reason this is not `colour.multiplyScalar(level)`: scaling RGB drags a
- * saturated colour towards grey as it dims, so a deep blue fading out goes pale
+ * The reason this is not `color.multiplyScalar(level)`: scaling RGB drags a
+ * saturated color towards gray as it dims, so a deep blue fading out goes pale
  * before it goes dark. A real dimmer does not do that, and neither does this.
  */
-export function dimKeepingHue(colour: THREE.Color, level: number, into: THREE.Color): THREE.Color {
+export function dimKeepingHue(color: THREE.Color, level: number, into: THREE.Color): THREE.Color {
 	const hsl = { h: 0, s: 0, l: 0 };
-	colour.getHSL(hsl);
+	color.getHSL(hsl);
 	into.setHSL(hsl.h, hsl.s, hsl.l * Math.max(0, Math.min(1, level)));
 	return into;
 }
@@ -372,7 +372,7 @@ export function dimKeepingHue(colour: THREE.Color, level: number, into: THREE.Co
  * `pult-render`** on purpose. A strobe channel carries a *rate*: the console sends
  * the byte and the fixture does the flashing, so there is nothing for the evaluator
  * to work out and no corpus case to keep two compilations agreeing about. What the
- * visualiser has to do is synthesise the flash so an operator can see what they set,
+ * visualizer has to do is synthesise the flash so an operator can see what they set,
  * which is a fact about the picture and not about the rig.
  *
  * `rate` is the parameter's own 0-1. Zero means not strobing, and the beam is simply

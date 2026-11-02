@@ -31,9 +31,9 @@
 	}: {
 		sheetId: string;
 		blocks: SheetBlock[];
-		/** Millimetres to CSS pixels: the preview's own scale. */
+		/** Millimeters to CSS pixels: the preview's own scale. */
 		zoom: number;
-		/** The sheet's size in millimetres, so a block cannot be dragged off it. */
+		/** The sheet's size in millimeters, so a block cannot be dragged off it. */
 		paper: { w: number; h: number };
 		selected: number | null;
 		onSelect: (index: number | null) => void;
@@ -79,7 +79,7 @@
 
 	function moved(event: PointerEvent) {
 		if (!drag) return;
-		// In millimetres from the start, so the arithmetic is in the model's own units
+		// In millimeters from the start, so the arithmetic is in the model's own units
 		// and a zoom change mid-drag cannot make the block jump.
 		const dx = (event.clientX - drag.startX) / zoom;
 		const dy = (event.clientY - drag.startY) / zoom;

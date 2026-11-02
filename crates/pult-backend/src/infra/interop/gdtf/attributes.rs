@@ -7,13 +7,13 @@
 //!
 //! Two rules, and they are what keep the table honest.
 //!
-//! **A colour is one parameter, not three.** `ColorAdd_R`, `_G`, `_B`, `_W`, `_WW`,
+//! **A color is one parameter, not three.** `ColorAdd_R`, `_G`, `_B`, `_W`, `_WW`,
 //! `_A`, `_L`, `_UV` and the subtractive `ColorSub_C/M/Y` are all the fixture's
-//! colour, and the console holds one `Color` over them with a level per emitter. A
+//! color, and the console holds one `Color` over them with a level per emitter. A
 //! reader that made three parameters would give an operator three faders where every
 //! other console gives a picker.
 //!
-//! **Anything unrecognised keeps its own name.** `ParameterKind::Named` carries the
+//! **Anything unrecognized keeps its own name.** `ParameterKind::Named` carries the
 //! GDTF attribute verbatim, so a fixture with a channel nobody has thought about is
 //! patchable, controllable and storable in a cue on the day it arrives. Dropping it
 //! would be the console deciding a light cannot do something the light says it can.
@@ -21,7 +21,7 @@
 use pult_gdtf::model::PhysicalUnit as GdtfUnit;
 use pult_schema::types::fixture::{ParameterKind, PhysicalUnit};
 
-/// Which of a fixture's emitters a colour attribute drives, and which way.
+/// Which of a fixture's emitters a color attribute drives, and which way.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ColorChannel {
     /// The emitter's name, as the console spells it: `Red`, `White`, `Cyan`.
@@ -30,7 +30,7 @@ pub struct ColorChannel {
     pub subtractive: bool,
 }
 
-/// The colour channel this attribute is, if it is one.
+/// The color channel this attribute is, if it is one.
 pub fn color_channel(attribute: &str) -> Option<ColorChannel> {
     let additive = |emitter| Some(ColorChannel { emitter, subtractive: false });
     let subtractive = |emitter| Some(ColorChannel { emitter, subtractive: true });
@@ -78,9 +78,11 @@ pub fn kind_for(attribute: &str) -> Option<ParameterKind> {
         // points on one scale and a console that treated them as one would make a
         // strobe rate reachable only by finding it inside a shutter fader.
         "Shutter1" | "Shutter2" | "Shutter3" => ParameterKind::Shutter,
-        "Shutter1Strobe" | "StrobeFrequency" | "StrobeDuration" | "StrobeRate" => {
-            ParameterKind::Strobe
-        }
+        "Shutter1Strobe" | "StrobeFrequency" | "StrobeRate" => ParameterKind::Strobe,
+        // How long each flash lasts, not how often: a channel of its own beside the
+        // rate on a Martin Atomic 3000, and folded into `Strobe` it took the rate's
+        // value. Kept by its own name, like any attribute with no kind here.
+        "StrobeDuration" => ParameterKind::Named("StrobeDuration".into()),
         _ => return indexed(attribute),
     })
 }
@@ -149,7 +151,7 @@ pub fn unit_for(unit: GdtfUnit) -> PhysicalUnit {
         GdtfUnit::Time => PhysicalUnit::Seconds,
         GdtfUnit::Frequency => PhysicalUnit::Hertz,
         GdtfUnit::Temperature => PhysicalUnit::Kelvin,
-        GdtfUnit::Length => PhysicalUnit::Metres,
+        GdtfUnit::Length => PhysicalUnit::Meters,
         GdtfUnit::Power => PhysicalUnit::Watts,
         _ => PhysicalUnit::None,
     }
@@ -188,10 +190,13 @@ pub fn attribute_for(kind: &ParameterKind) -> String {
         ParameterKind::Humidity => "Control1".into(),
         ParameterKind::AirQuality => "Control1".into(),
         ParameterKind::Text => "Control1".into(),
+        // A cell's attribute is its parameter's: GDTF says which cell by the geometry
+        // a channel sits on, never by the attribute name.
+        ParameterKind::Cell { of, .. } => attribute_for(of),
     }
 }
 
-/// The emitter name a colour attribute drives, for export.
+/// The emitter name a color attribute drives, for export.
 pub fn color_attribute_for(emitter: &str) -> String {
     match emitter {
         "Red" => "ColorAdd_R",
@@ -225,7 +230,7 @@ mod tests {
     }
 
     #[test]
-    fn every_colour_channel_is_the_one_colour_parameter() {
+    fn every_color_channel_is_the_one_color_parameter() {
         for attribute in ["ColorAdd_R", "ColorAdd_W", "ColorSub_C", "ColorAdd_UV"] {
             assert_eq!(kind_for(attribute), Some(ParameterKind::ColorRgb), "{attribute}");
         }

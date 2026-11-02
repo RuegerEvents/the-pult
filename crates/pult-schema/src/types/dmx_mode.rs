@@ -46,7 +46,7 @@ impl DmxMode {
 
     /// Whether this mode carries the named parameter at all.
     ///
-    /// What the programmer greys a control out on: a head in its basic mode has no
+    /// What the programmer grays a control out on: a head in its basic mode has no
     /// zoom, and offering one that goes nowhere is worse than saying it is not there.
     pub fn has(&self, parameter_key: &str) -> bool {
         self.channels
@@ -76,9 +76,9 @@ pub struct DmxChannelLayout {
     /// The named ranges of this channel, in order. Empty for a plain continuous one.
     #[serde(default)]
     pub functions: Vec<ChannelFunctionRange>,
-    /// For a colour parameter, which emitter of the type this byte carries.
+    /// For a color parameter, which emitter of the type this byte carries.
     ///
-    /// A colour is one parameter and several channels — an RGBW head has four — so
+    /// A color is one parameter and several channels — an RGBW head has four — so
     /// the layout entry that says "this byte is the white one" is what lets one
     /// `Color` value become four bytes without the connector guessing an order.
     #[serde(default)]

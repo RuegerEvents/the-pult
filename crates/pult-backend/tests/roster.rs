@@ -60,7 +60,62 @@ impl Station {
         })
         .await
         .expect("station starts");
-        Station { running, show }
+        let station = Station { running, show };
+        station.without_the_builtin().await;
+        station
+    }
+
+    /// Take the built-in command line back out, so every test starts from the empty
+    /// roster it is written against.
+    ///
+    /// A show with no plugins at all is given the command line when it opens
+    /// (`plugins::builtin::equip`, on a task), so a fresh show is not empty a moment
+    /// later. Waited for and then removed rather than raced: `equip` runs once per open,
+    /// and a row it wrote after a test had started would be a second `command-line`
+    /// beside the one the test installed.
+    async fn without_the_builtin(&self) {
+        let rows = || async {
+            self.running
+                .engine
+                .get(vec![PathSegment::Key("plugin_packages".into())])
+                .await
+                .ok()
+                .and_then(|v| v.as_array().cloned())
+                .unwrap_or_default()
+        };
+        let mut found = Vec::new();
+        for _ in 0..200 {
+            found = rows().await;
+            if !found.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        for row in found {
+            let Some(id) = row["id"].as_str().and_then(|id| id.parse::<uuid::Uuid>().ok()) else { continue };
+            self.running
+                .engine
+                .set(
+                    vec![
+                        PathSegment::Key("plugin_packages".into()),
+                        PathSegment::Id(id),
+                        PathSegment::Key("__delete".into()),
+                    ],
+                    Lifecycle::Persisted,
+                    json!({}),
+                )
+                .await
+                .expect("the built-in comes out");
+        }
+        // And out of the runtime, which follows the roster a moment later. Only the
+        // built-in: a station given a plugin directory runs that as well.
+        for _ in 0..400 {
+            if !self.plugins().await.iter().any(|p| p["id"] == "command-line") {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("the built-in command line never stopped");
     }
 
     /// Put a package in the show's roster.
@@ -777,7 +832,7 @@ async fn removing_a_plugin_is_an_ordinary_edit_and_takes_back_like_one() {
         .set(
             vec![PathSegment::Key("users".into()), PathSegment::Key("__create".into())],
             Lifecycle::Persisted,
-            json!({ "id": user, "name": "Operator", "colour": "#ff0000" }),
+            json!({ "id": user, "name": "Operator", "color": "#ff0000" }),
         )
         .await
         .expect("a user");

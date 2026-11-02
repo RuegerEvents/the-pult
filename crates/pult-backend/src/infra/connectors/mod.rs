@@ -3,7 +3,7 @@
 //! The spec calls for output plugins that translate high-level data into whatever
 //! protocol a fixture speaks, with network-based communication preferred over
 //! DMX-centric workflows. So the shape here is a plugin trait and a manager, and
-//! Art-Net is one implementation of that trait rather than the centre of it.
+//! Art-Net is one implementation of that trait rather than the center of it.
 //!
 //! Which plugins exist is show data. [`OutputManager`] is handed the `outputs`
 //! collection and reconciles what it is running against it, so an output can be
@@ -22,7 +22,7 @@ use pult_schema::{
         fixture::{Fixture, FixtureType},
         network::NetService,
         output::{
-            OutputConfig, OutputCoverage, OutputKind, OutputSection, OutputStatus, OutputStatuses,
+            ChannelTest, OutputConfig, OutputCoverage, OutputKind, OutputSection, OutputStatus, OutputStatuses,
             OutputView,
         },
         programmer::ProgrammerValue,
@@ -35,6 +35,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 pub mod artnet;
+pub mod channel_tests;
 pub mod dmx;
 pub mod input;
 pub mod openhaunt;
@@ -46,6 +47,7 @@ use crate::{
     infra::devices::{DeviceDirectory, DeviceHandle},
 };
 use dmx::Patch;
+use pult_schema::types::sequence::Masters;
 pub use viewers::{Ask, Viewers};
 
 /// How often a viewer is drawn while somebody is watching.
@@ -177,6 +179,13 @@ pub trait OutputPlugin: Send {
     /// around, as the DMX family's is in its dedup cache, has nothing to do here.
     fn watched(&mut self, _watching: bool) {}
 
+    /// Somebody is forcing these channels, or has stopped (an empty test).
+    ///
+    /// Told the *whole* test every time, which replaces the last, so a connector
+    /// keeps one value and no history. Only the DMX family has anything to do: a
+    /// protocol with no channels has nothing a channel number could mean.
+    fn set_test(&mut self, _test: &ChannelTest) {}
+
     /// What this connector is putting on the wire, drawn for a viewer.
     ///
     /// Called at [`VIEW_MS`] and only while watched, never on the frame path. `focus`
@@ -208,10 +217,18 @@ pub enum OutputCommand {
         /// layer like the rest: a connector holding a patch is holding everything
         /// that decides what leaves this station.
         timelines: Vec<Timeline>,
+        /// The sequences' playback faders, which dim what those sequences play.
+        masters: Masters,
         changed: Vec<Uuid>,
     },
     /// The `outputs` collection changed. Reconcile against it.
     Configure(Vec<OutputConfig>),
+    /// What these parameters are doing now, from the patch the connectors draw from:
+    /// one number each, for a wing's motors. See [`dmx::Patch::value_of`].
+    Values {
+        asks: Vec<(Uuid, String)>,
+        reply: tokio::sync::oneshot::Sender<Vec<Option<pult_schema::types::fixture::ParameterValue>>>,
+    },
     Stop,
 }
 
@@ -219,6 +236,20 @@ pub enum OutputCommand {
 pub struct OutputHandle(pub mpsc::Sender<OutputCommand>);
 
 impl OutputHandle {
+    /// What these parameters are doing now, as the connectors would draw them. Empty
+    /// answers where the output side has gone.
+    pub async fn values(
+        &self,
+        asks: Vec<(Uuid, String)>,
+    ) -> Vec<Option<pult_schema::types::fixture::ParameterValue>> {
+        let n = asks.len();
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        if self.0.send(OutputCommand::Values { asks, reply }).await.is_err() {
+            return vec![None; n];
+        }
+        answer.await.unwrap_or_else(|_| vec![None; n])
+    }
+
     /// Hand the current patch to the output side. Never blocks the engine: if output
     /// is behind, the update is dropped, because a connector evaluating from the patch
     /// it already holds is not stalled by missing one.
@@ -228,6 +259,7 @@ impl OutputHandle {
         fixture_types: Vec<FixtureType>,
         programmer: Vec<ProgrammerValue>,
         timelines: Vec<Timeline>,
+        masters: Masters,
         changed: Vec<Uuid>,
     ) {
         let _ = self.0.try_send(OutputCommand::Patch {
@@ -235,6 +267,7 @@ impl OutputHandle {
             fixture_types,
             programmer,
             timelines,
+            masters,
             changed,
         });
     }
@@ -266,6 +299,9 @@ struct Running {
     plugin: Box<dyn OutputPlugin>,
     wire: Wire,
     status: OutputStatus,
+    /// What was last handed to the plugin as forced by hand, so a pass that finds the
+    /// same answer says nothing and one that finds a new answer draws at once.
+    test: ChannelTest,
     /// Sends since the last status report, for the frame rate.
     sends_since_report: u32,
     reported_at: std::time::Instant,
@@ -302,6 +338,7 @@ impl Running {
             },
             config,
             plugin,
+            test: ChannelTest::default(),
             sends_since_report: 0,
             reported_at: std::time::Instant::now(),
             next_frame: None,
@@ -401,6 +438,8 @@ struct Watching {
     updates: crate::engine::UpdateBroadcast,
     /// Woken when an ask moves, so a station with no viewer open never ticks.
     wake: watch::Receiver<u64>,
+    /// And woken when a test moves, which is the other half of the same table.
+    test_wake: watch::Receiver<u64>,
     /// The last view published per `(output, focus)`, so an unchanged one is not sent
     /// again. This is the whole of "diff at panel rate": a settled rig redraws to the
     /// same bytes, and the same bytes are not news.
@@ -449,6 +488,13 @@ pub struct OutputManager {
     /// connector draws its own frames out of this rather than waiting to be handed
     /// values, so the engine says nothing at all between one cue and the next.
     patch: Option<Patch>,
+    /// The timelines the last patch came with, and whether a recording one of them is
+    /// playing was not here yet. A follower gets a take's file from the leader a few
+    /// seconds after the take exists; until this, it never looked again, so it sent
+    /// that universe without the take while the leader sent it with — and a DMX box
+    /// that ignores sACN priority showed the take "sometimes" (found at the gig).
+    timelines: Vec<Timeline>,
+    tracks_missing: bool,
 }
 
 impl OutputManager {
@@ -472,6 +518,8 @@ impl OutputManager {
                 addressed: Vec::new(),
                 coverage: None,
                 patch: None,
+                timelines: Vec::new(),
+                tracks_missing: false,
                 tracks: None,
                 watching: None,
                 frame_costs,
@@ -501,6 +549,7 @@ impl OutputManager {
     ) -> Self {
         self.watching = Some(Watching {
             wake: viewers.subscribe(),
+            test_wake: viewers.tests.subscribe(),
             viewers,
             updates,
             last: HashMap::new(),
@@ -511,7 +560,7 @@ impl OutputManager {
     }
 
     /// Seed a plugin without going through a configuration. Test-only: it is how a
-    /// stand-in for a protocol gets in, so the manager's own behaviour can be tested
+    /// stand-in for a protocol gets in, so the manager's own behavior can be tested
     /// without a socket on the other end.
     ///
     /// It is recorded as *configured* as well as running, because the manager now
@@ -559,21 +608,37 @@ impl OutputManager {
                     let Some(cmd) = cmd else { break };
                     match cmd {
                         OutputCommand::Stop => break,
+                        OutputCommand::Values { asks, reply } => {
+                            let now_ms = pult_schema::types::sequence::now_ms();
+                            let values = asks
+                                .iter()
+                                .map(|(fixture, key)| {
+                                    self.patch.as_ref().and_then(|p| p.value_of(*fixture, key, now_ms))
+                                })
+                                .collect();
+                            let _ = reply.send(values);
+                        }
                         OutputCommand::Configure(outputs) => self.reconcile(outputs).await,
                         OutputCommand::Patch {
                             fixtures,
                             fixture_types,
                             programmer,
                             timelines,
+                            masters,
                             changed,
                         } => {
-                            self.take_patch(fixtures, fixture_types, programmer, timelines, changed)
+                            self.take_patch(fixtures, fixture_types, programmer, timelines, masters, changed)
                                 .await;
                         }
                     }
                 }
                 _ = report.tick() => {
                     self.measure_rates();
+                    // A take that should be playing and whose file had not arrived: look
+                    // again, once a second, until it has.
+                    if self.tracks_missing {
+                        self.retry_missing_tracks().await;
+                    }
                     self.publish_status().await;
                     // Where a cable coming or going is acted on, and where a
                     // failover reaches the outputs. Both change what should be
@@ -587,9 +652,11 @@ impl OutputManager {
                 // Somebody opened a viewer, or closed one. Nothing is drawn here —
                 // the loop simply comes round again with a deadline instead of an
                 // hour, and the connector is told whether it is being read.
-                changed = wait_for_viewers(self.watching.as_mut()) => {
-                    if changed {
-                        self.tell_connectors_who_is_watching();
+                woken = wait_for_viewers(self.watching.as_mut()) => {
+                    match woken {
+                        Some(Woken::Viewers) => self.tell_connectors_who_is_watching(),
+                        Some(Woken::Tests) => self.apply_tests().await,
+                        None => {}
                     }
                 }
                 _ = tokio::time::sleep_until(next_view.into()) => {
@@ -640,6 +707,38 @@ impl OutputManager {
                     watching.last.retain(|(output, _), _| output != id);
                 }
             }
+        }
+    }
+
+    /// Hand each connector the channels somebody is forcing on it, and draw at once
+    /// where that moved.
+    ///
+    /// Recomputed from who is here, like [`Self::tell_connectors_who_is_watching`],
+    /// and compared against what each connector was last given — so a rebuilt
+    /// connector, which starts with nothing, is given its test again by the pass the
+    /// reconcile ends with, and a pass that finds nothing new does nothing.
+    ///
+    /// **Drawn at once** because a settled DMX line waits 800 ms between keep-alives,
+    /// and a channel that took most of a second to come on under a finger would read
+    /// as a fault in the cable being tested.
+    async fn apply_tests(&mut self) {
+        let Some(watching) = &self.watching else { return };
+        let mut wanted = watching.viewers.tests.of(self.node_id);
+        let now = std::time::Instant::now();
+        let mut moved = false;
+        for (id, output) in self.running.iter_mut() {
+            let want = wanted.remove(id).unwrap_or_default();
+            if output.test == want {
+                continue;
+            }
+            output.plugin.set_test(&want);
+            output.status.testing = want.universe_numbers();
+            output.test = want;
+            output.next_frame = Some(now);
+            moved = true;
+        }
+        if moved {
+            self.publish_status().await;
         }
     }
 
@@ -703,6 +802,7 @@ impl OutputManager {
         fixture_types: Vec<FixtureType>,
         programmer: Vec<ProgrammerValue>,
         timelines: Vec<Timeline>,
+        masters: Masters,
         changed: Vec<Uuid>,
     ) {
         let addressed: Vec<_> =
@@ -711,12 +811,30 @@ impl OutputManager {
             self.addressed = addressed;
             self.publish_coverage(&fixtures).await;
         }
-        let playing = playing_tracks(&self.tracks, &timelines).await;
+        let (playing, missing) = playing_tracks(&self.tracks, &timelines).await;
+        self.tracks_missing = missing;
+        self.timelines = timelines;
         self.patch =
-            Some(Patch::new(fixtures, fixture_types, programmer).playing(playing));
+            Some(Patch::new(fixtures, fixture_types, programmer).playing(playing).mastered(masters));
         self.draw(changed).await;
     }
 
+
+    /// Read the playing takes again and, where one has arrived since, put it in the
+    /// patch and draw — the same patch otherwise, so nothing else a connector holds moves.
+    async fn retry_missing_tracks(&mut self) {
+        let (playing, missing) = playing_tracks(&self.tracks, &self.timelines).await;
+        let Some(patch) = self.patch.take() else { return };
+        self.patch = Some(patch.playing(playing));
+        // Only ever retried while something was missing, so a composition that is
+        // complete now has something in it that it did not have before.
+        let found = !missing;
+        self.tracks_missing = missing;
+        if found {
+            info!("[output] a take that was playing without its file here now has it");
+            self.draw(Vec::new()).await;
+        }
+    }
 
     /// Draw the connectors whose own frame has come due.
     async fn draw_due_frames(&mut self) {
@@ -744,7 +862,19 @@ impl OutputManager {
     /// Sequentially, and one plugin's failure does not stop the rest: an unplugged
     /// Art-Net interface must not silence sACN.
     async fn draw_these(&mut self, which: &[Uuid], changed: Vec<Uuid>) {
-        let Some(patch) = &self.patch else { return };
+        // A station that has not been handed a patch yet still has a line to test, and
+        // that is when a person checking cable is most likely to be standing at it.
+        // Nothing else is drawn without one: an empty patch is only borrowed for a
+        // test, so a connector with nothing forced behaves exactly as it did.
+        let blank;
+        let patch = match &self.patch {
+            Some(patch) => patch,
+            None if self.running.values().any(|output| !output.test.is_empty()) => {
+                blank = Patch::new(Vec::new(), Vec::new(), Vec::new());
+                &blank
+            }
+            None => return,
+        };
         // One reading of the clock for the whole frame. Two would put two fixtures of
         // the same cue a fraction of a cycle apart, which is exactly the disagreement
         // this change spent its effort removing.
@@ -838,6 +968,7 @@ impl OutputManager {
                 },
             }
         }
+        self.apply_tests().await;
         self.publish_status().await;
     }
 
@@ -907,9 +1038,13 @@ impl OutputManager {
                 fixture_number: None,
                 unit_number: None,
                 sensed_values: Default::default(),
+                sensed_at: Default::default(),
                 live_effects: Default::default(),
                 live_fades: Default::default(),
+                live_htp: Default::default(),
                 home_values: Default::default(),
+                parameter_labels: Default::default(),
+                agreed_names: None,
             })
             .collect()
     }
@@ -968,32 +1103,88 @@ impl OutputManager {
 async fn playing_tracks(
     cache: &Option<crate::infra::tracks::TrackCache>,
     timelines: &[Timeline],
-) -> Vec<(std::sync::Arc<pult_render::Track>, pult_render::Transport)> {
-    let Some(cache) = cache else { return Vec::new() };
+) -> (Vec<(std::sync::Arc<pult_render::Track>, pult_render::Transport)>, bool) {
+    let Some(cache) = cache else { return (Vec::new(), false) };
     let mut playing = Vec::new();
+    let mut missing = false;
     for timeline in timelines.iter().filter(|timeline| timeline.running) {
-        for track in timeline.tracks.iter().filter(|track| track.enabled) {
-            let Some(decoded) = cache.get(&track.asset).await else { continue };
-            // A take's own nudge moves the playhead the other way: a track that
-            // arrived 40 ms late is played 40 ms earlier.
-            let mut transport = timeline.transport();
-            transport.position_at_anchor_ms =
-                transport.position_at_anchor_ms.saturating_add_signed(-track.offset_ms as i64);
-            playing.push((decoded, transport));
+        if !timeline.tracks.iter().any(|track| track.enabled) && timeline.all_flashes().is_empty() {
+            continue;
+        }
+        // Every row of the timeline, composed: each its window of its parameter, with
+        // its nudge applied, and the flashes over them, so the transport is the
+        // timeline's own.
+        let (mut composed, complete) = cache.compose(timeline.id, &timeline.tracks, timeline.all_flashes()).await;
+        missing |= !complete;
+        // A timeline recording a new pass leaves the sequences' levels to their
+        // faders: the hand on the fader is what is being recorded, and the last
+        // take's level playing over it would fight it. Fixture keys need no such
+        // care — the programmer already beats a track.
+        if recording_from_programmer(timeline)
+            && composed.keys.iter().any(|k| k.key == pult_schema::types::sequence::LEVEL_KEY)
+        {
+            let mut kept = (*composed).clone();
+            kept.keys.retain(|k| k.key != pult_schema::types::sequence::LEVEL_KEY);
+            composed = std::sync::Arc::new(kept);
+        }
+        playing.push((composed, timeline.transport()));
+    }
+    (playing, missing)
+}
+
+/// Whether a timeline is taking a pass from the programmer right now.
+fn recording_from_programmer(timeline: &Timeline) -> bool {
+    matches!(timeline.recording, Some(pult_schema::types::timeline::RecordSource::Programmer { .. }))
+}
+
+/// The sequences' levels the running takes record at `now_ms`, for the evaluations
+/// that happen at one moment rather than per frame — a flow reading a parameter, a
+/// nudge, setting where a light rests. Read through the same cache the frames use,
+/// and only what it already holds: a take a frame has not decoded yet has not played
+/// yet either.
+pub fn recorded_levels_at(
+    cache: &crate::infra::tracks::TrackCache,
+    timelines: &[Timeline],
+    now_ms: u64,
+) -> HashMap<Uuid, f32> {
+    let mut levels: HashMap<Uuid, (u64, f32)> = HashMap::new();
+    for timeline in timelines.iter().filter(|t| t.running && !recording_from_programmer(t)) {
+        if !timeline.tracks.iter().any(|track| track.enabled) && timeline.all_flashes().is_empty() {
+            continue;
+        }
+        let composed = cache.compose_now(timeline.id, &timeline.tracks, timeline.all_flashes());
+        let transport = timeline.transport();
+        for key in composed.keys.iter().filter(|k| k.key == pult_schema::types::sequence::LEVEL_KEY) {
+            let at = pult_render::TrackAt { points: &key.points, transport };
+            let Some(pult_render::ParameterValue::Float(level)) = at.value_at(now_ms) else { continue };
+            // The most recently started take wins, the rule `Patch::playing` keeps.
+            let newer = levels.get(&key.fixture_id).is_none_or(|(anchor, _)| transport.anchor_ms >= *anchor);
+            if newer {
+                levels.insert(key.fixture_id, (transport.anchor_ms, *level));
+            }
         }
     }
-    playing
+    levels.into_iter().map(|(sequence, (_, level))| (sequence, level)).collect()
 }
 
 /// Wait for the set of viewers to change, or for ever where nothing can watch.
 ///
 /// For ever rather than returning, so the `select!` above has one fewer branch to be
 /// enabled and disabled — a station with no viewers simply never wakes on this arm.
-async fn wait_for_viewers(watching: Option<&mut Watching>) -> bool {
+async fn wait_for_viewers(watching: Option<&mut Watching>) -> Option<Woken> {
     match watching {
-        Some(watching) => watching.wake.changed().await.is_ok(),
+        Some(watching) => tokio::select! {
+            changed = watching.wake.changed() => changed.ok().map(|_| Woken::Viewers),
+            changed = watching.test_wake.changed() => changed.ok().map(|_| Woken::Tests),
+        },
         None => std::future::pending().await,
     }
+}
+
+/// Which half of the viewers' table moved.
+enum Woken {
+    Viewers,
+    Tests,
 }
 
 /// Open the socket an output needs.

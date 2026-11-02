@@ -159,7 +159,7 @@ pub enum PluginStatus {
 }
 
 /// A built-in frontend surface a plugin drives: the frontend supplies the
-/// component, the plugin supplies the behaviour over `plugin.<id>.surface.*`.
+/// component, the plugin supplies the behavior over `plugin.<id>.surface.*`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct SurfaceInfo {
@@ -169,6 +169,12 @@ pub struct SurfaceInfo {
     /// Which built-in component renders it: `"console"` or `"bar"`.
     pub kind: String,
     pub title: String,
+    /// A Lucide icon name from the manifest, or `None` for the default.
+    #[serde(default)]
+    pub icon: Option<String>,
+    /// A panel category from the manifest (`program`, `playback`, …), or `None`.
+    #[serde(default)]
+    pub category: Option<String>,
 }
 
 /// A web-component panel a plugin ships as its own JavaScript.
@@ -186,6 +192,11 @@ pub struct WebPanelInfo {
     pub script: String,
     /// Whether the panel does its own scrolling and wants exact height.
     pub fills: bool,
+    /// As on a surface.
+    #[serde(default)]
+    pub icon: Option<String>,
+    #[serde(default)]
+    pub category: Option<String>,
 }
 
 /// One loaded (or failing) plugin, as the frontend sees it.

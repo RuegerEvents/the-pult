@@ -34,7 +34,7 @@ export interface LabelRequest {
 }
 
 export interface LabelOptions {
-	/** Em size in millimetres. 1.8 mm is about 5 pt — a plan's small text. */
+	/** Em size in millimeters. 1.8 mm is about 5 pt — a plan's small text. */
 	size?: Mm;
 	/** Line spacing as a multiple of the size. */
 	leading?: number;
@@ -61,7 +61,7 @@ const DEFAULTS: Required<Omit<LabelOptions, 'bounds'>> = {
 
 /** Where one label ended up. */
 export interface PlacedLabel {
-	/** The centre of the label block. */
+	/** The center of the label block. */
 	at: Pt;
 	lines: string[];
 	box: RectMm;
@@ -77,7 +77,7 @@ export interface PlacedLabel {
  * The relaxation is deliberately simple — pairwise separation along whichever axis
  * needs the smaller push, damped, for a fixed number of passes — because the job is
  * not to find an optimal arrangement. It is to make a dense corner of a plan legible,
- * and a label that has moved four millimetres with a leader drawn to it does that
+ * and a label that has moved four millimeters with a leader drawn to it does that
  * completely, whereas a clever placement that is different on the second run does not.
  *
  * Labels that still overlap after the last pass are left overlapping rather than
@@ -199,7 +199,7 @@ export function labelItems(
 ): Array<TextItem | PathItem> {
 	const items: Array<TextItem | PathItem> = [];
 	if (label.leader) {
-		// To the nearest point on the label's own box rather than to its centre, so
+		// To the nearest point on the label's own box rather than to its center, so
 		// the line stops at the text instead of running through it.
 		const to = nearestOnBox(label.anchor, label.box);
 		items.push({

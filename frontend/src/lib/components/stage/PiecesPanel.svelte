@@ -13,13 +13,13 @@
 	 *
 	 * The **work plane** lives here rather than on the View sheet, and that is not
 	 * filing: it is the answer to "how far away", which is the one question a drop
-	 * cannot answer on its own. A bar goes in at six metres, and then everything else
+	 * cannot answer on its own. A bar goes in at six meters, and then everything else
 	 * dropped goes in beside it rather than on the floor underneath it.
 	 */
-	import { groupedCatalogue } from '$lib/stock.js';
+	import { groupedCatalog } from '$lib/stock.js';
 	import { setView, view } from '$lib/stores/view.js';
 
-	const groups = groupedCatalogue();
+	const groups = groupedCatalog();
 </script>
 
 <div class="pieces">

@@ -189,7 +189,9 @@ describe('a browser whose clock is wrong', () => {
 		vi.spyOn(Date, 'now').mockImplementation(() => local);
 
 		const sync = new ClockSync({
-			ask: (sentAt) => sync.answered(sentAt, STATION_T0 + 20, sentAt + 40)
+			// A station whose clock runs, as every clock does: a later question gets a
+			// later answer.
+			ask: (sentAt) => sync.answered(sentAt, STATION_T0 + 20 + (sentAt - local), sentAt + 40)
 		});
 		vi.useFakeTimers();
 		sync.start();
@@ -228,9 +230,9 @@ describe('a browser whose clock is wrong', () => {
  * `testdata/clock-offset.json` is read here and by `crates/pult-schema/src/clock.rs`.
  * A browser estimating the station's clock and a station estimating the session
  * leader's are the same question with the same answer, and the parts of it that are
- * judgement rather than arithmetic — how many samples, best-of against average,
+ * judgment rather than arithmetic — how many samples, best-of against average,
  * whether a slow refresh can talk a settled estimate out of itself — are exactly where
- * two implementations drift. The tests above are this browser's own behaviour; these
+ * two implementations drift. The tests above are this browser's own behavior; these
  * are the agreement.
  *
  * The corpus's `bands` half is the station's alone and is not read here: a browser

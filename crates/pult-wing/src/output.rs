@@ -50,6 +50,11 @@ pub struct OutputState {
     pub sync: Sync,
     /// A DMX frame, if this host is driving the wing's ports.
     pub dmx: Option<Vec<u8>>,
+    /// Send no fader block at all, rather than one with nothing asserted. A test
+    /// switch (wing-explorer `--no-fader-frames`): whether a motor is free when the
+    /// host says nothing about the faders, against when it says "not driving".
+    #[serde(default)]
+    pub silent_faders: bool,
 }
 
 impl Default for OutputState {
@@ -59,6 +64,7 @@ impl Default for OutputState {
             faders: vec![None; FADERS],
             sync: Sync::default(),
             dmx: None,
+            silent_faders: false,
         }
     }
 }
@@ -74,10 +80,10 @@ impl OutputState {
     }
 
     /// Set an RGB LED from its three channel offsets.
-    pub fn set_rgb(&mut self, r: usize, g: usize, b: usize, colour: [u8; 3]) {
-        self.set_led(r, colour[0]);
-        self.set_led(g, colour[1]);
-        self.set_led(b, colour[2]);
+    pub fn set_rgb(&mut self, r: usize, g: usize, b: usize, color: [u8; 3]) {
+        self.set_led(r, color[0]);
+        self.set_led(g, color[1]);
+        self.set_led(b, color[2]);
     }
 
     pub fn all_leds(&mut self, level: u8) {
@@ -105,11 +111,12 @@ impl OutputState {
     /// resetting itself a few milliseconds after it starts.
     pub fn frames(&self) -> Vec<Chunk> {
         let io = crate::proto::tag::IO;
-        let mut out = vec![
-            Chunk::group(io, vec![Chunk::bytes(tag::FADERS, self.fader_bytes())]),
-            Chunk::group(io, vec![Chunk::bytes(tag::LEDS, self.leds.clone())]),
-            Chunk::group(io, vec![Chunk::bytes(tag::SYNC, vec![self.sync.0])]),
-        ];
+        let mut out = Vec::new();
+        if !self.silent_faders {
+            out.push(Chunk::group(io, vec![Chunk::bytes(tag::FADERS, self.fader_bytes())]));
+        }
+        out.push(Chunk::group(io, vec![Chunk::bytes(tag::LEDS, self.leds.clone())]));
+        out.push(Chunk::group(io, vec![Chunk::bytes(tag::SYNC, vec![self.sync.0])]));
         if let Some(dmx) = &self.dmx {
             out.push(Chunk::group(io, vec![Chunk::bytes(tag::DMX, dmx.clone())]));
         }

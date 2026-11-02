@@ -50,7 +50,7 @@ pub struct FeatureGroups {
 }
 
 /// A grouping the console keeps as `feature_group` on the parameter, because it is
-/// what an operator's encoder pages are built from: Dimmer, Position, Colour, Beam.
+/// what an operator's encoder pages are built from: Dimmer, Position, Color, Beam.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct FeatureGroup {
     #[serde(rename = "@Name", default, skip_serializing_if = "String::is_empty")]

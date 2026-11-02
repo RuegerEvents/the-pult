@@ -7,9 +7,9 @@
 //! replaced. What the graph adds is everything a row could not say: two contacts
 //! into an `And`, one delay feeding three actions, a condition reused twice.
 //!
-//! `TriggerSource` is an enum with one variant so far. OSC, MIDI, and "a cue
-//! finished" all belong beside `Parameter`, and each one becomes a node the editor
-//! can place without anything here changing shape.
+//! `TriggerSource` is a parameter or a show variable. OSC, MIDI, and "a cue
+//! finished" all belong beside them, and each one becomes a node the editor can
+//! place without anything here changing shape.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -18,7 +18,10 @@ use uuid::Uuid;
 
 use crate::{
     pult_commands,
-    types::fixture::{ParameterKind, ParameterValue},
+    types::{
+        fixture::{ParameterKind, ParameterValue},
+        variable::VariableOp,
+    },
     PultSchema,
 };
 
@@ -31,6 +34,9 @@ pub enum TriggerSource {
     /// One parameter of one fixture. A contact on an I/O node, a temperature, or
     /// anything else a device reports.
     Parameter { fixture_id: Uuid, parameter: ParameterKind },
+    /// A show variable, read as a level: a flag is true when on, a number when off
+    /// zero, and the conditions compare the number itself.
+    Variable { variable_id: Uuid },
 }
 
 /// When a condition passes a signal on.
@@ -54,7 +60,27 @@ pub enum TriggerCondition {
 pub enum TriggerAction {
     GoNext { sequence_id: Uuid },
     GoToCue { sequence_id: Uuid, cue_id: Uuid },
+    /// Take a sequence off: what it was driving goes home, as the Off key does.
+    Off { sequence_id: Uuid },
     SetParameter { fixture_id: Uuid, parameter: ParameterKind, value: ParameterValue },
+    /// Change a show variable, resolved against what it holds when the change lands.
+    SetVariable { variable_id: Uuid, op: VariableOp },
+    /// Play a timeline from its start.
+    PlayTimeline { timeline_id: Uuid, if_running: IfRunning },
+    StopTimeline { timeline_id: Uuid },
+}
+
+/// What a play does to a timeline that is already running.
+///
+/// `Ignore` is the default because a scare is a timeline, and a PIR that is still
+/// warm from the last group must not start the scream again halfway through. A
+/// longer lockout is a variable's job, not this one's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub enum IfRunning {
+    #[default]
+    Ignore,
+    Restart,
 }
 
 // ── Nodes ─────────────────────────────────────────────────────────────────────
@@ -76,8 +102,22 @@ pub enum FlowNodeKind {
     And,
     Or,
     Not,
-    /// Holds a pulse back.
+    /// Holds a pulse back: a pulse on port 0 starts it counting — again from the top
+    /// if it already was — and a pulse on port 1 stops it, so nothing comes out.
+    ///
+    /// The reset is what makes it a timer rather than a wait: "off after a minute,
+    /// unless somebody walked in first" is a start, a reset from the PIR, and an off on
+    /// either. Without it the minute still came due after the scare had already ended,
+    /// in the middle of the next group's.
     Delay { ms: u32 },
+    /// Lets a pulse through only while a level is true: a pulse in on port 0, the
+    /// level on port 1.
+    ///
+    /// The one way a level can decide whether a pulse goes on. Without it, "the PIR
+    /// fired *and* the area is free" is two levels into an `And` and an edge after
+    /// that — which also fires when the area *becomes* free while the PIR is still
+    /// warm, and that is a scare nobody walked into.
+    Gate,
     /// Does something to the show. Consumes a pulse.
     Action(TriggerAction),
 }
@@ -105,7 +145,9 @@ impl FlowNodeKind {
             FlowNodeKind::Source(_) | FlowNodeKind::Button => &[],
             FlowNodeKind::Condition(_) | FlowNodeKind::Not => &[PortKind::Level],
             FlowNodeKind::And | FlowNodeKind::Or => &[PortKind::Level, PortKind::Level],
-            FlowNodeKind::Delay { .. } | FlowNodeKind::Action(_) => &[PortKind::Pulse],
+            FlowNodeKind::Action(_) => &[PortKind::Pulse],
+            FlowNodeKind::Delay { .. } => &[PortKind::Pulse, PortKind::Pulse],
+            FlowNodeKind::Gate => &[PortKind::Pulse, PortKind::Level],
         }
     }
 
@@ -114,9 +156,10 @@ impl FlowNodeKind {
         match self {
             FlowNodeKind::Source(_) => &[PortKind::Level],
             FlowNodeKind::And | FlowNodeKind::Or | FlowNodeKind::Not => &[PortKind::Level],
-            FlowNodeKind::Button | FlowNodeKind::Condition(_) | FlowNodeKind::Delay { .. } => {
-                &[PortKind::Pulse]
-            }
+            FlowNodeKind::Button
+            | FlowNodeKind::Condition(_)
+            | FlowNodeKind::Delay { .. }
+            | FlowNodeKind::Gate => &[PortKind::Pulse],
             FlowNodeKind::Action(_) => &[],
         }
     }
@@ -135,6 +178,11 @@ pub struct Flow {
     pub name: String,
     #[pult(lifecycle = PERSISTED)]
     pub enabled: bool,
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    #[pult(lifecycle = PERSISTED)]
+    pub folder: Option<Uuid>,
 }
 
 /// One node in one graph.
@@ -152,20 +200,53 @@ pub struct FlowNode {
     pub flow_id: Uuid,
     #[pult(lifecycle = PERSISTED)]
     pub kind: FlowNodeKind,
+    /// What an operator calls it — "Exit PIR (stand-in)" — or `None` for what its kind
+    /// is called. Shown as its title, and where a button is pressed from elsewhere (a
+    /// surface tile, the palette), as the button's name.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    #[pult(lifecycle = PERSISTED)]
+    pub name: Option<String>,
     /// Where the node sits on the canvas. Not a rig position — this is the drawing.
     #[pult(lifecycle = PERSISTED)]
     pub x: f32,
     #[pult(lifecycle = PERSISTED)]
     pub y: f32,
-    /// Lit right now: a level that is true, or a pulse that just passed through.
+    /// Lit right now: a level that is true, or a delay counting down — a state that
+    /// lasts. A pulse is not one: it is [`FlowNode::pulsed_at`].
     ///
     /// SYNCED rather than LOCAL so every console watching the same flow sees the
     /// same thing light up. Without it a graph is a diagram; with it, it is an
     /// instrument you can watch working.
     #[pult(lifecycle = SYNCED)]
     pub active: bool,
+    /// A button's press, and an action's last firing. The engine reads a button's to
+    /// see it pressed, so nothing but a press writes it there.
     #[pult(lifecycle = SYNCED)]
     pub last_fired_at: Option<DateTime<Utc>>,
+    /// When a pulse last went through it, console ms: what makes a node flash once
+    /// in the editor. A pulse used to light `active` until the next pass, which
+    /// came with the next input and could be minutes later.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    #[pult(lifecycle = SYNCED)]
+    pub pulsed_at: Option<u64>,
+    /// For a delay that is counting, the console ms it comes due; `None` while it is
+    /// not. What lets a page draw the time left and a bar running down: the deadline
+    /// itself lives in the leader's flow engine, which no page can see. Written by the
+    /// leader on every start, restart and reset, never per frame.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    #[pult(lifecycle = SYNCED)]
+    pub due_at: Option<u64>,
+    /// Switched off: a pulse reaching it stops there, and nothing fires. For an action
+    /// that would be a nuisance while the rest of a maze is being tried — the fog, the
+    /// air cannon — without unwiring it and losing where it went. `None` is on, so a
+    /// show from before this field opens with every node doing what it did.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    #[pult(lifecycle = PERSISTED)]
+    pub disabled: Option<bool>,
 }
 
 /// One connection, from an output port to an input port.
@@ -220,7 +301,9 @@ mod tests {
 
         // Exactly the shape every migrated trigger takes.
         assert_eq!(source.outputs(), condition.inputs());
-        assert_eq!(condition.outputs(), delay.inputs());
+        // Into the delay's start; its second input is the reset.
+        assert_eq!(condition.outputs(), &delay.inputs()[..1]);
+        assert_eq!(delay.inputs()[1], PortKind::Pulse);
         assert_eq!(delay.outputs(), action.inputs());
         assert!(action.outputs().is_empty(), "an action is the end of the line");
     }

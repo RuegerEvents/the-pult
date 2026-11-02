@@ -104,7 +104,7 @@ export function msOf(x: number, view: View, width: number): number {
  *
  * The millisecond under the pointer stays under the pointer, which is what makes a
  * wheel over a waveform feel like a map rather than like a slider. Anchoring to the
- * centre instead is the version everybody writes first and it walks the thing you were
+ * center instead is the version everybody writes first and it walks the thing you were
  * looking at off the screen.
  */
 export function zoomAt(view: View, durationMs: number, at: number, factor: number): View {
@@ -216,4 +216,145 @@ export function parsePosition(text: string): number | null {
 	}
 	const ms = Number(trimmed);
 	return Number.isFinite(ms) ? Math.round(ms) : null;
+}
+
+// ── Clips ─────────────────────────────────────────────────────────────────────
+
+/** What of a clip is needed to place it: the schema's fields, by their own names. */
+export type ClipPlace = {
+	start_ms: number;
+	offset_ms: number;
+	length_ms: number | null;
+	/** How many times the region plays. Zero, or a row from before there was a count, is once. */
+	repeats?: number;
+};
+
+/** How many times a clip plays: never fewer than one. `AudioClip::times`. */
+export const timesOf = (clip: Pick<ClipPlace, 'repeats'>): number => Math.max(1, Math.floor(clip.repeats ?? 1));
+
+/**
+ * Where a clip sits on the timeline, from its start to where it stops sounding.
+ *
+ * `fileMs` is how long the file is, which a browser only knows from the peaks — so a
+ * clip whose waveform has not arrived yet is drawn as long as its own length says, or
+ * as a short stub, rather than not drawn. A repeated clip is its region as many times
+ * as it plays, back to back.
+ */
+export function clipSpan(clip: ClipPlace, fileMs: number | null): { fromMs: number; toMs: number; regionMs: number } {
+	const rest = fileMs === null ? null : Math.max(0, fileMs - clip.offset_ms);
+	const regionMs =
+		clip.length_ms !== null
+			? rest === null
+				? clip.length_ms
+				: Math.min(clip.length_ms, rest)
+			: (rest ?? 2_000);
+	const toMs = clip.start_ms + regionMs * timesOf(clip);
+	return { fromMs: clip.start_ms, toMs, regionMs };
+}
+
+/**
+ * A lane per clip that would otherwise overlap the one before it, in start order.
+ *
+ * Answered by index into the list handed in. Two clips that overlap in time are a
+ * scream over a bed, which is the ordinary case, and drawn on one lane one of them
+ * would be under the other and could not be grabbed.
+ */
+export function clipLanes(spans: { fromMs: number; toMs: number }[]): number[] {
+	const order = spans.map((_, i) => i).sort((a, b) => spans[a].fromMs - spans[b].fromMs);
+	const laneEnds: number[] = [];
+	const lanes = new Array<number>(spans.length).fill(0);
+	for (const i of order) {
+		let lane = laneEnds.findIndex((end) => end <= spans[i].fromMs);
+		if (lane === -1) {
+			lane = laneEnds.length;
+			laneEnds.push(spans[i].toMs);
+		} else {
+			laneEnds[lane] = spans[i].toMs;
+		}
+		lanes[i] = lane;
+	}
+	return lanes;
+}
+
+/** Which part of a clip a drag took hold of. */
+export type ClipGrip = 'body' | 'front' | 'back';
+
+/**
+ * A clip after a drag, as the schema's fields.
+ *
+ * The **body** moves the clip and changes nothing about which part of the file plays.
+ * The **front** trims: the clip starts later on the timeline *and* later in the file by
+ * the same amount, so the sound under the edge stays where it was — which is what every
+ * audio editor does and the only version that does not slide the song under the cursor.
+ * The **back** sets how much plays. Neither trim may turn a clip inside out or reach
+ * before the start of the file; a clip trimmed to nothing could never be grabbed again.
+ */
+export function dragClip(
+	grip: ClipGrip,
+	fromMs: number,
+	toMs: number,
+	fileMs: number | null,
+	grabbed: { start_ms: number; offset_ms: number; length_ms: number | null }
+): Pick<ClipPlace, 'start_ms' | 'offset_ms' | 'length_ms'> {
+	const MIN = 50;
+	const delta = toMs - fromMs;
+	const rest = fileMs === null ? null : Math.max(0, fileMs - grabbed.offset_ms);
+	const region = grabbed.length_ms ?? rest ?? 2_000;
+	if (grip === 'body') {
+		return {
+			start_ms: Math.max(0, Math.round(grabbed.start_ms + delta)),
+			offset_ms: grabbed.offset_ms,
+			length_ms: grabbed.length_ms
+		};
+	}
+	if (grip === 'front') {
+		// No earlier than the file's own start, no earlier than the timeline's, and no
+		// later than leaves MIN of the clip.
+		const earliest = Math.max(-grabbed.offset_ms, -grabbed.start_ms);
+		const moved = Math.min(Math.max(delta, earliest), region - MIN);
+		return {
+			start_ms: Math.round(grabbed.start_ms + moved),
+			offset_ms: Math.round(grabbed.offset_ms + moved),
+			length_ms: Math.round(region - moved)
+		};
+	}
+	const longest = rest ?? Infinity;
+	const length = Math.min(Math.max(region + delta, MIN), longest);
+	return {
+		start_ms: grabbed.start_ms,
+		offset_ms: grabbed.offset_ms,
+		// Dragged back out to the end of the file is "the rest of the file" again.
+		length_ms: rest !== null && length >= rest ? null : Math.round(length)
+	};
+}
+
+/** `"5, 6"` or `"5-8"` to channel numbers counting from one. `null` for anything else. */
+export function parseChannels(text: string): number[] | null {
+	const out: number[] = [];
+	for (const part of text.split(/[,\s]+/).filter(Boolean)) {
+		const range = /^(\d+)-(\d+)$/.exec(part);
+		if (range) {
+			const [from, to] = [Number(range[1]), Number(range[2])];
+			if (from < 1 || to < from || to - from > 256) return null;
+			for (let c = from; c <= to; c++) out.push(c);
+		} else if (/^\d+$/.test(part) && Number(part) >= 1) {
+			out.push(Number(part));
+		} else {
+			return null;
+		}
+	}
+	return out.length > 0 ? [...new Set(out)] : null;
+}
+
+/** And back: `[5, 6, 7, 8]` reads `5-8`, `[1, 3]` reads `1, 3`. */
+export function channelsText(channels: number[]): string {
+	const sorted = [...channels].sort((a, b) => a - b);
+	const runs: string[] = [];
+	for (let i = 0; i < sorted.length; ) {
+		let j = i;
+		while (j + 1 < sorted.length && sorted[j + 1] === sorted[j] + 1) j++;
+		runs.push(j - i >= 2 ? `${sorted[i]}-${sorted[j]}` : sorted.slice(i, j + 1).join(', '));
+		i = j + 1;
+	}
+	return runs.join(', ');
 }

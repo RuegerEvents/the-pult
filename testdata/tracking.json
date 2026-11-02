@@ -5,7 +5,7 @@
     "`trackedThrough` in frontend/src/lib/cues.ts. \"A cue is the stack up to it\"",
     "is the rule the whole cue sheet draws — hard against tracked, and which cue a",
     "tracked value came from — and the browser cannot round-trip to ask, because a",
-    "cue clicked in a list has to colour a sheet in the same frame.",
+    "cue clicked in a list has to color a sheet in the same frame.",
     "",
     "Each case names the cue ids a sequence lists up to and including the one being",
     "looked at, and expects the latest capture of every key, in the order the keys",

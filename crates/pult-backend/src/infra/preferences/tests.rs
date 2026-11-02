@@ -48,10 +48,10 @@ fn a_depth_out_of_range_is_brought_back_inside_it() {
 
 /// A file written by an older build, which knew fewer settings than this one.
 #[test]
-fn a_setting_this_build_does_not_recognise_is_ignored() {
+fn a_setting_this_build_does_not_recognize_is_ignored() {
     let own = own_file();
     std::fs::create_dir_all(own.0.parent().unwrap()).unwrap();
-    std::fs::write(&own.0, "history_depth = 300\nfavourite_colour = \"amber\"").unwrap();
+    std::fs::write(&own.0, "history_depth = 300\nfavorite_color = \"amber\"").unwrap();
 
     assert_eq!(load().history_depth, 300);
 }
@@ -140,4 +140,22 @@ fn a_file_written_before_the_retention_existed_still_opens() {
         prefs.oplog_retention_minutes, OPLOG_RETENTION_MINUTES_DEFAULT,
         "and what it did not say is the default"
     );
+}
+
+/// A sound card's name has spaces in it and a channel is a number, and TOML keys are
+/// strings: the names a station gives its card have to survive the file anyway.
+#[test]
+fn a_cards_channel_names_survive_a_round_trip() {
+    let _own = own_file();
+    let mut prefs = Preferences::default();
+    prefs.audio.output = Some("Dante Virtual Soundcard".into());
+    prefs.audio.names.insert(
+        "Dante Virtual Soundcard".into(),
+        crate::infra::audio::DeviceNames {
+            alias: Some("Garden Dante".into()),
+            channels: vec!["FOH L".into(), "FOH R".into(), String::new(), "Area 2 top".into()],
+        },
+    );
+    save(&prefs).unwrap();
+    assert_eq!(load().audio, prefs.audio);
 }

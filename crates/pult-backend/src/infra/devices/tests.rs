@@ -24,7 +24,7 @@ use pult_schema::{
 use super::*;
 use crate::{engine::ShowEngine, infra::showfile};
 
-// ── The catalogue, as a device would know it ──────────────────────────────────
+// ── The catalog, as a device would know it ──────────────────────────────────
 //
 // A test-side table on purpose. In a unit test this *is* the firmware, and the
 // firmware is the only thing entitled to know what a module's ports are — the
@@ -67,7 +67,7 @@ fn firmware(module_type: u16) -> Firmware {
             "LED Strip",
             0,
             serde_json::json!({ "ports": [
-                { "port": 0, "name": "Strip colour", "access": "readwrite",
+                { "port": 0, "name": "Strip color", "access": "readwrite",
                   "dataType": "color", "class": "color",
                   "effects": { "shapes": ["sine", "triangle", "square", "saw-up", "saw-down"],
                                "steps": true, "transitions": true } },
@@ -115,6 +115,9 @@ fn firmware(module_type: u16) -> Firmware {
                   "class": "air-quality" },
             ]}),
         ),
+        // The V0 board's own module. Its strips are heads the simulator describes; this
+        // is only the name its TXT record carries.
+        0x0f01 => ("Node V0", 0, serde_json::json!({ "ports": [] })),
         other => panic!("no firmware written for module {other:#06x}"),
     };
     Firmware { name, flags, description }
@@ -138,7 +141,7 @@ pub(super) struct Harness {
 /// rumqttd is told a concrete address and never says which one it got, so `0` is
 /// not usable — and the broker is a process-wide singleton anyway, so the first
 /// test to want one fixes the port for all of them.
-fn free_port() -> u16 {
+pub(super) fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
         .expect("a free port")
         .local_addr()
@@ -216,17 +219,22 @@ impl Harness {
 
     /// Send an event and wait for the manager to have finished with it. Every
     /// command is answered in order, so a round trip through Identify orders behind.
-    async fn event(&self, event: DeviceEvent) {
+    pub(super) async fn event(&self, event: DeviceEvent) {
         self.devices.0.send(DeviceCommand::Event(event)).await.unwrap();
         let _ = self.devices.identify("wait-for-the-queue-to-drain".into()).await;
     }
 
     /// A second manager against the same engine, as a restarted console would be.
     pub(super) async fn with_a_fresh_device_manager(&self) -> Harness {
+        self.restarted(NODE_HTTP_PORT).await
+    }
+
+    /// The same, asking a node no browse has shown on `port` rather than on 80.
+    pub(super) async fn restarted(&self, unseen_port: u16) -> Harness {
         self.devices.0.send(DeviceCommand::Stop).await.unwrap();
         let (manager, devices, directory) =
             DeviceManager::new(NodeId(Uuid::new_v4()), self.engine.clone(), free_port());
-        tokio::spawn(manager.run());
+        tokio::spawn(manager.asking_unseen_nodes_on(unseen_port).run());
         Harness { engine: self.engine.clone(), devices, directory }
     }
 
@@ -253,7 +261,7 @@ impl Harness {
         serde_json::from_value(value).unwrap()
     }
 
-    async fn become_follower(&self) {
+    pub(super) async fn become_follower(&self) {
         self.engine
             .set(
                 vec![PathSegment::Key("session".into())],
@@ -449,7 +457,7 @@ async fn adopting_a_node_patches_it_as_a_fixture_of_its_module_s_type() {
     assert_eq!(fixtures[0].id, fixture_id);
     assert_eq!(
         fixtures[0].address,
-        FixtureAddress::OpenHaunt { serial: "1a2b3c".into(), universe: None },
+        FixtureAddress::node("1a2b3c", None),
         "only a gateway carries a universe",
     );
 
@@ -468,7 +476,7 @@ async fn adopting_a_node_patches_it_as_a_fixture_of_its_module_s_type() {
 async fn adopting_gives_the_show_an_openhaunt_output_once() {
     // The plugin that drives a node's ports only runs where an `outputs` row says
     // so. Adoption is the operator asking for the node to be driven, so the row
-    // appears then — and one row covers every node this station drives.
+    // appears then — and one row covers every node, on whichever station leads.
     let h = harness().await;
     assert!(h.outputs().await.is_empty(), "nothing is configured before anything is adopted");
 
@@ -479,7 +487,10 @@ async fn adopting_gives_the_show_an_openhaunt_output_once() {
     assert_eq!(outputs.len(), 1);
     assert_eq!(outputs[0].kind, OutputKind::OpenHaunt);
     assert!(outputs[0].enabled);
-    assert!(outputs[0].node_id.is_some(), "the output belongs to the station that drives");
+    assert!(
+        outputs[0].node_id.is_none(),
+        "no station, which for OpenHaunt is the leader: one row for whoever drives the nodes"
+    );
 
     h.resolve("4d5e6f", MAINS_RELAY, None).await;
     h.devices.adopt("4d5e6f".into()).await.unwrap();
@@ -613,7 +624,7 @@ async fn a_universe_is_allocated_to_the_node_that_says_it_forwards_one() {
     let fixtures = h.fixtures().await;
     let universe = |serial: &str| {
         fixtures.iter().find_map(|f| match &f.address {
-            FixtureAddress::OpenHaunt { serial: s, universe } if s == serial => Some(*universe),
+            FixtureAddress::OpenHaunt { serial: s, universe, .. } if s == serial => Some(*universe),
             _ => None,
         })
     };
@@ -636,6 +647,36 @@ async fn a_follower_refuses_to_adopt() {
     let error = h.devices.adopt("1a2b3c".into()).await.unwrap_err();
     assert!(error.contains("leading the session"), "{error}");
     assert!(h.fixtures().await.is_empty(), "a follower must patch nothing");
+}
+
+#[tokio::test]
+async fn a_follower_lists_a_node_as_adopted_when_the_leaders_fixture_arrives() {
+    // The leader adopts — a follower's Adopt is carried to it — and the fixture reaches
+    // the follower by replication, with no device event of its own to go with it.
+    let leader = harness().await;
+    leader.resolve("1a2b3c", DIGITAL_IN, None).await;
+    let fixture_id = leader.devices.adopt("1a2b3c".into()).await.unwrap();
+
+    let follower = harness().await;
+    follower.resolve("1a2b3c", DIGITAL_IN, None).await;
+    follower.become_follower().await;
+    assert_eq!(follower.state().await.discovered["1a2b3c"].adopted_fixture_id, None);
+
+    let create = |table: &str| vec![PathSegment::Key(table.into()), PathSegment::Key("__create".into())];
+    for t in leader.fixture_types().await {
+        follower.engine.set(create("fixture_types"), Lifecycle::Persisted, serde_json::to_value(t).unwrap()).await.unwrap();
+    }
+    for f in leader.fixtures().await {
+        follower.engine.set(create("fixtures"), Lifecycle::Persisted, serde_json::to_value(f).unwrap()).await.unwrap();
+    }
+
+    for _ in 0..100 {
+        if follower.state().await.discovered["1a2b3c"].adopted_fixture_id == Some(fixture_id) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("the follower never listed the node as adopted");
 }
 
 // ── Forgetting ────────────────────────────────────────────────────────────────
@@ -768,7 +809,20 @@ async fn a_node_on_the_broker(h: &Harness, serial: &str) -> AsyncClient {
         .publish(format!("openhaunt/{serial}/status"), QoS::AtLeastOnce, true, "online")
         .await
         .unwrap();
+    // The console has heard it, so it is subscribed to everything else the node will
+    // say: one SUBSCRIBE covers every shape. Publishing an edge before this is a race
+    // with the console's own subscription, and a non-retained edge would be lost.
+    let serial = serial.to_string();
+    eventually("the console to hear the node", || {
+        let serial = serial.clone();
+        async move { heard(h, &serial).await }
+    })
+    .await;
     client
+}
+
+async fn heard(h: &Harness, serial: &str) -> bool {
+    h.directory.borrow().entries.get(serial).is_some_and(|e| e.on_broker)
 }
 
 pub(super) async fn eventually<F, Fut>(what: &str, mut check: F)
@@ -864,8 +918,8 @@ async fn a_sensor_reading_lands_on_the_parameter_its_port_is_bound_to() {
 async fn an_input_from_a_device_nobody_adopted_changes_nothing() {
     let h = harness().await;
     // One adopted device, so there is a broker; the stray one is beside it.
-    h.resolve("neighbour", MAINS_RELAY, None).await;
-    h.devices.adopt("neighbour".into()).await.unwrap();
+    h.resolve("neighbor", MAINS_RELAY, None).await;
+    h.devices.adopt("neighbor".into()).await.unwrap();
     h.resolve("stray", DIGITAL_IN, None).await;
 
     let node = a_node_on_the_broker(&h, "stray").await;
@@ -903,6 +957,29 @@ async fn health_from_a_node_shows_up_against_it() {
     .await;
     let state = h.state().await;
     assert_eq!(state.discovered["health1"].health.as_ref().unwrap().temperature_c, Some(38.0));
+}
+
+/// A node whose uptime goes backwards rebooted, however quickly it came back: the
+/// directory counts it, so a connector knows to say everything again.
+#[tokio::test]
+async fn an_uptime_that_goes_backwards_is_a_restart() {
+    let h = harness().await;
+    h.resolve("health2", DIGITAL_IN, None).await;
+    h.devices.adopt("health2".into()).await.unwrap();
+    let node = a_node_on_the_broker(&h, "health2").await;
+    let health = |uptime: u64| format!(r#"{{"uptime_s": {uptime}, "errors": []}}"#);
+
+    for uptime in [120, 125] {
+        node.publish("openhaunt/health2/health", QoS::AtLeastOnce, false, health(uptime)).await.unwrap();
+        eventually("health to show up", || async {
+            h.state().await.discovered["health2"].health.as_ref().map(|hh| hh.uptime_s) == Some(uptime)
+        })
+        .await;
+    }
+    assert_eq!(h.directory.borrow().entries["health2"].starts, 0, "running on is not starting over");
+
+    node.publish("openhaunt/health2/health", QoS::AtLeastOnce, false, health(3)).await.unwrap();
+    eventually("the restart to be counted", || async { h.directory.borrow().entries["health2"].starts == 1 }).await;
 }
 
 #[tokio::test]
@@ -1000,6 +1077,141 @@ async fn a_node_that_comes_back_is_told_where_the_broker_is_again() {
     assert_eq!(log.lock().unwrap().configs.len(), 2);
 }
 
+/// A node says on its retained `net` where it is, preferred path first, and says it
+/// again when a path comes or goes. The directory carries what it said, which is what
+/// a stream to it is sent by; mDNS's one address is only the fallback.
+#[tokio::test]
+async fn where_a_node_says_it_is_reaches_the_directory() {
+    let h = harness().await;
+    h.resolve("paths1", MAINS_RELAY, None).await;
+    let fixture_id = h.devices.adopt("paths1".into()).await.unwrap();
+    let node = a_node_on_the_broker(&h, "paths1").await;
+    let addresses = || h.directory.borrow().entries.get("paths1").map(|e| e.addresses.clone()).unwrap_or_default();
+    assert!(addresses().is_empty(), "nothing said yet");
+
+    let say = |net: &'static str| {
+        let node = node.clone();
+        async move { node.publish("openhaunt/paths1/net", QoS::AtLeastOnce, true, net).await.unwrap() }
+    };
+    say(r#"{"addresses":[{"transport":"ethernet","ip":"10.0.0.8"},{"transport":"wifi","ip":"10.0.1.8"}]}"#).await;
+    eventually("both paths", || {
+        let got = addresses();
+        async move { got == ["10.0.0.8", "10.0.1.8"] }
+    })
+    .await;
+    // The cable pulled.
+    say(r#"{"addresses":[{"transport":"wifi","ip":"10.0.1.8"}]}"#).await;
+    eventually("only wifi", || {
+        let got = addresses();
+        async move { got == ["10.0.1.8"] }
+    })
+    .await;
+    assert_eq!(h.state().await.discovered["paths1"].net[0].transport, "wifi", "and the panel sees it");
+
+    // Redundancy is the node's own fixture's, and an edit to it reaches the directory
+    // without anything else having to happen.
+    let redundant = || h.directory.borrow().entries.get("paths1").is_some_and(|e| e.redundant_stream);
+    assert!(!redundant(), "off unless asked for");
+    let mut address = h.fixtures().await.into_iter().find(|f| f.id == fixture_id).unwrap().address;
+    if let FixtureAddress::OpenHaunt { redundant_stream, .. } = &mut address {
+        *redundant_stream = Some(true);
+    }
+    h.engine
+        .set(
+            vec![PathSegment::Key("fixtures".into()), PathSegment::Id(fixture_id), PathSegment::Key("address".into())],
+            Lifecycle::Persisted,
+            serde_json::to_value(&address).unwrap(),
+        )
+        .await
+        .unwrap();
+    eventually("the directory to say redundant", || {
+        let on = redundant();
+        async move { on }
+    })
+    .await;
+}
+
+/// A restarted console whose browse has not found an adopted node again still has it
+/// on its broker, and that is enough: the node is in the directory, online, at the
+/// address its `net` says, and described by `/api/v1/info`, which says what a TXT
+/// record would. Without an address yet it is on the broker and reachable by nothing
+/// that needs one.
+#[tokio::test]
+async fn an_adopted_node_on_the_broker_needs_no_browse() {
+    let mut info = firmware(MAINS_RELAY).description;
+    info["name"] = serde_json::json!("Gate");
+    info["fw"] = serde_json::json!("0.4.2");
+    let (addr, _log) = a_node(firmware(MAINS_RELAY).flags, info).await;
+    let h = harness().await;
+    h.resolve("unseen1", MAINS_RELAY, Some(addr)).await;
+    let fixture_id = h.devices.adopt("unseen1".into()).await.unwrap();
+
+    // Restarted, and mDNS says nothing this time.
+    let before = broker_port(&h).await;
+    let h = h.restarted(addr.port()).await;
+    // The engine still holds the old manager's state until the new one says otherwise.
+    let mut port = before;
+    for _ in 0..200 {
+        port = broker_port(&h).await;
+        if port != before {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    let mut options = MqttOptions::new("node-unseen1", "127.0.0.1", port);
+    options.set_keep_alive(std::time::Duration::from_secs(5));
+    let (node, mut eventloop) = AsyncClient::new(options, 16);
+    tokio::spawn(async move { while eventloop.poll().await.is_ok() {} });
+    node.publish("openhaunt/unseen1/status", QoS::AtLeastOnce, true, "online").await.unwrap();
+
+    let entry = || h.directory.borrow().entries.get("unseen1").cloned();
+    eventually("the node in the directory", || {
+        let e = entry();
+        async move { e.is_some_and(|e| e.online && e.on_broker && e.adopted) }
+    })
+    .await;
+    assert_eq!(entry().unwrap().ip, "", "no address until it says one");
+
+    node.publish(
+        "openhaunt/unseen1/net",
+        QoS::AtLeastOnce,
+        true,
+        r#"{"addresses":[{"transport":"ethernet","ip":"127.0.0.1"}]}"#,
+    )
+    .await
+    .unwrap();
+    eventually("at its address, described", || {
+        let e = entry();
+        async move { e.is_some_and(|e| e.ip == "127.0.0.1" && e.port == addr.port()) }
+    })
+    .await;
+    eventually("what it is, from /info", || {
+        let h = &h;
+        async move { h.state().await.discovered["unseen1"].description.is_some() }
+    })
+    .await;
+    let device = h.state().await.discovered["unseen1"].clone();
+    assert_eq!(device.adopted_fixture_id, Some(fixture_id));
+    assert_eq!((device.name.as_str(), device.fw.as_str()), ("Gate", "0.4.2"), "named by what it says");
+    assert!(device.is_mains, "and the mains flag is the node's own");
+}
+
+/// A node nobody adopted is not put in the list by being on the broker: nothing can
+/// reach it, and mDNS is what offers it for adopting.
+#[tokio::test]
+async fn an_unadopted_node_on_the_broker_is_left_to_mdns() {
+    let h = harness().await;
+    h.resolve("someone", DIGITAL_IN, None).await;
+    h.devices.adopt("someone".into()).await.unwrap();
+    let mut options = MqttOptions::new("node-stranger1", "127.0.0.1", broker_port(&h).await);
+    options.set_keep_alive(std::time::Duration::from_secs(5));
+    let (node, mut eventloop) = AsyncClient::new(options, 16);
+    tokio::spawn(async move { while eventloop.poll().await.is_ok() {} });
+    node.publish("openhaunt/stranger1/status", QoS::AtLeastOnce, true, "online").await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert!(!h.directory.borrow().entries.contains_key("stranger1"));
+}
+
 #[tokio::test]
 async fn a_node_nobody_adopted_is_not_configured_when_it_appears() {
     let (addr, log) =
@@ -1018,7 +1230,7 @@ async fn a_node_nobody_adopted_is_not_configured_when_it_appears() {
 }
 
 #[tokio::test]
-async fn a_console_restarted_mid_show_recognises_the_devices_it_had_adopted() {
+async fn a_console_restarted_mid_show_recognizes_the_devices_it_had_adopted() {
     // Adoption lives in the fixture, which is persisted; the device list is not.
     // A fresh manager against the same show has to work it out from the fixtures.
     let (addr, log) = a_node(firmware(MAINS_RELAY).flags, firmware(MAINS_RELAY).description).await;
@@ -1039,6 +1251,23 @@ async fn a_console_restarted_mid_show_recognises_the_devices_it_had_adopted() {
         log.lock().unwrap().configs.len() >= 2,
         "and it has to be told where the broker is now, since it cannot know",
     );
+}
+
+/// A node that is off when the console starts is in the list anyway, offline and
+/// adopted, so its zone and its strips can be set up before it is on.
+#[tokio::test]
+async fn a_patched_node_that_is_off_is_listed_offline_after_a_restart() {
+    let (addr, _log) = a_node(firmware(MAINS_RELAY).flags, firmware(MAINS_RELAY).description).await;
+    let h = harness().await;
+    h.resolve("sleeper", MAINS_RELAY, Some(addr)).await;
+    let fixture_id = h.devices.adopt("sleeper".into()).await.unwrap();
+
+    let after_restart = h.with_a_fresh_device_manager().await;
+    eventually("the node to be listed", || async { after_restart.state().await.discovered.contains_key("sleeper") }).await;
+    let state = after_restart.state().await;
+    let device = &state.discovered["sleeper"];
+    assert!(!device.online, "nothing has heard it");
+    assert_eq!(device.adopted_fixture_id, Some(fixture_id), "and it is still patched");
 }
 
 #[tokio::test]
@@ -1070,7 +1299,7 @@ async fn what_a_port_says_it_can_trace_reaches_the_directory() {
         0,
         serde_json::json!({
             "ports": [
-                { "port": 0, "name": "Strip colour", "access": "readwrite", "dataType": "color",
+                { "port": 0, "name": "Strip color", "access": "readwrite", "dataType": "color",
                   "class": "color",
                   "effects": { "shapes": ["sine", "square"], "steps": true, "transitions": true } },
                 { "port": 1, "name": "Brightness", "access": "readwrite", "dataType": "number",
@@ -1084,10 +1313,10 @@ async fn what_a_port_says_it_can_trace_reaches_the_directory() {
 
     let entry = h.directory.borrow().entries.get("strip1").cloned().expect("in the directory");
     let caps = entry.effects.expect("the node said something");
-    let colour = caps.port(0).expect("port 0 did");
-    assert!(colour.has_shape("sine"));
-    assert!(colour.steps);
-    assert!(colour.transitions);
+    let color = caps.port(0).expect("port 0 did");
+    assert!(color.has_shape("sine"));
+    assert!(color.steps);
+    assert!(color.transitions);
     assert!(caps.port(1).is_none(), "and port 1 did not, so it offers nothing");
 }
 
@@ -1209,4 +1438,198 @@ async fn the_console_says_what_time_it_is_once_driving_starts() {
         })
     })
     .await;
+}
+
+// ── The broker list ───────────────────────────────────────────────────────────
+
+fn a_station_at(id: Uuid, broker_addr: &str) -> pult_schema::types::station::Station {
+    pult_schema::types::station::Station {
+        id,
+        hostname: String::new(),
+        is_leader: false,
+        sync_addr: String::new(),
+        http_addr: String::new(),
+        broker_addr: broker_addr.to_string(),
+        broker_doors: Vec::new(),
+        cpu_percent: 0.0,
+        mem_used: 0,
+        mem_total: 0,
+        uptime_s: 0,
+        output_plugins: Vec::new(),
+        computes_fixtures: 0,
+        total_fixtures: 0,
+        frame_costs: Vec::new(),
+        machine: Default::default(),
+        audio_cache: Default::default(),
+        net_received: 0,
+        net_sent: 0,
+        net_window_ms: 0,
+        clock: Default::default(),
+        sacn_slot: None,
+        wing: None,
+        last_seen: Utc::now(),
+    }
+}
+
+#[test]
+fn the_broker_list_puts_the_leader_first_and_every_other_station_after_it() {
+    let me = NodeId(Uuid::from_u128(5));
+    let stations = vec![
+        a_station_at(Uuid::from_u128(9), "10.0.0.9:1883"),
+        a_station_at(me.0, "10.0.0.5:1883"),
+        a_station_at(Uuid::from_u128(2), "10.0.0.2:1883"),
+        // An older peer says nothing, and is not in the list.
+        a_station_at(Uuid::from_u128(3), ""),
+        // Two stations on one address are one door.
+        a_station_at(Uuid::from_u128(4), "10.0.0.2:1883"),
+    ];
+    assert_eq!(
+        broker_list("10.0.0.5:1883", me, &stations, &[]),
+        vec!["10.0.0.5:1883", "10.0.0.2:1883", "10.0.0.9:1883"],
+        "this station first, the rest in a stable order",
+    );
+}
+
+#[test]
+fn the_broker_list_is_as_long_as_a_node_keeps() {
+    let me = NodeId(Uuid::from_u128(1));
+    let stations: Vec<_> =
+        (2..10u128).map(|n| a_station_at(Uuid::from_u128(n), &format!("10.0.0.{n}:1883"))).collect();
+    let list = broker_list("10.0.0.1:1883", me, &stations, &[]);
+    assert_eq!(list.len(), MAX_BROKERS);
+    assert_eq!(list[0], "10.0.0.1:1883");
+}
+
+#[test]
+fn a_station_with_two_networks_is_named_by_the_one_the_nodes_are_on() {
+    // The venue: the house LAN has the default route and is first in the station's
+    // own list; the nodes are on the lighting network, which has no route at all.
+    let me = NodeId(Uuid::from_u128(1));
+    let mut spare = a_station_at(Uuid::from_u128(2), "192.168.1.20:1883");
+    spare.broker_doors = vec!["192.168.1.20:1883".into(), "10.0.0.20:1883".into()];
+    let nodes = ["10.0.0.42".parse().unwrap(), "10.0.0.43".parse().unwrap()];
+    assert_eq!(
+        broker_list("10.0.0.5:1883", me, &[spare.clone()], &nodes),
+        vec!["10.0.0.5:1883", "10.0.0.20:1883"],
+        "the spare on the cable its nodes can reach",
+    );
+    // Seen nowhere yet, a station is named the way it names itself.
+    assert_eq!(broker_list("10.0.0.5:1883", me, &[spare], &[]), vec!["10.0.0.5:1883", "192.168.1.20:1883"]);
+}
+
+#[test]
+fn the_nearest_door_ignores_a_node_on_loopback() {
+    let doors = vec!["192.168.1.5:1883".to_string(), "10.0.0.5:1883".to_string()];
+    assert_eq!(broker::nearest_door(&doors, &["10.0.0.9".parse().unwrap()]).as_deref(), Some("10.0.0.5:1883"));
+    // A simulator on this machine says nothing about which network a remote station
+    // should be reached on.
+    assert_eq!(broker::nearest_door(&doors, &["127.0.0.1".parse().unwrap()]).as_deref(), Some("192.168.1.5:1883"));
+    assert_eq!(broker::nearest_door(&[], &[]), None);
+}
+
+#[test]
+fn a_lighting_network_with_no_route_is_the_door_and_loopback_never_is() {
+    // The regression: `local_ipv4` asks which way a packet to the internet leaves,
+    // and a lighting network has no way out — so the door was 127.0.0.1.
+    let net = crate::infra::net::Network::unconfigured();
+    net.observe(vec![
+        pult_schema::types::network::NetInterface { name: "lo0".into(), addresses: vec!["127.0.0.1".into()], up: true, loopback: true },
+        pult_schema::types::network::NetInterface { name: "en5".into(), addresses: vec!["10.0.1.7".into()], up: true, loopback: false },
+    ]);
+    assert_eq!(broker::doors(&net, 1883), vec!["10.0.1.7:1883"]);
+}
+
+#[tokio::test]
+async fn a_node_is_told_every_broker_and_the_list_is_retained_for_one_nobody_has_seen() {
+    let (addr, log) = a_node(firmware(MAINS_RELAY).flags, firmware(MAINS_RELAY).description).await;
+    let h = harness().await;
+    h.resolve("listed", MAINS_RELAY, Some(addr)).await;
+    h.devices.adopt("listed".into()).await.unwrap();
+
+    let advertised = h.state().await.broker_addr.expect("driving");
+    let configs = log.lock().unwrap().configs.clone();
+    assert_eq!(configs[0]["mqtt"]["brokers"], serde_json::json!([advertised]), "a lone station lists itself");
+
+    // The list is published when the station gets round to it, which on a loaded
+    // machine is after a subscriber has already arrived — and a publish to somebody
+    // already subscribed is delivered live, with the retain flag clear. So one client
+    // waits for the list to exist at all, and only then does the node that arrived by
+    // its list subscribe: that is the claim, a list retained for one nobody has seen.
+    let port = broker_port(&h).await;
+    let first = listen_for_brokers("already-here", port).await;
+    assert_eq!(first.1, serde_json::json!({ "brokers": [advertised] }));
+    let heard = listen_for_brokers("walked-here", port).await;
+    assert!(heard.0, "retained, so it is there for whoever subscribes next");
+    assert_eq!(heard.1, serde_json::json!({ "brokers": [advertised] }));
+}
+
+/// Subscribes to the broker list as a fresh client, answering the first copy that
+/// arrives and whether it came retained.
+async fn listen_for_brokers(client_id: &str, port: u16) -> (bool, serde_json::Value) {
+    let mut options = MqttOptions::new(client_id, "127.0.0.1", port);
+    options.set_keep_alive(std::time::Duration::from_secs(5));
+    let (client, mut eventloop) = AsyncClient::new(options, 16);
+    client.subscribe("openhaunt/brokers", QoS::AtLeastOnce).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if let Ok(rumqttc::Event::Incoming(rumqttc::Packet::Publish(p))) = eventloop.poll().await {
+                if p.topic == "openhaunt/brokers" {
+                    return (p.retain, serde_json::from_slice::<serde_json::Value>(&p.payload).unwrap());
+                }
+            }
+        }
+    })
+    .await
+    .expect("the list arrives on subscribe")
+}
+
+#[tokio::test]
+async fn a_station_that_stops_driving_closes_its_door() {
+    let h = harness().await;
+    h.resolve("door1", DIGITAL_IN, None).await;
+    h.devices.adopt("door1".into()).await.unwrap();
+    let port = broker_port(&h).await;
+    assert!(tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_ok(), "open while it drives");
+
+    h.become_follower().await;
+    eventually("the door to close", || async {
+        tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_err()
+    })
+    .await;
+}
+
+/// This station's address moved — wifi to ethernet — and mDNS has lost sight of the
+/// node, which goes on dialing the old broker. It is still told the new list, at the
+/// address it was last seen at: a browse that has not found it again is no reason to
+/// leave it dialing a door that is not there.
+#[tokio::test]
+async fn a_node_out_of_sight_is_still_told_where_the_broker_went() {
+    let (addr, log) = a_node(firmware(MAINS_RELAY).flags, firmware(MAINS_RELAY).description).await;
+    let h = harness().await;
+    h.resolve("quiet", MAINS_RELAY, Some(addr)).await;
+    h.devices.adopt("quiet".into()).await.unwrap();
+    h.event(DeviceEvent::Removed { serial: "quiet".into() }).await;
+    let told = log.lock().unwrap().configs.len();
+
+    let spare = a_station_at(Uuid::from_u128(99), "10.9.9.9:1883");
+    h.engine
+        .set(
+            vec![PathSegment::Key("stations".into()), PathSegment::Key("__create".into())],
+            Lifecycle::Synced,
+            serde_json::to_value(&spare).unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let configs = log.lock().unwrap().configs.clone();
+        if let Some(last) = configs.get(told..).and_then(|new| new.last()) {
+            let brokers = last["mqtt"]["brokers"].as_array().unwrap();
+            assert!(brokers.iter().any(|b| b == "10.9.9.9:1883"), "the new list, spare and all: {last}");
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "a node out of sight was never told");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }

@@ -18,6 +18,21 @@
 //! was declined outright, because the reference clock must not be a tab a browser can
 //! throttle to one frame a minute when somebody switches to their email.
 //!
+//! # One stream, a deck per timeline
+//!
+//! A timeline's sound is a list of clips, each with its own place, trim and destination
+//! — see `types::timeline::AudioClip`. Every clip of every running timeline this station
+//! plays is mixed into **one** output stream at the device's full channel count, which
+//! is how a Dante Virtual Soundcard's sixty-four channels become sixty-four zones.
+//! `pult_audio::mix` is the arithmetic; [`device::Output`] is the stream it runs in.
+//! Each running timeline is a *deck* in that mixer, with its own cursor advanced by the
+//! one callback — so each timeline anchors itself, and two timelines on one station
+//! share one clock and cannot drift apart.
+//!
+//! The device is open while anything this station plays has clips, running or not,
+//! because opening a device takes longer than a scare is allowed to take to start; and
+//! every clip's file is decoded as soon as it is on a timeline, for the same reason.
+//!
 //! And the reference *is* the sound. The playhead this manager reads is the position
 //! the audio callback has actually delivered, minus what the device says is still in
 //! front of the loudspeaker — not a wall clock, because a sound card's crystal and a
@@ -61,6 +76,8 @@
 pub mod decode;
 pub mod device;
 pub mod models;
+pub mod monitor;
+pub mod nodes;
 
 use std::collections::{HashMap, HashSet};
 use pult_schema::{
@@ -73,12 +90,14 @@ use pult_schema::{
     },
 };
 use tokio::sync::{mpsc, oneshot};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::{engine::EngineHandle, infra::assets::AssetStore};
 use decode::AudioCache;
-use device::{AudioDevices, Listener, Player};
+use device::{AudioDevices, Listener, Output, MAX_DECKS};
+use pult_schema::types::timeline::{AtEnd, AudioClip, AudioOutput};
+use pult_schema::types::zone::{destination_gain, station_channels, SpeakerZone};
 
 /// How far the sound may be from the show's anchor before the anchor is rewritten.
 ///
@@ -103,11 +122,34 @@ pub struct AudioPrefs {
     pub output: Option<String>,
     /// Where timecode comes in.
     pub input: Option<String>,
+    /// How far ahead a stream to an OpenHaunt node is sent: the playout delay the node
+    /// buffers. 150 ms when unsaid, which rides out ordinary wifi and still feels
+    /// immediate for a triggered scare.
+    pub node_stream_delay_ms: Option<u32>,
+    /// What this station calls its sound cards and their channels, keyed by the
+    /// device's own name — the key `output` already matches by. Names only: nothing
+    /// plays differently for them, but a zone mapped to "FOH L, FOH R" is a mapping
+    /// somebody can check, and one mapped to "1, 2" on a 64-channel card is not.
+    /// A fact about the wiring of this machine, so never show data.
+    pub names: std::collections::BTreeMap<String, DeviceNames>,
+}
+
+/// One sound card's names.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct DeviceNames {
+    /// What it is called here: "Garden Dante" rather than "Dante Virtual Soundcard".
+    pub alias: Option<String>,
+    /// Channel names, the first being channel 1. Empty is unnamed. A list rather than a
+    /// map because TOML keys are strings and a channel is a number.
+    pub channels: Vec<String>,
 }
 
 pub enum AudioCommand {
     /// The `timelines` collection changed. Reconcile against it.
     Timelines(Vec<Timeline>),
+    /// The `speaker_zones` collection changed: where each zone is, on every station.
+    Zones(Vec<SpeakerZone>),
     /// Timecode samples, from a device or from a test.
     ///
     /// **The test seam**, and it is the whole reason the decoder is fed by a channel
@@ -115,9 +157,17 @@ pub enum AudioCommand {
     /// through the real chase, the real anchor write and the real event firing without
     /// a sound card anywhere near CI.
     Timecode { timeline_id: Uuid, samples: Vec<f32>, sample_rate: u32 },
-    /// Find the beats in a timeline's audio and write them to `detected`.
-    Detect { timeline_id: Uuid, reply: oneshot::Sender<Result<Detected, String>> },
+    /// Find the beats in one of a timeline's clips — the first, unless another is
+    /// named — and write them to `detected`, in timeline positions.
+    Detect {
+        timeline_id: Uuid,
+        clip_id: Option<Uuid>,
+        reply: oneshot::Sender<Result<Detected, String>>,
+    },
     Devices { reply: oneshot::Sender<AudioDevices> },
+    /// A page wants to listen: chunks of one timeline's sound, or every running one's,
+    /// sent until the receiver is dropped. See [`monitor`].
+    Monitor { timeline: Option<Uuid>, chunks: mpsc::Sender<Vec<u8>> },
     #[allow(dead_code, reason = "Stop has no caller until the server shuts down gracefully")]
     Stop,
 }
@@ -132,18 +182,31 @@ impl AudioHandle {
         let _ = self.0.try_send(AudioCommand::Timelines(timelines));
     }
 
+    /// Hand over the speaker zones. Never blocks the engine either.
+    pub fn zones(&self, zones: Vec<SpeakerZone>) {
+        let _ = self.0.try_send(AudioCommand::Zones(zones));
+    }
+
     /// Feed timecode straight in. See [`AudioCommand::Timecode`].
     pub async fn feed_timecode(&self, timeline_id: Uuid, samples: Vec<f32>, sample_rate: u32) {
         let _ = self.0.send(AudioCommand::Timecode { timeline_id, samples, sample_rate }).await;
     }
 
-    pub async fn detect(&self, timeline_id: Uuid) -> Result<Detected, String> {
+    pub async fn detect(&self, timeline_id: Uuid, clip_id: Option<Uuid>) -> Result<Detected, String> {
         let (reply, answer) = oneshot::channel();
         self.0
-            .send(AudioCommand::Detect { timeline_id, reply })
+            .send(AudioCommand::Detect { timeline_id, clip_id, reply })
             .await
             .map_err(|_| "the audio manager has stopped".to_string())?;
         answer.await.map_err(|_| "the audio manager did not answer".to_string())?
+    }
+
+    /// Listen: one timeline's sound, or every running timeline's, as monitor chunks
+    /// until the receiver is dropped. See [`monitor`].
+    pub async fn monitor(&self, timeline: Option<Uuid>) -> Option<mpsc::Receiver<Vec<u8>>> {
+        let (chunks, rx) = mpsc::channel(monitor::QUEUE);
+        self.0.send(AudioCommand::Monitor { timeline, chunks }).await.ok()?;
+        Some(rx)
     }
 
     pub async fn devices(&self) -> AudioDevices {
@@ -155,10 +218,14 @@ impl AudioHandle {
     }
 }
 
-/// One timeline's audio, playing on this station.
+/// One timeline's deck, playing on this station.
 struct Playing {
-    sha: String,
-    player: Player,
+    /// Which of the output's slots its cursor is read back from.
+    slot: usize,
+    /// Everything the deck was built from, so a pass that changes nothing about the
+    /// sound sends nothing to the callback. A clip dragged while the timeline runs does
+    /// change it, and the rebuilt deck carries on from the old one's cursor.
+    built: String,
     /// The transport this manager last *wrote*, so its own write coming back round
     /// is not mistaken for an operator locating.
     ///
@@ -186,6 +253,20 @@ struct Chasing {
 /// Owns the devices, the decoded files and what is playing.
 pub struct AudioManager {
     node_id: NodeId,
+    /// What this station calls its cards and channels, and when the preferences file
+    /// it was read from last changed: re-read when that moves, so a name typed on this
+    /// station's page reaches the others without a restart.
+    names: (Option<std::time::SystemTime>, std::collections::BTreeMap<String, DeviceNames>),
+    /// The `station_audio` row last written, so it is written only when it moves.
+    station_said: Option<pult_schema::types::StationAudio>,
+    /// The card this station would open, while it has none open: what the preference
+    /// names, or the default, by its own name and channel count — looked up from the
+    /// machine's device list, which blocks, so only when the preference moved or a
+    /// minute after a lookup that found nothing.
+    card: Option<Card>,
+    /// What this machine is called, for a fault that has to say which station has not
+    /// mapped a zone — the status row of the one station the browser is on.
+    station_name: String,
     engine: EngineHandle,
     net: crate::infra::net::NetHandle,
     prefs: AudioPrefs,
@@ -198,20 +279,37 @@ pub struct AudioManager {
     samples: mpsc::Receiver<(Uuid, Vec<f32>, u32)>,
     cache: AudioCache,
     timelines: Vec<Timeline>,
+    /// Where each zone is, on every station. See `types::zone`.
+    zones: Vec<SpeakerZone>,
+    /// The one stream every clip here is mixed into. `None` when nothing this station
+    /// plays has a clip.
+    output: Option<Output>,
+    /// Why there is no stream, where one is wanted.
+    output_fault: Option<String>,
     playing: HashMap<Uuid, Playing>,
     chasing: HashMap<Uuid, Chasing>,
-    /// Assets whose peaks are being computed *right now*, so two passes do not start
-    /// twice. Cleared when the write lands — `Timeline::peaks` is what stops it being
-    /// done again, and it has to be, because the same file put back on a timeline
-    /// somebody had cleared needs reducing a second time.
-    reducing: HashSet<String>,
-    /// Assets that would not decode. Kept apart from `reducing` and never cleared:
+    /// The waveform asset of every file this station has reduced, by the file's sha.
+    reduced: HashMap<String, String>,
+    /// The clips whose waveform this station has written, and for which file — so a
+    /// copy of the timeline that has not caught up with that write is not written again.
+    peaks_written: HashMap<Uuid, String>,
+    /// Assets that would not decode. Kept apart from `reduced` and never cleared:
     /// a file that will never decode must not be decoded again every second for the
     /// rest of the show, and it is the *only* thing that should be remembered that way.
     refused: HashSet<String>,
     /// Why a timeline is not playing, keyed by timeline. Kept rather than only logged:
     /// see [`device`] on a refusal that says so.
     faults: HashMap<Uuid, String>,
+    /// Why a clip is not playing while the rest of its timeline is, keyed by timeline
+    /// and then by clip.
+    clip_faults: HashMap<Uuid, std::collections::BTreeMap<String, String>>,
+    /// Which of this station's channels each clip comes out of, keyed by timeline and
+    /// then by clip: its zone through this station's map.
+    clip_channels: HashMap<Uuid, std::collections::BTreeMap<String, Vec<u16>>>,
+    /// What the OpenHaunt nodes' loudspeakers hold and are told. See [`nodes`].
+    nodes: nodes::Nodes,
+    /// The pages listening. Asked for, never published: with none, nothing is rendered.
+    monitors: Vec<monitor::Listener>,
 }
 
 impl AudioManager {
@@ -230,23 +328,53 @@ impl AudioManager {
         (
             AudioManager {
                 node_id,
+                // The name every other panel already knows this machine by: the
+                // `stations` row's hostname. Cheap, and asked once.
+                station_name: sysinfo::System::host_name().unwrap_or_else(|| "this station".into()),
                 engine,
                 net,
-                prefs,
+                prefs: prefs.clone(),
                 assets,
                 rx,
                 samples_tx,
                 samples,
-                cache: AudioCache::default(),
+                cache: AudioCache::sized_for_this_machine(),
                 timelines: Vec::new(),
+                zones: Vec::new(),
+                output: None,
+                output_fault: None,
                 playing: HashMap::new(),
                 chasing: HashMap::new(),
-                reducing: HashSet::new(),
+                reduced: HashMap::new(),
+                peaks_written: HashMap::new(),
                 refused: HashSet::new(),
                 faults: HashMap::new(),
+                clip_faults: HashMap::new(),
+                clip_channels: HashMap::new(),
+                nodes: nodes::Nodes::new(prefs.node_stream_delay_ms),
+                monitors: Vec::new(),
+                names: (None, prefs.names.clone()),
+                station_said: None,
+                card: None,
             },
             AudioHandle(tx),
         )
+    }
+
+    /// The decoded files, for the station row to report on.
+    pub fn cache(&self) -> AudioCache {
+        self.cache.clone()
+    }
+
+    /// Where the OpenHaunt nodes are and how to talk to them, so a clip can be routed
+    /// to one. A manager without them plays only its own device.
+    pub fn with_nodes(
+        mut self,
+        directory: tokio::sync::watch::Receiver<crate::infra::devices::DeviceDirectory>,
+        devices: crate::infra::devices::DeviceHandle,
+    ) -> Self {
+        self.nodes.attach(directory, devices);
+        self
     }
 
     pub async fn run(mut self) {
@@ -269,13 +397,19 @@ impl AudioManager {
                         AudioCommand::Stop => break,
                         AudioCommand::Timelines(timelines) => {
                             self.timelines = timelines;
+                            self.nodes.saw_timelines();
+                            self.reconcile().await;
+                        }
+                        AudioCommand::Zones(zones) => {
+                            self.zones = zones;
+                            self.nodes.saw_timelines();
                             self.reconcile().await;
                         }
                         AudioCommand::Timecode { timeline_id, samples, sample_rate } => {
                             self.take_timecode(timeline_id, &samples, sample_rate).await;
                         }
-                        AudioCommand::Detect { timeline_id, reply } => {
-                            let _ = reply.send(self.detect(timeline_id).await);
+                        AudioCommand::Detect { timeline_id, clip_id, reply } => {
+                            let _ = reply.send(self.detect(timeline_id, clip_id).await);
                         }
                         AudioCommand::Devices { reply } => {
                             // On a blocking thread, always. See [`device`].
@@ -284,13 +418,25 @@ impl AudioManager {
                                 .unwrap_or_default();
                             let _ = reply.send(found);
                         }
+                        AudioCommand::Monitor { timeline, chunks } => {
+                            self.monitors.push(monitor::Listener::new(timeline, chunks));
+                        }
                     }
                 }
                 got = self.samples.recv() => {
                     let Some((timeline_id, samples, sample_rate)) = got else { break };
                     self.take_timecode(timeline_id, &samples, sample_rate).await;
                 }
-                _ = steer.tick() => self.steer().await,
+                Some(done) = self.nodes.results.recv() => self.node_request_done(done).await,
+                // A node moving is acted on at once, not at the next report: see
+                // `follow_nodes`.
+                _ = nodes::moved(&mut self.nodes.directory) => self.follow_nodes(),
+                _ = steer.tick() => {
+                    self.steer().await;
+                    self.feed_monitors(pult_schema::clock::now_ms()).await;
+                    self.schedule_nodes(pult_schema::clock::now_ms());
+                    self.say_upload_progress().await;
+                }
                 _ = report.tick() => {
                     // Where a device appearing or disappearing is acted on, and where a
                     // failover changes which station is playing — neither changes the
@@ -316,88 +462,270 @@ impl AudioManager {
         }
     }
 
+    /// The clips of a timeline this station mixes itself, each with the channels its
+    /// zone is here — or why it has none. A clip only a node plays is not in it.
+    fn station_clips<'t>(&self, timeline: &'t Timeline) -> Vec<(&'t AudioClip, Result<Vec<Vec<u16>>, String>)> {
+        timeline
+            .clips
+            .iter()
+            .filter_map(|clip| {
+                station_channels(&clip.destination, &self.zones, self.node_id, &self.station_name)
+                    .map(|channels| (clip, channels))
+            })
+            .collect()
+    }
+
     // ── Reconciling ───────────────────────────────────────────────────────────
 
     async fn reconcile(&mut self) {
         let timelines = self.timelines.clone();
+        self.cache.pin(timelines.iter().flat_map(|t| t.clips.iter().map(|c| c.asset.clone())).collect());
         let mine: Vec<&Timeline> = timelines.iter().filter(|t| self.plays(t)).collect();
         let ids: HashSet<Uuid> = mine.iter().map(|t| t.id).collect();
 
-        // Anything this station has stopped being responsible for. Dropping a `Player`
-        // stops the sound; dropping a `Listener` closes the input device.
-        self.playing.retain(|id, _| ids.contains(id));
+        // Anything this station has stopped being responsible for. Dropping a
+        // `Listener` closes the input device; a deck is taken out of the mixer.
+        let gone: Vec<Uuid> = self.playing.keys().filter(|id| !ids.contains(id)).copied().collect();
+        for id in gone {
+            self.stop_deck(id);
+        }
         self.chasing.retain(|id, _| ids.contains(id));
         self.faults.retain(|id, _| ids.contains(id));
+        self.clip_faults.retain(|id, _| ids.contains(id));
+        self.clip_channels.retain(|id, _| ids.contains(id));
 
+        self.reconcile_output(&mine).await;
         for timeline in mine {
-            self.reconcile_audio(timeline).await;
+            self.reconcile_deck(timeline).await;
             self.reconcile_timecode(timeline).await;
             self.reconcile_peaks(timeline).await;
         }
+        if let Some(output) = &self.output {
+            output.collect();
+        }
+        self.reconcile_nodes().await;
     }
 
-    async fn reconcile_audio(&mut self, timeline: &Timeline) {
-        let wanted = timeline.audio.clone().filter(|_| timeline.running);
-        let held = self.playing.get(&timeline.id).map(|p| p.sha.clone());
-        match (held, wanted) {
-            (Some(held), Some(wanted)) if held == wanted => {}
-            (_, None) => {
-                if self.playing.remove(&timeline.id).is_some() {
-                    info!("[audio] stopped playing for {}", timeline.name);
-                }
-                self.faults.remove(&timeline.id);
+    /// Open the device while anything this station plays has a clip on it, and close
+    /// it when nothing does.
+    ///
+    /// Open while those timelines are *stopped* too: a scare is a timeline a flow
+    /// starts, and opening CoreAudio takes longer than a scare may take to begin.
+    async fn reconcile_output(&mut self, mine: &[&Timeline]) {
+        let wanted = mine.iter().any(|t| !self.station_clips(t).is_empty());
+        if !wanted {
+            if self.output.take().is_some() {
+                info!("[audio] nothing here has sound any more; the output is closed");
             }
-            (_, Some(sha)) => {
-                self.playing.remove(&timeline.id);
-                let from = timeline.position_at(pult_schema::clock::now_ms());
-                match self.open(&sha, from).await {
-                    Ok(player) => {
-                        info!(
-                            "[audio] {} playing through {} from {from} ms",
-                            timeline.name, player.device_name
-                        );
-                        self.faults.remove(&timeline.id);
-                        self.playing.insert(
-                            timeline.id,
-                            Playing {
-                                sha,
-                                player,
-                                wrote: None,
-                                seen: transport_of(timeline),
-                            },
-                        );
-                    }
-                    Err(e) => {
-                        // Named on the row, not only in the log — the rule
-                        // `Network::bind` follows for a cable that is not there.
-                        if self.faults.get(&timeline.id) != Some(&e) {
-                            warn!("[audio] {} has no sound: {e}", timeline.name);
-                        }
-                        self.faults.insert(timeline.id, e);
-                    }
+            self.playing.clear();
+            self.output_fault = None;
+            return;
+        }
+        if self.output.is_some() {
+            return;
+        }
+        match Output::open(self.prefs.output.clone()).await {
+            Ok(output) => {
+                info!(
+                    "[audio] mixing into {} ({} channels at {} Hz)",
+                    output.device_name, output.channels, output.sample_rate
+                );
+                self.output = Some(output);
+                self.output_fault = None;
+                // A new stream has no decks in it, whatever this map says.
+                self.playing.clear();
+            }
+            Err(e) => {
+                // Named on the row, not only in the log — the rule `Network::bind`
+                // follows for a cable that is not there.
+                if self.output_fault.as_ref() != Some(&e) {
+                    warn!("[audio] no output: {e}");
                 }
+                self.output_fault = Some(e);
             }
         }
     }
 
-    /// Decode an asset — fetching it from a peer if this station has never seen it —
-    /// and open a device on it.
-    async fn open(&mut self, sha: &str, from_ms: u64) -> Result<Player, String> {
-        let decoded = match self.cache.get(sha) {
-            Some(decoded) => decoded,
+    /// A timeline's deck: built from its clips while it runs, and gone when it stops.
+    async fn reconcile_deck(&mut self, timeline: &Timeline) {
+        let clips = self.station_clips(timeline);
+        // Every file decoded as soon as it is on a timeline, so that pressing play — or a
+        // flow pressing it — does not wait for an mp3.
+        let mut voices = Vec::new();
+        let mut faults = std::collections::BTreeMap::new();
+        let mut routed = std::collections::BTreeMap::new();
+        let device_channels = self.output.as_ref().map(|o| o.channels as usize);
+        for (clip, channels) in &clips {
+            // A zone this station has not mapped is said by name before anything is
+            // decoded: there is nothing to play it through, and folding it onto channels
+            // this card has would be somebody else's speaker.
+            let channels = match channels {
+                Ok(channels) => channels,
+                Err(e) => {
+                    faults.insert(clip.id.to_string(), e.clone());
+                    continue;
+                }
+            };
+            // Where it comes out here, every output once, for the status row.
+            let mut outputs: Vec<u16> = channels.iter().flatten().copied().collect();
+            outputs.sort_unstable();
+            outputs.dedup();
+            routed.insert(clip.id.to_string(), outputs);
+            match self.voice(clip, channels, device_channels).await {
+                Ok(Some(voice)) => voices.push(voice),
+                // Decoded, with no device to route it to: the timeline's own fault says
+                // why, once, rather than every clip saying it again.
+                Ok(None) => {}
+                Err(e) => {
+                    faults.insert(clip.id.to_string(), e);
+                }
+            }
+        }
+        if routed.is_empty() {
+            self.clip_channels.remove(&timeline.id);
+        } else {
+            self.clip_channels.insert(timeline.id, routed.clone());
+        }
+        if self.clip_faults.get(&timeline.id).map_or(!faults.is_empty(), |held| *held != faults) {
+            for (clip, fault) in &faults {
+                warn!("[audio] a clip on {} is not playing ({clip}): {fault}", timeline.name);
+            }
+        }
+        if faults.is_empty() {
+            self.clip_faults.remove(&timeline.id);
+        } else {
+            self.clip_faults.insert(timeline.id, faults);
+        }
+
+        if !timeline.running || clips.is_empty() {
+            if self.playing.contains_key(&timeline.id) {
+                info!("[audio] stopped playing for {}", timeline.name);
+            }
+            self.stop_deck(timeline.id);
+            self.faults.remove(&timeline.id);
+            return;
+        }
+        let Some(output) = &self.output else {
+            if let Some(fault) = &self.output_fault {
+                self.faults.insert(timeline.id, fault.clone());
+            }
+            return;
+        };
+        self.faults.remove(&timeline.id);
+
+        // The channels each clip resolved to are in it, so re-mapping a zone while it
+        // sounds rebuilds the deck rather than leaving it on the channels it had.
+        // And each clip's zone level, so turning a zone down while it sounds is heard.
+        let levels: Vec<f32> = timeline.clips.iter().map(|c| destination_gain(&c.destination, &self.zones)).collect();
+        let built = serde_json::to_string(&(&timeline.clips, &timeline.end, voices.len(), &routed, &levels))
+            .unwrap_or_default();
+        let held = self.playing.get(&timeline.id);
+        if held.is_some_and(|p| p.built == built) {
+            return;
+        }
+        let slot = match held {
+            Some(playing) => playing.slot,
             None => {
-                let bytes = self.asset_bytes(sha).await?;
-                self.cache.decode(sha, bytes).await?
+                let taken: HashSet<usize> = self.playing.values().map(|p| p.slot).collect();
+                match (0..MAX_DECKS).find(|slot| !taken.contains(slot)) {
+                    Some(slot) => slot,
+                    None => {
+                        self.faults.insert(
+                            timeline.id,
+                            format!("{MAX_DECKS} timelines are already sounding on this station"),
+                        );
+                        return;
+                    }
+                }
             }
         };
-        Player::start(
-            self.prefs.output.clone(),
-            decoded.samples.clone(),
-            decoded.channels,
-            decoded.sample_rate,
-            from_ms,
-        )
-        .await
+        let now = pult_schema::clock::now_ms();
+        let latency = output.latency_ms();
+        // Started a latency ahead, so that what comes out of the loudspeaker is where
+        // the show is — see [`Output::position_ms`]. A timeline played with its anchor
+        // still to come (a count-in) holds its position until then, so the deck waits
+        // in silence and starts a latency before the anchor, from where it will be.
+        let (from, wait_ms) = match timeline.anchor_ms.checked_sub(now + latency) {
+            Some(wait) if wait > 0 => (folded(timeline, timeline.position_at_anchor_ms), wait),
+            _ => (folded(timeline, timeline.position_at(now)) + latency, 0),
+        };
+        let mut deck = pult_audio::Deck::new(timeline.id.as_u128(), from as f64, voices);
+        deck.wait_ms = wait_ms as f64;
+        deck.tag = slot;
+        deck.rate = timeline.rate.max(0.0) as f64;
+        deck.end = deck_end(timeline);
+        let keep_cursor = held.is_some();
+        match output.put(deck, keep_cursor) {
+            Ok(()) => {
+                if !keep_cursor {
+                    info!(
+                        "[audio] {} playing through {} from {} ms, as deck {slot}, {} ms to the loudspeaker",
+                        timeline.name,
+                        output.device_name,
+                        from,
+                        latency
+                    );
+                }
+                let seen = transport_of(timeline);
+                let wrote = self.playing.get(&timeline.id).and_then(|p| p.wrote);
+                self.playing.insert(timeline.id, Playing { slot, built, wrote, seen });
+            }
+            // Tried again on the next pass, with nothing remembered as built.
+            Err(e) => warn!("[audio] {} could not start: {e}", timeline.name),
+        }
+    }
+
+    fn stop_deck(&mut self, timeline_id: Uuid) {
+        if self.playing.remove(&timeline_id).is_some() {
+            if let Some(output) = &self.output {
+                output.remove(timeline_id.as_u128());
+            }
+        }
+    }
+
+    /// One clip, decoded and routed to its zone's channels on the open device.
+    /// `Ok(None)` is decoded with no device to route it to.
+    async fn voice(
+        &mut self,
+        clip: &AudioClip,
+        channels: &[Vec<u16>],
+        device_channels: Option<usize>,
+    ) -> Result<Option<pult_audio::Voice>, String> {
+        let decoded = self.decoded(&clip.asset).await?;
+        let Some(device_channels) = device_channels else { return Ok(None) };
+        let routes = pult_audio::mix::route_sides(decoded.channels as usize, channels, device_channels)
+            .map_err(|e| e.to_string())?;
+        Ok(Some(pult_audio::Voice {
+            source: pult_audio::Source {
+                samples: decoded.samples.clone(),
+                channels: decoded.channels as usize,
+                sample_rate: decoded.sample_rate,
+            },
+            placement: pult_audio::Placement {
+                gain: placement(clip).gain * destination_gain(&clip.destination, &self.zones),
+                ..placement(clip)
+            },
+            routes,
+        }))
+    }
+
+    /// A file, decoded, from the cache or from wherever its bytes are. A file that
+    /// would not decode is remembered as such and not tried again.
+    async fn decoded(&mut self, sha: &str) -> Result<std::sync::Arc<decode::Decoded>, String> {
+        if self.refused.contains(sha) {
+            return Err("the file would not decode".into());
+        }
+        if let Some(decoded) = self.cache.get(sha) {
+            return Ok(decoded);
+        }
+        let bytes = self.asset_bytes(sha).await?;
+        match self.cache.decode(sha, bytes).await {
+            Ok(decoded) => Ok(decoded),
+            Err(e) => {
+                self.refused.insert(sha.to_string());
+                Err(e)
+            }
+        }
     }
 
     /// An asset's bytes, from here or from a peer.
@@ -405,24 +733,7 @@ impl AudioManager {
     /// The same path a plugin bundle takes, and for the same reason: a file uploaded at
     /// front of house has to reach the station backstage, and it cannot ride the oplog.
     async fn asset_bytes(&self, sha: &str) -> Result<Vec<u8>, String> {
-        let store = self.assets.as_ref().ok_or_else(|| "no show is open".to_string())?;
-        if let Ok(Some(asset)) = store.get(sha).await {
-            return Ok(asset.bytes);
-        }
-        let peers = crate::infra::assets::peer_addresses(&self.engine, self.node_id.0).await;
-        if peers.is_empty() {
-            return Err("this station has not got the audio, and there is no peer to ask".into());
-        }
-        match crate::infra::assets::fetch_from_peers(store, sha, &peers).await {
-            Ok(crate::infra::assets::Fetched::Got(asset)) => Ok(asset.bytes),
-            Ok(crate::infra::assets::Fetched::NobodyHasIt) => {
-                Err("no station in this session has the audio file".into())
-            }
-            Ok(crate::infra::assets::Fetched::Unreachable(n)) => {
-                Err(format!("{n} station(s) could not be asked for the audio"))
-            }
-            Err(e) => Err(format!("the audio could not be fetched: {e}")),
-        }
+        asset_bytes(self.assets.as_ref(), &self.engine, self.node_id, sha).await
     }
 
     // ── Steering ──────────────────────────────────────────────────────────────
@@ -444,46 +755,67 @@ impl AudioManager {
 
     /// The internal case: the sound is the reference and the anchor follows it.
     async fn steer_to_the_sound(&mut self, timeline: &Timeline, now: u64) {
+        let Some(output) = &self.output else { return };
         let Some(playing) = self.playing.get_mut(&timeline.id) else { return };
         if !timeline.running {
             return;
         }
+        let id = timeline.id.as_u128();
         let transport = transport_of(timeline);
-        let target = timeline.position_at(now);
+        // Counting in: the deck is waiting for the anchor and there is no sound yet to
+        // steer by — measured against a held playhead, the wait would read as drift and
+        // be "corrected" by moving the anchor to now, which is the count-in gone. A
+        // transport moved meanwhile (played again, located) builds the deck afresh.
+        if now < timeline.anchor_ms + output.latency_ms() {
+            if transport != playing.seen {
+                self.stop_deck(timeline.id);
+            }
+            return;
+        }
+        let target = folded(timeline, timeline.position_at(now));
+        let measured = output.position_ms(playing.slot);
+        let drift = measured as i64 - target as i64;
 
         // Somebody located, or pressed play from somewhere. Told apart from this
         // station's own write coming back exactly rather than by a tolerance — see
-        // [`Playing::wrote`].
+        // [`Playing::wrote`]. And followed only where the sound is not already there:
+        // the deck wraps itself at a looping timeline's end, so the leader's relocate
+        // there arrives where the sound already is, and seeking to it would be a click.
         if transport != playing.seen {
             playing.seen = transport;
             let ours = playing.wrote == Some((transport.0, transport.1));
             if !ours {
-                playing.player.seek(target);
-                playing.player.set_rate(timeline.rate.max(0.0));
+                if drift.abs() > DRIFT_MS {
+                    info!(
+                        "[audio] {} was moved: the sound at {measured} ms goes to {target} ms (deck {}, {} ms latency)",
+                        timeline.name,
+                        playing.slot,
+                        output.latency_ms()
+                    );
+                    output.seek(id, target + output.latency_ms());
+                }
+                output.set_rate(id, timeline.rate.max(0.0));
                 return;
             }
         }
-        // The rate is the show's; the chase only ever changes it while following
-        // timecode, and an internal timeline plays at whatever `rate` says.
-        if (playing.player.rate() - timeline.rate).abs() > 1e-4 {
-            playing.player.set_rate(timeline.rate.max(0.0));
-        }
-        if playing.player.finished() {
-            // The file has run out. The timeline goes on — a song is shorter than the
-            // act it is in — and there is nothing left to measure the anchor against.
+        if !output.sounding(playing.slot) {
+            // Nothing is audible — between two clips, or after the last one. The
+            // timeline goes on, and there is nothing anybody can hear to be in step with.
             return;
         }
-
-        let measured = playing.player.position_ms();
-        let drift = measured as i64 - target as i64;
         if drift.abs() <= DRIFT_MS {
             return;
         }
         // The anchor is rewritten *from the sound*, which is the whole rule. One write
         // rather than two fields, through the timeline's own `locate` command, so it
         // replicates as one operation exactly the way a Go does.
-        let wrote = (now, measured);
-        playing.wrote = Some(wrote);
+        info!(
+            "[audio] {} is {drift:+} ms from the show; the anchor follows the sound to {measured} ms (deck {}, {} ms latency)",
+            timeline.name,
+            playing.slot,
+            output.latency_ms()
+        );
+        playing.wrote = Some((now, measured));
         playing.seen = (now, measured, timeline.rate);
         self.locate(timeline.id, measured, now).await;
     }
@@ -497,15 +829,17 @@ impl AudioManager {
         }
         let Some(timecode) = chasing.position_ms else { return };
 
-        // The player follows our own playhead against the timecode — resampled within
+        // The deck follows our own playhead against the timecode — resampled within
         // ±2% for a small gap, seeked for a large one.
-        if let Some(playing) = self.playing.get_mut(&timeline.id) {
-            match pult_audio::chase(timecode, playing.player.position_ms()) {
-                pult_audio::Chase::Hold => playing.player.set_rate(1.0),
-                pult_audio::Chase::Varispeed(ratio) => playing.player.set_rate(ratio),
+        if let (Some(output), Some(playing)) = (&self.output, self.playing.get(&timeline.id)) {
+            let id = timeline.id.as_u128();
+            match pult_audio::chase(timecode, output.position_ms(playing.slot)) {
+                pult_audio::Chase::Hold => output.set_rate(id, 1.0),
+                pult_audio::Chase::Varispeed(ratio) => output.set_rate(id, ratio),
                 pult_audio::Chase::Locate(at) => {
-                    playing.player.seek(at);
-                    playing.player.set_rate(1.0);
+                    info!("[audio] {} relocated to timecode at {at} ms", timeline.name);
+                    output.seek(id, at + output.latency_ms());
+                    output.set_rate(id, 1.0);
                 }
             }
         }
@@ -633,32 +967,59 @@ impl AudioManager {
 
     // ── Peaks, and the detector ───────────────────────────────────────────────
 
-    /// A timeline that has audio and no waveform gets one, once.
+    /// A clip with no waveform gets one, once.
     ///
     /// Computed by **the station that plays it**, which is what stops two stations
     /// reducing the same file and racing to write the row. A station that cannot get
     /// the asset says nothing and tries again on the next tick: a peer that is still
     /// coming up is not a peer without the file.
+    ///
+    /// Remembered twice over, and both were a defect first. A file is reduced once
+    /// however many clips and timelines use it (`reduced`). And a clip is *written*
+    /// once (`peaks_written`): `clips` is one column, so the write is the whole list,
+    /// and the copies of the timeline arriving here are behind this manager's own
+    /// writes — each stale copy without the waveform started the reduction and the
+    /// write again, which on a timeline with two files went on for ever.
     async fn reconcile_peaks(&mut self, timeline: &Timeline) {
-        let Some(sha) = timeline.audio.clone() else { return };
-        if timeline.peaks.is_some()
-            || self.reducing.contains(&sha)
-            || self.refused.contains(&sha)
-            || self.assets.is_none()
-        {
+        let missing: Vec<&AudioClip> = timeline
+            .clips
+            .iter()
+            .filter(|clip| clip.peaks.is_none())
+            .filter(|clip| self.peaks_written.get(&clip.id) != Some(&clip.asset))
+            .collect();
+        if missing.is_empty() || self.assets.is_none() {
             return;
         }
-        self.reducing.insert(sha.clone());
-
-        let Ok(bytes) = self.asset_bytes(&sha).await else {
-            self.reducing.remove(&sha);
+        let files: std::collections::BTreeSet<String> = missing.iter().map(|c| c.asset.clone()).collect();
+        for sha in files {
+            if !self.reduced.contains_key(&sha) && !self.refused.contains(&sha) {
+                self.reduce(&timeline.name, sha).await;
+            }
+        }
+        let mut clips = timeline.clips.clone();
+        let mut wrote = Vec::new();
+        for clip in clips.iter_mut().filter(|c| c.peaks.is_none()) {
+            if let Some(peaks) = self.reduced.get(&clip.asset) {
+                clip.peaks = Some(peaks.clone());
+                wrote.push((clip.id, clip.asset.clone()));
+            }
+        }
+        if wrote.is_empty() {
             return;
-        };
+        }
+        let clips = serde_json::to_value(&clips).unwrap_or_default();
+        if self.write(timeline.id, "clips", clips).await {
+            self.peaks_written.extend(wrote);
+        }
+    }
+
+    /// Decode a file and store its waveform, into `reduced`.
+    async fn reduce(&mut self, name: &str, sha: String) {
+        let Ok(bytes) = self.asset_bytes(&sha).await else { return };
         let decoded = match self.cache.decode(&sha, bytes).await {
             Ok(decoded) => decoded,
             Err(e) => {
-                warn!("[audio] {} could not be decoded: {e}", timeline.name);
-                self.reducing.remove(&sha);
+                warn!("[audio] a clip on {name} could not be decoded: {e}");
                 self.refused.insert(sha);
                 return;
             }
@@ -672,32 +1033,14 @@ impl AudioManager {
             pult_audio::Peaks::compute(&samples, channels, sample_rate).encode()
         })
         .await;
-        let Ok(reduced) = reduced else {
-            self.reducing.remove(&sha);
-            return;
-        };
-
-
+        let Ok(reduced) = reduced else { return };
         let Some(store) = &self.assets else { return };
-        let stored = store.put(PEAKS_MIME, &reduced).await;
-        // Out of `reducing` either way, and *before* the write rather than after it.
-        // Leaving it in was a real defect: `reducing` is keyed by the audio's sha, so
-        // the same file put back on a timeline whose `peaks` had been cleared — which
-        // is exactly what replacing the audio does — was never reduced again, and the
-        // panel said "the station is still reducing this file" for the rest of the
-        // show. What stops the work being repeated is `Timeline::peaks` being set;
-        // this set only stops it being started twice at once.
-        self.reducing.remove(&sha);
-        match stored {
+        match store.put(PEAKS_MIME, &reduced).await {
             Ok(peaks_sha) => {
-                info!(
-                    "[audio] {} reduced to a waveform of {} bytes",
-                    timeline.name,
-                    reduced.len()
-                );
-                self.write(timeline.id, "peaks", serde_json::json!(peaks_sha)).await;
+                info!("[audio] a clip on {name} reduced to a waveform of {} bytes", reduced.len());
+                self.reduced.insert(sha, peaks_sha);
             }
-            Err(e) => warn!("[audio] the waveform of {} could not be stored: {e}", timeline.name),
+            Err(e) => warn!("[audio] the waveform of a clip on {name} could not be stored: {e}"),
         }
     }
 
@@ -707,14 +1050,24 @@ impl AudioManager {
     /// which is what makes `timeline.model` have a visible effect. Inference is on a
     /// blocking thread for the reason everything else here is: it is seconds of pure
     /// CPU, and seconds on the runtime is a station that runs no timer.
-    async fn detect(&mut self, timeline_id: Uuid) -> Result<Detected, String> {
+    ///
+    /// On one clip — the first, unless another is named — and answered in *timeline*
+    /// positions: a beat at two seconds into a file that starts at ten is a beat at
+    /// twelve, and one in the part of the file the trim leaves out is no beat at all.
+    async fn detect(&mut self, timeline_id: Uuid, clip_id: Option<Uuid>) -> Result<Detected, String> {
         let timeline = self
             .timelines
             .iter()
             .find(|t| t.id == timeline_id)
             .cloned()
             .ok_or_else(|| "no such timeline".to_string())?;
-        let sha = timeline.audio.clone().ok_or_else(|| "that timeline has no audio".to_string())?;
+        let clip = match clip_id {
+            Some(id) => timeline.clips.iter().find(|c| c.id == id),
+            None => timeline.clips.first(),
+        }
+        .cloned()
+        .ok_or_else(|| "that timeline has no audio".to_string())?;
+        let sha = clip.asset.clone();
 
         let bytes = self.asset_bytes(&sha).await?;
         let decoded = self.cache.decode(&sha, bytes).await?;
@@ -740,9 +1093,16 @@ impl AudioManager {
             found.beats_ms.len(),
             found.downbeats_ms.len()
         );
+        let on_the_timeline = |file_ms: &Vec<u32>| -> Vec<u32> {
+            file_ms
+                .iter()
+                .filter_map(|at| clip_to_timeline(&clip, *at as u64))
+                .map(|at| at.min(u32::MAX as u64) as u32)
+                .collect()
+        };
         let detected = Detected {
-            beats_ms: found.beats_ms.clone(),
-            downbeats_ms: found.downbeats_ms.clone(),
+            beats_ms: on_the_timeline(&found.beats_ms),
+            downbeats_ms: on_the_timeline(&found.downbeats_ms),
         };
         // Written to `detected` and **not** to `grid`: the detector proposes and the
         // operator confirms. See `types::timeline::Detected`.
@@ -751,14 +1111,19 @@ impl AudioManager {
         Ok(detected)
     }
 
-    async fn write(&self, timeline_id: Uuid, field: &str, value: serde_json::Value) {
+    /// Whether it was written.
+    async fn write(&self, timeline_id: Uuid, field: &str, value: serde_json::Value) -> bool {
         let path = vec![
             PathSegment::Key("timelines".into()),
             PathSegment::Id(timeline_id),
             PathSegment::Key(field.into()),
         ];
-        if let Err(e) = self.engine.set(path, Lifecycle::Persisted, value).await {
-            warn!("[audio] {field} could not be written: {e}");
+        match self.engine.set(path, Lifecycle::Persisted, value).await {
+            Ok(_) => true,
+            Err(e) => {
+                warn!("[audio] {field} could not be written: {e}");
+                false
+            }
         }
     }
 
@@ -767,26 +1132,60 @@ impl AudioManager {
     async fn publish_status(&mut self) {
         let now = pult_schema::clock::now_ms();
         let mut statuses = AudioStatuses::new();
+        // The driving station's, read from its report where that is not this one: a
+        // station that does not drive the nodes cannot tell whether one is playing.
+        let all_node_faults = self.node_faults().await;
         for timeline in &self.timelines {
-            if !self.plays(timeline) {
+            // A timeline another station plays still gets a row here where a node clip
+            // of it is not playing, so every station's pages say so.
+            let node_faults = all_node_faults.get(&timeline.id);
+            if !self.plays(timeline) && node_faults.is_none() {
                 continue;
             }
             let playing = self.playing.get(&timeline.id);
             let chasing = self.chasing.get(&timeline.id);
-            if playing.is_none() && chasing.is_none() && !self.faults.contains_key(&timeline.id) {
+            // Each clip's faults put against what its destination reaches: silent where
+            // every member failed, half heard where some did.
+            let station_faults = self.clip_faults.get(&timeline.id);
+            let mut clip_faults = std::collections::BTreeMap::new();
+            let mut clip_partial = std::collections::BTreeMap::new();
+            let no_nodes = std::collections::BTreeMap::new();
+            for clip in &timeline.clips {
+                let id = clip.id.to_string();
+                let station = station_faults.and_then(|f| f.get(&id)).map(String::as_str);
+                let nodes = node_faults.and_then(|f| f.get(&id)).unwrap_or(&no_nodes);
+                match pult_schema::types::zone::clip_health(&clip.destination, &self.zones, station, nodes) {
+                    pult_schema::types::zone::ClipHealth::Fine => {}
+                    pult_schema::types::zone::ClipHealth::Partial(failed) => {
+                        clip_partial.insert(id, failed);
+                    }
+                    pult_schema::types::zone::ClipHealth::Silent(why) => {
+                        clip_faults.insert(id, why);
+                    }
+                }
+            }
+            if playing.is_none()
+                && chasing.is_none()
+                && !self.faults.contains_key(&timeline.id)
+                && clip_faults.is_empty()
+                && clip_partial.is_empty()
+            {
                 // Nothing to say about a timeline with no audio and no timecode, which
                 // is most of them: an empty row would be a panel full of "no".
                 continue;
             }
-            let drift = playing
-                .map(|p| p.player.position_ms() as i64 - timeline.position_at(now) as i64)
-                .unwrap_or(0);
+            let drift = match (playing, &self.output) {
+                (Some(p), Some(output)) if output.sounding(p.slot) => {
+                    output.position_ms(p.slot) as i64 - folded(timeline, timeline.position_at(now)) as i64
+                }
+                _ => 0,
+            };
             statuses.insert(
                 timeline.id.to_string(),
                 AudioStatus {
                     name: timeline.name.clone(),
                     playing: playing.is_some(),
-                    device: playing.map(|p| p.player.device_name.clone()),
+                    device: playing.and(self.output.as_ref()).map(|o| o.device_name.clone()),
                     fault: self.faults.get(&timeline.id).cloned(),
                     drift_ms: drift.clamp(i32::MIN as i64, i32::MAX as i64) as i32,
                     ltc: chasing.map(|c| LtcStatus {
@@ -796,6 +1195,9 @@ impl AudioManager {
                         position_ms: c.position_ms,
                         drop_frame: c.drop_frame,
                     }),
+                    clip_faults,
+                    clip_partial,
+                    clip_channels: self.clip_channels.get(&timeline.id).cloned().unwrap_or_default(),
                 },
             );
         }
@@ -803,6 +1205,121 @@ impl AudioManager {
             let path = vec![PathSegment::Key("audio_status".into())];
             let _ = self.engine.set(path, Lifecycle::Local, json).await;
         }
+        let output = AudioOutput {
+            open: self.output.is_some(),
+            device: self.output.as_ref().map(|o| o.device_name.clone()),
+            channels: self.output.as_ref().map_or(0, |o| o.channels),
+            sample_rate: self.output.as_ref().map_or(0, |o| o.sample_rate),
+            fault: self.output_fault.clone(),
+        };
+        if let Ok(json) = serde_json::to_value(&output) {
+            let path = vec![PathSegment::Key("audio_output".into())];
+            let _ = self.engine.set(path, Lifecycle::Local, json).await;
+        }
+        self.publish_station_audio().await;
+    }
+
+    /// Say what this station plays through and what it calls it, for the other
+    /// stations' zone matrices — and only when that moved.
+    async fn publish_station_audio(&mut self) {
+        // The names are this machine's preference and may have been edited since start.
+        let modified = crate::infra::preferences::path()
+            .and_then(|p| std::fs::metadata(p).ok())
+            .and_then(|m| m.modified().ok());
+        if modified.is_some() && modified != self.names.0 {
+            self.names = (modified, crate::infra::preferences::load().audio.names);
+        }
+        // A card that is closed is still this station's card: a station whose clips all
+        // play elsewhere said "no device, no channels" and drew as two channels in every
+        // matrix, the audio Mac's eight among them (HHG, 2026-10-28). So while nothing
+        // is open the row says what would be, and failing that what it said last.
+        if self.output.is_none() {
+            self.look_up_card().await;
+        }
+        let card = self.card.as_ref().and_then(|c| c.found.clone());
+        let device = self
+            .output
+            .as_ref()
+            .map(|o| o.device_name.clone())
+            .or_else(|| card.as_ref().map(|(name, _)| name.clone()))
+            .or_else(|| self.prefs.output.clone());
+        let named = device.as_ref().and_then(|d| self.names.1.get(d)).cloned().unwrap_or_default();
+        let remembered = self
+            .station_said
+            .as_ref()
+            .filter(|said| said.device == device)
+            .map_or(0, |said| said.channels);
+        let channels = match &self.output {
+            Some(o) => o.channels,
+            None => card
+                .map(|(_, channels)| channels)
+                .unwrap_or(0)
+                .max(remembered)
+                .max(named.channels.len() as u16),
+        };
+        let row = pult_schema::types::StationAudio {
+            id: self.node_id.0,
+            hostname: sysinfo::System::host_name().unwrap_or_else(|| "console".to_string()),
+            device,
+            alias: named.alias,
+            channels,
+            channel_names: named.channels,
+        };
+        let Ok(value) = serde_json::to_value(&row) else { return };
+        let path = vec![PathSegment::Key("station_audio".into()), PathSegment::Id(row.id)];
+        // Unchanged *and still there*: joining a session replaces this station's state
+        // with the leader's, which has never held this row, so "what I last said" is not
+        // the same as "what the show holds" — and a row said once and lost is a spare
+        // nobody can map.
+        if self.station_said.as_ref() == Some(&row)
+            && self.engine.get(path.clone()).await.is_ok_and(|held| held == value)
+        {
+            return;
+        }
+        if self.engine.set(path, Lifecycle::Persisted, value.clone()).await.is_err() {
+            let create = vec![PathSegment::Key("station_audio".into()), PathSegment::Key("__create".into())];
+            if let Err(e) = self.engine.set(create, Lifecycle::Persisted, value).await {
+                debug!("[audio] could not publish this station's card: {e}");
+                return;
+            }
+        }
+        self.station_said = Some(row);
+    }
+}
+
+/// The card a station would open: what the preference asked for when it was looked up,
+/// and the device's own name and channel count if it was found.
+struct Card {
+    wanted: Option<String>,
+    found: Option<(String, u16)>,
+    at: std::time::Instant,
+}
+
+impl AudioManager {
+    /// Find the card the preference names (by name or id), or the default, in the
+    /// machine's device list — again only when the preference changed, or a minute
+    /// after a lookup that found nothing (an interface plugged in later).
+    async fn look_up_card(&mut self) {
+        let wanted = self.prefs.output.clone();
+        let fresh = self.card.as_ref().is_some_and(|c| {
+            c.wanted == wanted && (c.found.is_some() || c.at.elapsed() < std::time::Duration::from_secs(60))
+        });
+        if fresh {
+            return;
+        }
+        let asked = wanted.clone();
+        let found = tokio::task::spawn_blocking(move || {
+            let devices = device::enumerate();
+            let pick = match &asked {
+                Some(named) => devices.outputs.iter().find(|d| &d.name == named || &d.id == named),
+                None => devices.outputs.iter().find(|d| d.is_default),
+            };
+            pick.map(|d| (d.name.clone(), d.channels))
+        })
+        .await
+        .ok()
+        .flatten();
+        self.card = Some(Card { wanted, found, at: std::time::Instant::now() });
     }
 }
 
@@ -810,6 +1327,59 @@ impl AudioManager {
 /// stopping and starting again in one pass would otherwise look like nothing happened.
 fn transport_of(timeline: &Timeline) -> (u64, u64, f32) {
     (timeline.anchor_ms, timeline.position_at_anchor_ms, timeline.rate)
+}
+
+
+/// A clip's place, as the mixer wants it.
+pub(super) fn placement(clip: &AudioClip) -> pult_audio::Placement {
+    pult_audio::Placement {
+        start_ms: clip.start_ms as f64,
+        offset_ms: clip.offset_ms as f64,
+        length_ms: clip.length_ms.map(|l| l as f64),
+        repeats: clip.times(),
+        gain: clip.gain(),
+        fade_in_ms: clip.fade_in_ms as f64,
+        fade_out_ms: clip.fade_out_ms as f64,
+    }
+}
+
+/// Where a timeline ends, as a deck needs it. An end at zero is no end, the rule
+/// `model/timelines.rs` follows, or a loop there would wrap on every frame.
+pub(super) fn deck_end(timeline: &Timeline) -> Option<pult_audio::mix::End> {
+    timeline.end.filter(|end| end.at_ms > 0).map(|end| pult_audio::mix::End {
+        at_ms: end.at_ms as f64,
+        looped: end.then == AtEnd::Loop,
+    })
+}
+
+/// Where the timeline's sound is at a running position, its end applied: held at a
+/// stopping end, and round again at a looping one.
+///
+/// What the transport says and what the deck does differ for the moment between the
+/// deck reaching the end and the leader relocating the transport there. Measuring drift
+/// against the unfolded number would read that moment as a whole loop's worth of drift
+/// and rewrite the anchor for it.
+pub(super) fn folded(timeline: &Timeline, position_ms: u64) -> u64 {
+    match timeline.end.filter(|end| end.at_ms > 0) {
+        Some(end) if position_ms >= end.at_ms => match end.then {
+            AtEnd::Loop => position_ms % end.at_ms,
+            AtEnd::Stop => end.at_ms,
+        },
+        _ => position_ms,
+    }
+}
+
+/// A position in a clip's file, as a position on its timeline. `None` where the trim
+/// leaves it out. A repeated clip answers its first time round.
+fn clip_to_timeline(clip: &AudioClip, file_ms: u64) -> Option<u64> {
+    if file_ms < clip.offset_ms {
+        return None;
+    }
+    let into = file_ms - clip.offset_ms;
+    if clip.length_ms.is_some_and(|length| into >= length) {
+        return None;
+    }
+    Some(clip.start_ms + into)
 }
 
 /// The schema's rate, as the codec's. Two spellings of five values, converted in one
@@ -852,6 +1422,32 @@ fn frames_per_second(rate: pult_audio::LtcRate) -> f64 {
 /// unlocked between every frame.
 fn patience_ms(rate: LtcRate) -> u32 {
     (4_000.0 / frames_per_second(ltc_rate(rate))).round() as u32
+}
+
+/// An asset's bytes, from here or from a peer. Free of the manager so a monitor can
+/// fetch on a task of its own, off the manager's loop; see [`monitor`].
+async fn asset_bytes(
+    assets: Option<&AssetStore>,
+    engine: &EngineHandle,
+    me: NodeId,
+    sha: &str,
+) -> Result<Vec<u8>, String> {
+    let store = assets.ok_or_else(|| "no show is open".to_string())?;
+    if let Ok(Some(asset)) = store.get(sha).await {
+        return Ok(asset.bytes);
+    }
+    let peers = crate::infra::assets::peer_addresses(engine, me.0).await;
+    if peers.is_empty() {
+        return Err("this station has not got the audio, and there is no peer to ask".into());
+    }
+    match crate::infra::assets::fetch_from_peers(store, sha, &peers).await {
+        Ok(crate::infra::assets::Fetched::Got(asset)) => Ok(asset.bytes),
+        Ok(crate::infra::assets::Fetched::NobodyHasIt) => Err("no station in this session has the audio file".into()),
+        Ok(crate::infra::assets::Fetched::Unreachable(n)) => {
+            Err(format!("{n} station(s) could not be asked for the audio"))
+        }
+        Err(e) => Err(format!("the audio could not be fetched: {e}")),
+    }
 }
 
 #[cfg(test)]

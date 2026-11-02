@@ -1,12 +1,12 @@
 /**
  * The stage, as maths.
  *
- * Both stage views — the plan and the 3D rig — read positions and colours through
+ * Both stage views — the plan and the 3D rig — read positions and colors through
  * here, so the two cannot disagree about where anything is or what it is doing.
  *
  * # Which way is which
  *
- * The rig lives in metres. **Y is up. X increases to the right as seen from front
+ * The rig lives in meters. **Y is up. X increases to the right as seen from front
  * of house. Z increases downstage, towards the audience.**
  *
  * That last one is chosen rather than inherited, and for two reasons that agree: a
@@ -29,13 +29,13 @@ import type {
 	StagePlan,
 	Vec3
 } from './generated/index.js';
-import { facing, worldTransform } from './scene.js';
-import { parameterKey } from './patch.js';
+import { eulerToBasis, facing, worldTransform } from './scene.js';
+import { hasCells, inCell, parameterKey } from './patch.js';
 import type { Showing } from './stores/output.js';
 
 // ── Where things are ──────────────────────────────────────────────────────────
 
-/** A point on the floor, in metres. The two axes a ground plan can show. */
+/** A point on the floor, in meters. The two axes a ground plan can show. */
 export type PlanPoint = { x: number; z: number };
 
 /**
@@ -79,14 +79,14 @@ export const planToWorld = (point: PlanPoint, y: number): Vec3 => ({ x: point.x,
  * squared up without moving where it starts.
  */
 export function pixelToPlan(plan: StagePlan, px: number, py: number): PlanPoint {
-	const s = plan.metres_per_pixel;
+	const s = plan.meters_per_pixel;
 	const [dx, dz] = rotate(px * s, py * s, plan.rotation_deg);
 	return { x: plan.origin.x + dx, z: plan.origin.z + dz };
 }
 
 export function planToPixel(plan: StagePlan, point: PlanPoint): { px: number; py: number } {
 	const [dx, dz] = rotate(point.x - plan.origin.x, point.z - plan.origin.z, -plan.rotation_deg);
-	return { px: dx / plan.metres_per_pixel, py: dz / plan.metres_per_pixel };
+	return { px: dx / plan.meters_per_pixel, py: dz / plan.meters_per_pixel };
 }
 
 /**
@@ -97,7 +97,7 @@ export function planToPixel(plan: StagePlan, point: PlanPoint): { px: number; py
  * plan's old origin says nothing about where the new one belongs.
  */
 export function originForPixel(plan: StagePlan, px: number, py: number): PlanPoint {
-	const s = plan.metres_per_pixel;
+	const s = plan.meters_per_pixel;
 	const [dx, dz] = rotate(px * s, py * s, plan.rotation_deg);
 	return { x: -dx, z: -dz };
 }
@@ -110,10 +110,10 @@ function rotate(x: number, z: number, degrees: number): [number, number] {
 	return [x * cos - z * sin, x * sin + z * cos];
 }
 
-/** How wide and deep a plan is on the floor, in metres. */
+/** How wide and deep a plan is on the floor, in meters. */
 export const planExtent = (plan: StagePlan) => ({
-	width: plan.width_px * plan.metres_per_pixel,
-	depth: plan.height_px * plan.metres_per_pixel
+	width: plan.width_px * plan.meters_per_pixel,
+	depth: plan.height_px * plan.meters_per_pixel
 });
 
 /**
@@ -125,14 +125,14 @@ export const planExtent = (plan: StagePlan) => ({
 export function calibrationScale(
 	a: { px: number; py: number },
 	b: { px: number; py: number },
-	metres: number
+	meters: number
 ): number | null {
 	const pixels = Math.hypot(b.px - a.px, b.py - a.py);
-	if (pixels < 1 || !(metres > 0)) return null;
-	return metres / pixels;
+	if (pixels < 1 || !(meters > 0)) return null;
+	return meters / pixels;
 }
 
-/** A box in metres that holds every placed fixture, with room to breathe. */
+/** A box in meters that holds every placed fixture, with room to breathe. */
 export function fixtureBounds(
 	fixtures: Fixture[],
 	margin = 2,
@@ -161,7 +161,7 @@ const asNumber = (value: ParameterValue | undefined): number | null => {
 };
 
 /**
- * What a fixture is putting out: a colour and how much of it, 0–1.
+ * What a fixture is putting out: a color and how much of it, 0–1.
  *
  * Asked of a [`Showing`] rather than read off the fixture, because nothing stores what
  * a parameter is doing any more — the console keeps what is *driving* it and every
@@ -174,19 +174,203 @@ export function fixtureOutput(
 	showing: Showing
 ): { r: number; g: number; b: number; level: number } {
 	const read = (kind: ParameterKind) => showing.value(fixture.id, parameterKey(kind)) ?? undefined;
-	const colour = read('ColorRgb');
+	const color = read('ColorRgb');
 	const rgb =
-		colour?.type === 'Color' ? colour.value : { r: 1, g: 1, b: 1 };
-	// A fixture with no dimmer channel is as bright as its colour: a colour-mixing
+		color?.type === 'Color' ? color.value : { r: 1, g: 1, b: 1 };
+	// A fixture with no dimmer channel is as bright as its color: a color-mixing
 	// LED with everything up is on, and reporting it dark would be a lie.
 	const intensity = asNumber(read('Intensity'));
 	// A relay driving a practical is either on or off, and that is its level.
 	const switched = asNumber(read({ Switch: 0 }));
-	const level = intensity ?? switched ?? (colour ? 1 : 0);
+	const level = intensity ?? switched ?? (color ? 1 : 0);
 	return { r: rgb.r, g: rgb.g, b: rgb.b, level: clamp(level) };
 }
 
-/** That output as a CSS colour, dimmed by its own level. */
+// ── Cells ─────────────────────────────────────────────────────────────────────
+
+/**
+ * How far apart a multi-cell fixture's cells are, in meters: a strip's own pitch, a
+ * type's length shared out among its cells, or a tenth of a meter when nothing says.
+ */
+export function cellPitch(fixture: Fixture, type: FixtureType): number {
+	const strip = 'OpenHaunt' in fixture.address ? fixture.address.OpenHaunt.strip : null;
+	if (strip?.pitch_m) return strip.pitch_m;
+	const length = type.physical?.dimensions_m?.x;
+	if (length && type.cells > 0) return length / type.cells;
+	return 0.1;
+}
+
+/**
+ * Where each cell of a multi-cell fixture is, cell 1 first: along the fixture's own X
+ * axis from where it is placed, so a strip runs the way it was hung and a bar lies
+ * along its length. Empty for a fixture with no cells or no place.
+ */
+export function cellPoints(
+	fixture: Fixture,
+	type: FixtureType | undefined,
+	objects?: Map<string, SceneObject>
+): Vec3[] {
+	if (!type || !hasCells(type)) return [];
+	return pointsAlong(fixture, type.cells, cellPitch(fixture, type), objects);
+}
+
+/** `count` points `pitch` apart along a placed fixture's own X axis, from its origin. */
+function pointsAlong(
+	fixture: Fixture,
+	count: number,
+	pitch: number,
+	objects?: Map<string, SceneObject>
+): Vec3[] {
+	if (!fixture.position || count <= 0) return [];
+	const placed = objects ? worldTransform(fixture.position, fixture.parent, objects) : fixture.position;
+	const basis = eulerToBasis(placed.rotation);
+	const axis = { x: basis[0][0], y: basis[1][0], z: basis[2][0] };
+	const from = placed.position;
+	return Array.from({ length: count }, (_, i) => ({
+		x: from.x + axis.x * pitch * i,
+		y: from.y + axis.y * pitch * i,
+		z: from.z + axis.z * pitch * i
+	}));
+}
+
+// ── A strip the node draws ────────────────────────────────────────────────────
+
+/**
+ * A strip in `effect` mode's nine parameters, in the node's own units — what the
+ * station's OpenHaunt connector sends, worked out the same way: a color as bytes, a
+ * number through its port's physical range (Speed in hertz, Segments 1..16).
+ */
+export type NodeEffect = {
+	effect: string;
+	color: [number, number, number];
+	color2: [number, number, number];
+	brightness: number;
+	speed: number;
+	size: number;
+	reverse: boolean;
+	mirror: boolean;
+	segments: number;
+};
+
+/** Draws one frame of a node effect: three bytes a pixel. The wasm `pixel_effect`. */
+export type PixelRenderer = (effect: NodeEffect, nowMs: number, count: number) => Uint8Array | null;
+
+/** The strip address of a node's pixel strip, if this fixture is one. */
+function nodeStrip(fixture: Fixture) {
+	return 'OpenHaunt' in fixture.address ? fixture.address.OpenHaunt.strip : null;
+}
+
+/**
+ * What a strip in effect mode is told, read off what its parameters are doing.
+ *
+ * By the names OpenHaunt doc 14 gives the nine ports — Color, Brightness, Color 2,
+ * Effect, Speed, Size, Reverse, Mirror, Segments — which the console's type carries as
+ * `ColorRgb`, `Intensity` and seven named parameters. `null` for anything else.
+ */
+export function nodeEffectOf(fixture: Fixture, type: FixtureType | undefined, showing: Showing): NodeEffect | null {
+	const strip = nodeStrip(fixture);
+	if (!type || !strip || strip.mode !== 'effect') return null;
+	const read = (key: string): ParameterValue | undefined => {
+		const value = showing.value(fixture.id, key);
+		if (value) return value;
+		return type.parameters.find((p) => parameterKey(p.kind) === key)?.default_value;
+	};
+	const physical = (key: string, fallback: number): number => {
+		const value = read(key);
+		const n = value?.type === 'Float' || value?.type === 'Int' ? value.value : undefined;
+		if (n === undefined) return fallback;
+		const range = type.parameters.find((p) => parameterKey(p.kind) === key)?.physical;
+		return range ? range.from + (range.to - range.from) * n : n;
+	};
+	const byte = (v: number) => Math.round(clamp(v) * 255);
+	const rgb = (key: string): [number, number, number] => {
+		const value = read(key);
+		return value?.type === 'Color' ? [byte(value.value.r), byte(value.value.g), byte(value.value.b)] : [0, 0, 0];
+	};
+	const flag = (key: string) => {
+		const value = read(key);
+		return value?.type === 'Bool' ? value.value : false;
+	};
+	const text = read('Named:Effect');
+	return {
+		effect: text?.type === 'Text' ? text.value : 'solid',
+		color: rgb('ColorRgb'),
+		color2: rgb('Named:Color 2'),
+		brightness: physical('Intensity', 0),
+		speed: physical('Named:Speed', 1),
+		size: physical('Named:Size', 0.25),
+		reverse: flag('Named:Reverse'),
+		mirror: flag('Named:Mirror'),
+		segments: Math.round(physical('Named:Segments', 1))
+	};
+}
+
+/** One pixel as drawn: a color and how lit it is. */
+export type PixelOut = { r: number; g: number; b: number; level: number };
+
+/**
+ * Every pixel of a strip, as both stage views draw it, or `null` for a fixture that
+ * is not one or is not placed.
+ *
+ * Two kinds, and the views do not need to know which. A strip in `sacn` mode is a
+ * fixture with a cell per pixel and the console works out each cell — `cellOutputs`.
+ * A strip in `effect` mode is the node's to draw, and the console draws what the node
+ * does: the same effect, from the same nine parameters, through `render` (the wasm
+ * copy of the node's `oh_pixfx.c`, held to it by `testdata/pixel-effects.json`). Its
+ * pixels are not cells — nothing can be set on one — so `cells` says which this is.
+ */
+export function stripPixels(
+	fixture: Fixture,
+	type: FixtureType | undefined,
+	showing: Showing,
+	objects?: Map<string, SceneObject>,
+	render?: PixelRenderer
+): { at: Vec3[]; out: PixelOut[]; cells: boolean } | null {
+	if (type && hasCells(type)) {
+		const at = cellPoints(fixture, type, objects);
+		return at.length ? { at, out: cellOutputs(fixture, type, showing), cells: true } : null;
+	}
+	const strip = nodeStrip(fixture);
+	const effect = nodeEffectOf(fixture, type, showing);
+	if (!strip || !effect) return null;
+	const at = pointsAlong(fixture, strip.count, strip.pitch_m || 1 / 60, objects);
+	if (at.length === 0) return null;
+	// No clock yet, no picture: a gap rather than a frame from the wrong moment.
+	const bytes = showing.at !== null && render ? render(effect, showing.at, strip.count) : null;
+	const out = at.map((_, i) =>
+		bytes
+			? { r: bytes[3 * i] / 255, g: bytes[3 * i + 1] / 255, b: bytes[3 * i + 2] / 255, level: 1 }
+			: { r: 0, g: 0, b: 0, level: 0 }
+	);
+	return { at, out, cells: false };
+}
+
+/**
+ * What each cell is putting out, cell 1 first: its own color, at its own intensity
+ * where intensity is per cell, at the fixture's master where it is not, and at full
+ * where there is neither — a pixel is as bright as its color.
+ */
+export function cellOutputs(
+	fixture: Fixture,
+	type: FixtureType | undefined,
+	showing: Showing
+): { r: number; g: number; b: number; level: number }[] {
+	if (!type || !hasCells(type)) return [];
+	const read = (kind: ParameterKind) => showing.value(fixture.id, parameterKey(kind)) ?? undefined;
+	const perCell = (kind: ParameterKind) =>
+		type.parameters.some((p) => p.per_cell && parameterKey(p.kind) === parameterKey(kind));
+	const master = perCell('Intensity') ? undefined : asNumber(read('Intensity'));
+	return Array.from({ length: type.cells }, (_, i) => {
+		const cell = i + 1;
+		const color = read(perCell('ColorRgb') ? inCell('ColorRgb', cell) : 'ColorRgb');
+		const rgb = color?.type === 'Color' ? color.value : { r: 1, g: 1, b: 1 };
+		const own = perCell('Intensity') ? asNumber(read(inCell('Intensity', cell))) : undefined;
+		const level = own ?? master ?? (color ? 1 : 0);
+		return { r: rgb.r, g: rgb.g, b: rgb.b, level: clamp(level) };
+	});
+}
+
+/** That output as a CSS color, dimmed by its own level. */
 export function fixtureTint(fixture: Fixture, showing: Showing): string {
 	const { r, g, b, level } = fixtureOutput(fixture, showing);
 	const byte = (v: number) => Math.round(clamp(v) * level * 255);
@@ -229,7 +413,7 @@ export function travelOf(
 }
 
 /**
- * The direction a fixture points with pan and tilt both centred.
+ * The direction a fixture points with pan and tilt both centered.
  *
  * `objects` is the drawing it hangs in. Without it the answer is the fixture's own
  * rotation, which is right for a rig nobody has drawn and wrong for a light on a
@@ -237,7 +421,7 @@ export function travelOf(
  * two stage views both do.
  */
 function restDirection(fixture: Fixture, objects?: Map<string, SceneObject>): Vec3 {
-	return normalise(fixtureFacing(fixture, objects) ?? HANGING);
+	return normalize(fixtureFacing(fixture, objects) ?? HANGING);
 }
 
 /** Compass bearing of a direction on the floor: degrees from downstage towards +X. */
@@ -260,7 +444,7 @@ const hasParameter = (type: FixtureType | undefined, kind: ParameterKind) =>
 /**
  * Where a moving head is pointing, as an angle on the plan in degrees.
  *
- * Pan is reported 0–1 across the fixture's whole travel, centred on the way the
+ * Pan is reported 0–1 across the fixture's whole travel, centered on the way the
  * fixture hangs, so 0.5 is always the rest bearing however the head was rigged.
  */
 export function panAngle(
@@ -327,7 +511,7 @@ export function aimAt(
 ): { pan: number | null; tilt: number | null } {
 	const at = fixturePoint(fixture, objects);
 	if (!at) return { pan: null, tilt: null };
-	const towards = normalise({ x: target.x - at.x, y: target.y - at.y, z: target.z - at.z });
+	const towards = normalize({ x: target.x - at.x, y: target.y - at.y, z: target.z - at.z });
 	const rest = restDirection(fixture, objects);
 
 	const pan = hasParameter(type, 'Pan')
@@ -396,7 +580,7 @@ export function beamDirection(
  *
  * `maxThrow` is what keeps that handle in reach. A beam near the horizontal lands
  * arbitrarily far away and one above it never lands at all, so the honest answer is
- * a point tens of metres off the plan — which is a handle nobody can take hold of,
+ * a point tens of meters off the plan — which is a handle nobody can take hold of,
  * and which slides out from under the pointer the moment a drag flattens the beam.
  * Capped, it stops at the furthest distance worth drawing and still says which way
  * the light is going.
@@ -424,19 +608,19 @@ export function beamSpot(
 	};
 }
 
-function normalise(v: Vec3): Vec3 {
+function normalize(v: Vec3): Vec3 {
 	const length = Math.hypot(v.x, v.y, v.z) || 1;
 	return { x: v.x / length, y: v.y / length, z: v.z / length };
 }
 
-/** How far a beam runs before it meets the floor, in metres. */
+/** How far a beam runs before it meets the floor, in meters. */
 export function throwDistance(from: Vec3, direction: Vec3, floorY = 0): number {
 	if (direction.y >= -1e-3) return 12;
 	return Math.min(40, Math.max(0.5, (from.y - floorY) / -direction.y));
 }
 
 /**
- * How long to *draw* a beam whose axis meets the floor after `length` metres.
+ * How long to *draw* a beam whose axis meets the floor after `length` meters.
  *
  * The drawn beam is a cone cut square to its own axis, and a square cut at the
  * axis's floor hit is level with the floor only when the beam is vertical. Aimed at
@@ -446,15 +630,15 @@ export function throwDistance(from: Vec3, direction: Vec3, floorY = 0): number {
  * the floor, and the floor — the shader's fade over the deck and the deck's own
  * depth — does the cutting, which is the only cut that is level with it.
  *
- * The highest point of the end ring sits `r · sin θ` above the ring's centre, θ being
+ * The highest point of the end ring sits `r · sin θ` above the ring's center, θ being
  * the beam's angle from the vertical and `r` the ring's radius, which itself grows
- * with the length by `spread` per metre. Solving for the extra run that puts the
- * centre that far under the floor gives the closed form below. A beam grazing the
+ * with the length by `spread` per meter. Solving for the extra run that puts the
+ * center that far under the floor gives the closed form below. A beam grazing the
  * floor so flat that it widens faster than it descends has no such length, and gets
  * the longest throw drawn at all.
  */
 export function drawnLength(length: number, direction: Vec3, spread: number, lens: number): number {
-	const d = normalise(direction);
+	const d = normalize(direction);
 	if (d.y >= -1e-3) return length;
 	const sinTheta = Math.hypot(d.x, d.z);
 	const tanTheta = sinTheta / -d.y;

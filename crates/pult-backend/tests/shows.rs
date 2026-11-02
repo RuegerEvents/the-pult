@@ -32,9 +32,26 @@ impl Drop for Dir {
     }
 }
 
+/// Preferences of this binary's own, and so a `recent.toml` of its own beside them.
+///
+/// A console records every show it opens in the list beside `preferences.toml`, and
+/// without this that was the operator's: their welcome screen came up offering ten
+/// temporary bundles these tests had already deleted. Once per process, because an
+/// env var is.
+fn own_preferences() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let dir = std::env::temp_dir().join(format!("pult-shows-prefs-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("a preferences directory");
+        // SAFETY: inside `call_once`, before any station in this process has started.
+        unsafe { std::env::set_var("PULT_PREFERENCES", dir.join("preferences.toml")) };
+    });
+}
+
 /// A console with nowhere to keep shows but this test's own directory, and an
 /// identity that is not the operator's.
 fn a_config(dir: &Dir) -> Config {
+    own_preferences();
     Config {
         port: 0,
         sync_port: 0,
@@ -178,14 +195,22 @@ async fn the_list_is_what_a_welcome_screen_can_offer() {
     rpcs::open_a_show("show.new", &json!({ "name": "Listed" }), &shows).await.unwrap();
     config_when_settled(port, true).await;
 
-    let listed = rpcs::list_shows(&shows).await.expect("it lists");
+    // Read out of the `show` row, which the engine seeds from the bundle's name and
+    // this station's preferences. It used to be a button in the Show panel, so a
+    // console nobody had opened a browser onto had no show at all. Seeded once the
+    // station is answering rather than before, so a list read at once can be early.
+    let mut listed = Value::Null;
+    for _ in 0..200 {
+        listed = rpcs::list_shows(&shows).await.expect("it lists");
+        if listed["inDir"][0]["createdAt"].is_string() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
     let in_dir = listed["inDir"].as_array().expect("an array");
     assert_eq!(in_dir.len(), 1, "{listed}");
     assert_eq!(in_dir[0]["name"], "Listed");
     assert_eq!(in_dir[0]["fixtures"], 0);
-    // Read out of the `show` row, which the engine seeded from the bundle's name and
-    // this station's preferences. It used to be a button in the Show panel, so a
-    // console nobody had opened a browser onto had no show at all.
     assert!(in_dir[0]["createdAt"].is_string(), "{listed}");
 }
 
@@ -390,7 +415,6 @@ async fn a_restored_show_is_the_show_as_it_was() {
     let console = Console::start(config).await.expect("a console starts");
     let port = console.http_addr().port();
     let shows = console.shows();
-    let sync = console.sync();
     let engine = console.engine().expect("a station is running");
 
     // Something to lose, then a point to come back to, then losing it.
@@ -405,15 +429,23 @@ async fn a_restored_show_is_the_show_as_it_was() {
     tokio::spawn(console.serve());
     assert_eq!(show_name(&show).await, "Act Two");
 
-    rpcs::restore_a_show(id, &shows, sync.as_ref(), &engine).await.expect("nobody else is here");
+    // As writes, in place: the station stays up, and a peer would follow it.
+    let user = pult_schema::types::user::User::DEFAULT_ID;
+    rpcs::restore_a_show(id, false, &shows, &engine, user).await.expect("it restores");
 
     for _ in 0..200 {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         if show_name(&show).await == "Act One" {
-            // And the point that was left behind is still reachable: the restore
-            // takes a version of what it is about to overwrite.
-            assert!(config_of(port).await["show"].is_object(), "and the console is up");
-            return;
+            config_when_settled(port, true).await;
+            // And it is one edit, which one Ctrl-Z takes back.
+            assert!(!engine.undo(user, false).await.is_empty(), "the restore is in the history");
+            for _ in 0..200 {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                if show_name(&show).await == "Act Two" {
+                    return;
+                }
+            }
+            panic!("undoing the restore did not put the show back");
         }
     }
     panic!(
@@ -591,7 +623,7 @@ async fn forget_the_row(bundle: &Path, id: uuid::Uuid) {
     pool.close().await;
 }
 
-// ── Travelling ────────────────────────────────────────────────────────────────
+// ── Traveling ────────────────────────────────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_show_goes_out_as_one_file_and_comes_back_as_a_show() {
@@ -695,8 +727,9 @@ async fn a_new_show_can_come_with_a_demo_in_it() {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let listed = rpcs::list_shows(&shows).await.expect("it lists");
         if let Some(row) = listed["inDir"].as_array().and_then(|rows| rows.first()) {
-            if row["fixtures"].as_u64().unwrap_or(0) == 5 {
-                assert!(row["cues"].as_u64().unwrap_or(0) >= 3, "{listed}");
+            // Fixtures are seeded before cues, so a summary read in between has the
+            // rig and not yet the stack. Wait for both rather than asserting on one.
+            if row["fixtures"].as_u64().unwrap_or(0) == 5 && row["cues"].as_u64().unwrap_or(0) >= 3 {
                 assert_eq!(row["name"], "Haunt", "the demo names the show, not the folder");
                 return;
             }

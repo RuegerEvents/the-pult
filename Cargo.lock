@@ -3880,11 +3880,14 @@ dependencies = [
  "anyhow",
  "axum 0.8.9",
  "clap",
+ "hex",
  "mdns-sd",
  "reqwest 0.12.28",
  "rumqttc",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "socket2 0.6.4",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -4375,6 +4378,7 @@ dependencies = [
  "chrono",
  "clap",
  "cpal",
+ "crossbeam-queue",
  "futures",
  "hex",
  "hostname",
@@ -4389,8 +4393,10 @@ dependencies = [
  "pult-gdtf",
  "pult-mvr",
  "pult-mvr-xchange",
+ "pult-octobanger",
  "pult-render",
  "pult-schema",
+ "pult-wing",
  "reqwest 0.12.28",
  "rumqttc",
  "rumqttd",
@@ -4495,6 +4501,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "pult-octobanger"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "thiserror 2.0.18",
+ "zip 2.4.2",
+]
+
+[[package]]
 name = "pult-render"
 version = "0.1.0"
 dependencies = [
@@ -4511,6 +4526,7 @@ dependencies = [
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
+ "uuid",
  "wasm-bindgen",
 ]
 
@@ -4539,10 +4555,13 @@ dependencies = [
 name = "pult-wing"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "quick-xml 0.42.0",
+ "rusb",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]
@@ -4887,6 +4906,7 @@ dependencies = [
  "cookie",
  "cookie_store",
  "futures-core",
+ "futures-util",
  "http 1.4.1",
  "http-body 1.0.1",
  "http-body-util",
@@ -4906,12 +4926,14 @@ dependencies = [
  "sync_wrapper",
  "tokio",
  "tokio-rustls",
+ "tokio-util",
  "tower",
  "tower-http",
  "tower-service",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm-streams 0.4.2",
  "web-sys",
  "webpki-roots 1.0.7",
 ]
@@ -4946,7 +4968,7 @@ dependencies = [
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
- "wasm-streams",
+ "wasm-streams 0.5.0",
  "web-sys",
 ]
 
@@ -7607,6 +7629,19 @@ dependencies = [
 
 [[package]]
 name = "wasm-streams"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15053d8d85c7eccdbefef60f06769760a563c7f0a9d6902a13d35c7800b0ad65"
+dependencies = [
+ "futures-util",
+ "js-sys",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
+name = "wasm-streams"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9d1ec4f6517c9e11ae630e200b2b65d193279042e28edd4a2cda233e46670bbb"
@@ -8615,7 +8650,6 @@ dependencies = [
  "axum 0.8.9",
  "clap",
  "pult-wing",
- "rusb",
  "serde",
  "serde_json",
  "tokio",

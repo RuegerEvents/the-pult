@@ -21,7 +21,10 @@ use std::{
     time::Duration,
 };
 
+pub mod audio;
+pub mod brokers;
 pub mod motion;
+pub mod pixels;
 
 use anyhow::Result;
 use axum::{extract::State, routing::{get, post}, Json, Router};
@@ -71,6 +74,14 @@ pub struct PortDescription {
     /// a sine beside a relay that can only be chopped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effects: Option<motion::PortEffects>,
+    /// The head this port belongs to. Absent is the node itself. See
+    /// `OpenHaunt/node/docs/14-pixels.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head: Option<u8>,
+    /// What somebody called the port — "Ausgang PIR" — where anybody did. Not its
+    /// `name`, which is the module's word for it and what a console keys it by.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 impl PortDescription {
@@ -91,7 +102,15 @@ impl PortDescription {
             default: None,
             class: None,
             effects: None,
+            head: None,
+            label: None,
         }
+    }
+
+    /// The same port under another number.
+    pub fn with_port(mut self, port: u8) -> Self {
+        self.port = port;
+        self
     }
 
     /// Declare what this port can trace.
@@ -198,6 +217,13 @@ pub struct NodeConfig {
     /// unprompted. None leaves the node quiet until something drives it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_ms: Option<u64>,
+    /// The `audio` object `/api/v1/info` answers with, for a node with a loudspeaker.
+    /// Absent is a node without one. See [`audio::default_description`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio: Option<Value>,
+    /// The node's WS2812 outputs, each a head of its own. Empty is a node without any.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pixels: Vec<pixels::StripConfig>,
 }
 
 fn yes() -> bool {
@@ -311,7 +337,7 @@ mod hex_u16 {
 
 // ── Presets ───────────────────────────────────────────────────────────────────
 //
-// The seven modules in `OpenHaunt/node`'s catalogue, as somewhere to start from.
+// The seven modules in `OpenHaunt/node`'s catalog, as somewhere to start from.
 // They are a convenience of this simulator and nothing more: the node runs on a
 // [`NodeConfig`], and a preset is only one way of arriving at one. Nothing in the
 // running node asks which module kind it came from.
@@ -325,6 +351,9 @@ pub enum ModuleKind {
     Oled,
     DryContact,
     Environment,
+    /// The V0 prototype's own board: four relays, two sensor inputs and two strip
+    /// outputs, the module firmware 0.3 describes as `0x0F01`.
+    NodeV0,
 }
 
 impl ModuleKind {
@@ -337,6 +366,7 @@ impl ModuleKind {
             ModuleKind::Oled => 0x0005,
             ModuleKind::DryContact => 0x0006,
             ModuleKind::Environment => 0x0007,
+            ModuleKind::NodeV0 => 0x0f01,
         }
     }
 
@@ -349,6 +379,7 @@ impl ModuleKind {
             ModuleKind::Oled => "Display",
             ModuleKind::DryContact => "Dry Contacts",
             ModuleKind::Environment => "Environment Sensor",
+            ModuleKind::NodeV0 => "Node V0",
         }
     }
 
@@ -385,6 +416,16 @@ impl ModuleKind {
             http_port: 0,
             advertise: false,
             auto_ms: None,
+            audio: None,
+            pixels: self.pixels(),
+        }
+    }
+
+    /// The strip outputs this module has.
+    pub fn pixels(self) -> Vec<pixels::StripConfig> {
+        match self {
+            ModuleKind::NodeV0 => vec![pixels::StripConfig::default_for(0), pixels::StripConfig::default_for(1)],
+            _ => Vec::new(),
         }
     }
 
@@ -406,7 +447,7 @@ impl ModuleKind {
             // The strip is the module that can do all of it: both ports take a
             // shape, a step list and a timed move.
             ModuleKind::Ws2812 => vec![
-                P::new(0, "Strip colour", "readwrite", "color")
+                P::new(0, "Strip color", "readwrite", "color")
                     .class("color")
                     .effects(motion::PortEffects::all()),
                 P::new(1, "Brightness", "readwrite", "number")
@@ -430,6 +471,17 @@ impl ModuleKind {
                         .class("switch")
                         .effects(motion::PortEffects::switching())
                 })
+                .collect(),
+            ModuleKind::NodeV0 => (0..4)
+                .map(|n| {
+                    P::new(n, RELAY_NAMES[n as usize], "readwrite", "boolean")
+                        .default_at(0.0)
+                        .class("switch")
+                        .effects(motion::PortEffects::switching())
+                })
+                .chain((0..2).map(|n| {
+                    P::new(4 + n, SENSOR_NAMES[n as usize], "readonly", "boolean").class("contact")
+                }))
                 .collect(),
             ModuleKind::Environment => vec![
                 P::new(0, "Temperature", "readonly", "number")
@@ -469,11 +521,12 @@ impl ModuleKind {
             ModuleKind::Oled => "oled",
             ModuleKind::DryContact => "contact",
             ModuleKind::Environment => "env",
+            ModuleKind::NodeV0 => "v0",
         }
     }
 
     /// Every module, in the order a picker should offer them.
-    pub const ALL: [ModuleKind; 7] = [
+    pub const ALL: [ModuleKind; 8] = [
         ModuleKind::DigitalIn,
         ModuleKind::DryContact,
         ModuleKind::Environment,
@@ -481,6 +534,7 @@ impl ModuleKind {
         ModuleKind::Ws2812,
         ModuleKind::Oled,
         ModuleKind::DmxOut,
+        ModuleKind::NodeV0,
     ];
 
     pub fn parse(name: &str) -> Option<Self> {
@@ -492,6 +546,7 @@ impl ModuleKind {
             "oled" => ModuleKind::Oled,
             "contact" => ModuleKind::DryContact,
             "env" => ModuleKind::Environment,
+            "v0" => ModuleKind::NodeV0,
             _ => return None,
         })
     }
@@ -504,6 +559,10 @@ const INPUT_NAMES: [&str; 8] = [
 ];
 
 const CONTACT_NAMES: [&str; 4] = ["Contact 1", "Contact 2", "Contact 3", "Contact 4"];
+
+const RELAY_NAMES: [&str; 4] = ["Relay 1", "Relay 2", "Relay 3", "Relay 4"];
+
+const SENSOR_NAMES: [&str; 2] = ["Sensor 1", "Sensor 2"];
 
 // ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -519,7 +578,7 @@ pub struct SimConfig {
 }
 
 impl SimConfig {
-    /// A node from one of the catalogue presets, quiet and on an ephemeral port —
+    /// A node from one of the catalog presets, quiet and on an ephemeral port —
     /// which is what a test wants, and what everything else overrides.
     pub fn new(module: ModuleKind, serial: impl Into<String>) -> Self {
         SimConfig { node: module.config(serial), sacn_port: 0 }
@@ -549,8 +608,10 @@ pub struct Snapshot {
     pub sacn_addr: Option<String>,
     /// Whether a console has ever sent `POST /api/v1/config`.
     pub adopted: bool,
-    /// The broker it was told to publish to, which is what adoption amounts to.
+    /// The broker it is on, or trying: the entry of its list it has got to.
     pub broker: Option<String>,
+    /// Every broker it was told about, leader first (doc 15).
+    pub brokers: Vec<String>,
     pub mqtt_connected: bool,
     /// Output ports as the node holds them, keyed by port number.
     pub outputs: BTreeMap<String, Value>,
@@ -580,6 +641,14 @@ pub struct SimHandle {
     pub inputs: mpsc::Sender<Input>,
     /// The whole node in one value, for a window onto it. See [`Snapshot`].
     pub snapshot: watch::Receiver<Snapshot>,
+    /// Every `audio/<verb>` this node was sent, in order, as `(verb, body)`.
+    pub audio_commands: watch::Receiver<Vec<(String, Value)>>,
+    /// Its loudspeaker: the clips it holds and the stream packets it has had.
+    pub audio: Arc<audio::Audio>,
+    /// What each strip output in `sacn` mode has been sent, keyed by output.
+    pub pixel_frames: watch::Receiver<BTreeMap<u8, pixels::StripFrames>>,
+    /// The strips themselves, as they are running now.
+    pub pixels: Arc<pixels::Pixels>,
     /// Put the node away: its HTTP socket, its mDNS registration, its MQTT
     /// connection, its sACN socket. What a window needs in order to start a
     /// differently-configured node in its place without closing.
@@ -653,6 +722,84 @@ struct Node {
     motions: Arc<Mutex<BTreeMap<u8, motion::Motion>>>,
     /// What this node thinks the console's clock reads.
     clock: Arc<Mutex<motion::ClockOffset>>,
+    /// Its loudspeaker, if its config gives it one.
+    audio: Arc<audio::Audio>,
+    /// Its strip outputs, whose mode a console sets.
+    pixels: Arc<pixels::Pixels>,
+    /// What it and its ports and heads are called now. A console renames them.
+    names: Arc<Mutex<Names>>,
+    /// Its mDNS registration, to say the new name and `desc` when they change.
+    stop: Stopper,
+    http_port: Arc<std::sync::atomic::AtomicU16>,
+}
+
+/// What a node is called, and what somebody called its ports and heads: the part of
+/// `POST /api/v1/config` that is about names.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Names {
+    name: String,
+    ports: BTreeMap<u8, String>,
+    heads: BTreeMap<u8, String>,
+    /// Counts every change, so the TXT record's `desc` moves with it.
+    generation: u32,
+}
+
+/// What the firmware keeps of a name: `OH_NAME_MAX`, 32 bytes with the terminator.
+const NAME_MAX: usize = 31;
+
+impl Names {
+    fn from(config: &NodeConfig) -> Names {
+        Names {
+            name: config.name.clone(),
+            ports: config.ports.iter().filter_map(|p| Some((p.port, p.label.clone()?))).collect(),
+            heads: BTreeMap::new(),
+            generation: 0,
+        }
+    }
+
+    /// Apply the `name` and `labels` of a config body, the whole of it or none: a label
+    /// on a port this node does not have, or one longer than the firmware keeps, refuses
+    /// the body. An empty label clears one.
+    fn apply(&mut self, body: &Value, ports: &[u8], heads: &[u8]) -> std::result::Result<bool, String> {
+        let mut next = self.clone();
+        let fits = |label: &str| -> std::result::Result<String, String> {
+            let label = label.trim();
+            if label.len() > NAME_MAX {
+                return Err(format!("\"{label}\" is longer than {NAME_MAX} bytes"));
+            }
+            if label.chars().any(char::is_control) {
+                return Err("a name has no control characters".into());
+            }
+            Ok(label.to_string())
+        };
+        if let Some(name) = body["name"].as_str() {
+            let name = fits(name)?;
+            if !name.is_empty() {
+                next.name = name;
+            }
+        }
+        for (key, which, known) in [("ports", &mut next.ports, ports), ("heads", &mut next.heads, heads)] {
+            let Some(given) = body["labels"][key].as_object() else { continue };
+            for (number, label) in given {
+                let n: u8 = number.parse().map_err(|_| format!("{key}: \"{number}\" is not a number"))?;
+                if !known.contains(&n) {
+                    return Err(format!("{key}: there is no {n}"));
+                }
+                let label = fits(label.as_str().ok_or_else(|| format!("{key}: {n} is not a string"))?)?;
+                if label.is_empty() {
+                    which.remove(&n);
+                } else {
+                    which.insert(n, label);
+                }
+            }
+        }
+        let changed = next != *self;
+        if changed {
+            next.generation += 1;
+            *self = next;
+        }
+        Ok(changed)
+    }
 }
 
 impl Node {
@@ -753,20 +900,23 @@ async fn run_renderer(node: Node) {
 }
 
 pub async fn start(config: SimConfig) -> Result<SimHandle> {
-    let SimConfig { node: node_config, sacn_port } = config;
+    let SimConfig { node: mut node_config, sacn_port } = config;
+    audio::claim_stream_port(&mut node_config.audio);
     let node_config = Arc::new(node_config);
 
     let (config_tx, received_config) = watch::channel(None);
     let (state_tx, state) = watch::channel(BTreeMap::new());
-    let (broker_tx, broker_rx) = watch::channel(None::<String>);
+    let (broker_tx, broker_rx) = watch::channel(Vec::<String>::new());
     let (inputs, inputs_rx) = mpsc::channel(64);
     let (frames_tx, sacn_frames) = mpsc::channel(64);
+    let (audio_tx, audio_commands) = watch::channel(Vec::new());
     let (snapshot_tx, snapshot) = watch::channel(Snapshot {
         config: (*node_config).clone(),
         http_addr: String::new(),
         sacn_addr: None,
         adopted: false,
         broker: None,
+        brokers: Vec::new(),
         mqtt_connected: false,
         outputs: BTreeMap::new(),
         effects: BTreeMap::new(),
@@ -775,7 +925,14 @@ pub async fn start(config: SimConfig) -> Result<SimHandle> {
         started_ms: now_ms(),
     });
 
+    let (pixels, pixel_frames) = pixels::Pixels::new(node_config.pixels.clone());
+    let pixels = Arc::new(pixels);
+    let stop = Stopper::default();
     let node = Node {
+        names: Arc::new(Mutex::new(Names::from(&node_config))),
+        stop: stop.clone(),
+        http_port: Arc::new(std::sync::atomic::AtomicU16::new(0)),
+        pixels: pixels.clone(),
         config: node_config.clone(),
         config_tx: Arc::new(config_tx),
         state_tx: Arc::new(state_tx),
@@ -783,16 +940,20 @@ pub async fn start(config: SimConfig) -> Result<SimHandle> {
         snapshot: Arc::new(snapshot_tx),
         motions: Arc::new(Mutex::new(BTreeMap::new())),
         clock: Arc::new(Mutex::new(motion::ClockOffset::default())),
+        audio: Arc::new(audio::Audio::new(audio_tx)),
     };
-    let stop = Stopper::default();
 
     let http_addr = serve_http(node.clone(), &stop, broker_tx).await?;
+    node.http_port.store(http_addr.port(), std::sync::atomic::Ordering::Relaxed);
+    let audio_handle = node.audio.clone();
 
     // A node listens for sACN exactly when it says it forwards a universe. There
     // is no module id involved: the description is the whole of the answer.
-    let sacn_addr = match node_config.dmx {
-        Some(_) => Some(listen_for_sacn(sacn_port, &stop, frames_tx).await?),
-        None => None,
+    // A strip may be switched to `sacn` at any moment, so a node with one listens from
+    // the start.
+    let sacn_addr = match node_config.dmx.is_some() || !pixels.is_empty() {
+        true => Some(listen_for_sacn(sacn_port, &stop, frames_tx, pixels.clone()).await?),
+        false => None,
     };
 
     node.describe(|s| {
@@ -808,11 +969,15 @@ pub async fn start(config: SimConfig) -> Result<SimHandle> {
     stop.holds(tokio::spawn(run_mqtt(node, broker_rx, inputs_rx, auto)));
 
     if node_config.advertise {
-        advertise(&node_config, http_addr, &stop)?;
+        advertise(&node_config, &Names::from(&node_config), http_addr, &stop)?;
     }
 
     info!("[sim] {} on {http_addr}", node_config.serial);
     Ok(SimHandle {
+        pixel_frames,
+        pixels,
+        audio_commands,
+        audio: audio_handle,
         http_addr,
         sacn_addr,
         received_config,
@@ -829,7 +994,7 @@ pub async fn start(config: SimConfig) -> Result<SimHandle> {
 async fn serve_http(
     node: Node,
     stop: &Stopper,
-    broker: watch::Sender<Option<String>>,
+    broker: watch::Sender<Vec<String>>,
 ) -> Result<SocketAddr> {
     let port = node.config.http_port;
     let broker = Arc::new(broker);
@@ -844,9 +1009,19 @@ async fn serve_http(
                     let broker = broker.clone();
                     async move {
                         info!("[sim] {} configured: {body}", node.config.serial);
-                        if let Some(addr) = body["mqtt"]["broker"].as_str() {
-                            let _ = broker.send(Some(addr.to_string()));
-                            node.describe(|s| s.broker = Some(addr.to_string()));
+                        // The names first, because they are the part that can be refused,
+                        // and a body that is refused changes nothing.
+                        if let Err(why) = rename(&node, &body) {
+                            warn!("[sim] {} refused names: {why}", node.config.serial);
+                            return (
+                                axum::http::StatusCode::BAD_REQUEST,
+                                Json(json!({ "ok": false, "error": why })),
+                            );
+                        }
+                        let list = brokers::from_json(&body["mqtt"]);
+                        if !list.is_empty() {
+                            node.describe(|s| s.brokers = list.clone());
+                            let _ = broker.send(list);
                         }
                         // A node accepts `dmx` only where its own description said
                         // it forwards a universe. Anything else is a console that
@@ -860,12 +1035,19 @@ async fn serve_http(
                         }
                         node.describe(|s| s.adopted = true);
                         let _ = node.config_tx.send(Some(body));
-                        Json(json!({ "ok": true }))
+                        (axum::http::StatusCode::OK, Json(json!({ "ok": true })))
                     }
                 }
             }),
         )
         .route("/api/v1/identify", post(identify))
+        .route("/api/v1/pixels", get(read_pixels))
+        .route("/api/v1/pixels/{output}", axum::routing::put(put_pixels))
+        .route("/api/v1/audio/clips", get(list_clips))
+        .route(
+            "/api/v1/audio/clips/{sha}",
+            axum::routing::put(put_clip).delete(delete_clip),
+        )
         .route("/api/v1/ota", post(|| async { Json(json!({ "ok": false, "error": "no ota here" })) }))
         .with_state(node);
 
@@ -879,13 +1061,43 @@ async fn serve_http(
     Ok(addr)
 }
 
+/// Take the names in a config body, and say so wherever a node says what it is called:
+/// its snapshot, and its TXT record, whose `desc` moving is what tells a console to ask
+/// `/info` again.
+fn rename(node: &Node, body: &Value) -> std::result::Result<(), String> {
+    let ports: Vec<u8> = node.config.ports.iter().map(|p| p.port).chain(node.pixels.ports().iter().map(|p| p.port)).collect();
+    let heads: Vec<u8> = node.pixels.heads().as_array().into_iter().flatten().filter_map(|h| h["head"].as_u64().map(|h| h as u8)).collect();
+    let names = {
+        let mut names = node.names.lock().unwrap();
+        if !names.apply(body, &ports, &heads)? {
+            return Ok(());
+        }
+        names.clone()
+    };
+    info!("[sim] {} is called \"{}\" now, with {} port label(s)", node.config.serial, names.name, names.ports.len());
+    node.describe(|s| {
+        s.config.name = names.name.clone();
+        for port in &mut s.config.ports {
+            port.label = names.ports.get(&port.port).cloned();
+        }
+    });
+    if node.config.advertise {
+        let port = node.http_port.load(std::sync::atomic::Ordering::Relaxed);
+        if let Err(e) = advertise(&node.config, &names, SocketAddr::from(([0, 0, 0, 0], port)), &node.stop) {
+            warn!("[sim] could not say the new name: {e}");
+        }
+    }
+    Ok(())
+}
+
 async fn info(State(node): State<Node>) -> Json<Value> {
     let module = &node.config.module;
+    let names = node.names.lock().unwrap().clone();
     let mut info = json!({
         "v": "1",
         "fw": "0.0.0-sim",
         "sn": node.config.serial,
-        "name": node.config.name,
+        "name": names.name,
         "module": {
             "type": format!("{:#06x}", module.type_id),
             "name": module.name,
@@ -895,15 +1107,99 @@ async fn info(State(node): State<Node>) -> Json<Value> {
             "caps": module.caps,
         },
         // Only the device knows what it is. A controller reads this and builds its
-        // fixture type from it; it carries no catalogue of module types.
-        "ports": node.config.ports,
+        // fixture type from it; it carries no catalog of module types.
+        "ports": node
+            .config
+            .ports
+            .iter()
+            .cloned()
+            .chain(node.pixels.ports())
+            .map(|p| PortDescription { label: names.ports.get(&p.port).cloned(), ..p })
+            .collect::<Vec<_>>(),
     });
+    if !node.pixels.is_empty() {
+        let mut heads = node.pixels.heads();
+        for head in heads.as_array_mut().into_iter().flatten() {
+            let label = head["head"].as_u64().and_then(|h| names.heads.get(&(h as u8)));
+            if let Some(label) = label {
+                head["label"] = json!(label);
+            }
+        }
+        info["heads"] = heads;
+        info["pixels"] = node.pixels.describe();
+    }
     // `dmx` is present only on a node that forwards a universe: its absence is
     // what tells a console there is none to allocate.
     if let Some(dmx) = &node.config.dmx {
         info["dmx"] = json!(dmx);
     }
+    if let Some(audio) = &node.config.audio {
+        info["audio"] = node.audio.describe(audio);
+    }
     Json(info)
+}
+
+async fn read_pixels(State(node): State<Node>) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if node.pixels.is_empty() {
+        return (axum::http::StatusCode::NOT_FOUND, "this node has no strip outputs").into_response();
+    }
+    Json(node.pixels.status()).into_response()
+}
+
+async fn put_pixels(
+    State(node): State<Node>,
+    axum::extract::Path(output): axum::extract::Path<u8>,
+    Json(body): Json<Value>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    match node.pixels.put(output, &body) {
+        Ok(strip) => {
+            info!("[sim] {} strip {output} is now {strip}", node.config.serial);
+            Json(strip).into_response()
+        }
+        Err((code, error)) => (
+            axum::http::StatusCode::from_u16(code).unwrap_or(axum::http::StatusCode::BAD_REQUEST),
+            Json(json!({ "error": error })),
+        )
+            .into_response(),
+    }
+}
+
+fn no_audio() -> axum::response::Response {
+    use axum::response::IntoResponse;
+    (axum::http::StatusCode::NOT_FOUND, "this node has no loudspeaker").into_response()
+}
+
+async fn list_clips(State(node): State<Node>) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    match &node.config.audio {
+        Some(described) => Json(node.audio.list(described)).into_response(),
+        None => no_audio(),
+    }
+}
+
+async fn put_clip(
+    State(node): State<Node>,
+    axum::extract::Path(sha): axum::extract::Path<String>,
+    body: axum::body::Bytes,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let Some(described) = &node.config.audio else { return no_audio() };
+    let status = node.audio.put(described, &sha, body.to_vec());
+    axum::http::StatusCode::from_u16(status).unwrap_or(axum::http::StatusCode::OK).into_response()
+}
+
+async fn delete_clip(
+    State(node): State<Node>,
+    axum::extract::Path(sha): axum::extract::Path<String>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if node.config.audio.is_none() {
+        return no_audio();
+    }
+    let status = node.audio.delete(&sha);
+    axum::http::StatusCode::from_u16(status).unwrap_or(axum::http::StatusCode::OK).into_response()
 }
 
 async fn read_state(State(node): State<Node>) -> Json<Value> {
@@ -943,32 +1239,102 @@ async fn identify(State(node): State<Node>) -> Json<Value> {
 
 // ── MQTT ──────────────────────────────────────────────────────────────────────
 
-/// Wait to be told where the broker is, then behave like a node on it.
+/// Wait to be told where the brokers are, then behave like a node on one of them —
+/// the first that answers, in the order the console listed them (doc 15).
 async fn run_mqtt(
     node: Node,
-    mut broker: watch::Receiver<Option<String>>,
+    mut told: watch::Receiver<Vec<String>>,
     mut inputs: mpsc::Receiver<Input>,
     auto: Option<Duration>,
 ) {
     // Nothing is published before the console asks for it: a node is discovered,
     // not configured, and until it is configured it has nowhere to publish to.
-    let addr = loop {
-        if let Some(addr) = broker.borrow_and_update().clone() {
-            break addr;
+    let mut brokers = brokers::BrokerList::default();
+    loop {
+        let list = told.borrow_and_update().clone();
+        if brokers.set(&list, None) {
+            break;
         }
-        if broker.changed().await.is_err() {
+        if told.changed().await.is_err() {
             return;
         }
+    }
+
+    let mut timers = Timers {
+        audio_status: tokio::time::interval(Duration::from_secs(1)),
+        was_playing: false,
+        health: tokio::time::interval(Duration::from_secs(10)),
+        ticker: auto.map(tokio::time::interval),
+        started: tokio::time::Instant::now(),
+        auto_state: false,
+        // What happened while no broker would have it, flushed when one does: the
+        // firmware keeps 32, in order, and so does this.
+        backlog: std::collections::VecDeque::new(),
     };
 
+    loop {
+        let Some(addr) = brokers.current().map(str::to_string) else { return };
+        node.describe(|s| {
+            s.broker = Some(addr.clone());
+            s.brokers = brokers.entries().to_vec();
+        });
+        match on_one_broker(&node, &addr, &mut brokers, &mut told, &mut inputs, &mut timers).await {
+            Session::Moved => {}
+            Session::Lost => {
+                let wait = brokers.failed();
+                // Told a new list while waiting is told now, not after the wait.
+                tokio::select! {
+                    _ = tokio::time::sleep(wait) => {}
+                    changed = told.changed() => {
+                        if changed.is_err() {
+                            return;
+                        }
+                        let list = told.borrow_and_update().clone();
+                        brokers.set(&list, None);
+                    }
+                }
+            }
+            Session::Over => return,
+        }
+    }
+}
+
+struct Timers {
+    audio_status: tokio::time::Interval,
+    was_playing: bool,
+    health: tokio::time::Interval,
+    ticker: Option<tokio::time::Interval>,
+    started: tokio::time::Instant,
+    auto_state: bool,
+    backlog: std::collections::VecDeque<Input>,
+}
+
+enum Session {
+    /// Told to be somewhere else: try the list's first entry now.
+    Moved,
+    /// The broker refused, or went: try the next one.
+    Lost,
+    /// The node is being put away.
+    Over,
+}
+
+/// One connection to one broker, until it ends.
+async fn on_one_broker(
+    node: &Node,
+    addr: &str,
+    brokers: &mut brokers::BrokerList,
+    told: &mut watch::Receiver<Vec<String>>,
+    inputs: &mut mpsc::Receiver<Input>,
+    timers: &mut Timers,
+) -> Session {
     let serial = node.config.serial.clone();
     let status = format!("openhaunt/{serial}/status");
-    let (host, port) = split_addr(&addr);
+    let (host, port) = split_addr(addr);
     let mut options = MqttOptions::new(format!("openhaunt-{serial}"), host, port);
     options.set_keep_alive(Duration::from_secs(10));
     options.set_last_will(LastWill::new(&status, "offline", QoS::AtLeastOnce, true));
 
-    let (client, mut eventloop) = AsyncClient::new(options, 32);
+    let (client, mut eventloop) = AsyncClient::new(options, 64);
     let _ = client.publish(&status, QoS::AtLeastOnce, true, "offline").await;
     let _ = client.publish(&status, QoS::AtLeastOnce, true, "online").await;
     // Both verbs, not just `set`: a port can be handed a shape as well as a value.
@@ -978,41 +1344,98 @@ async fn run_mqtt(
     // Not under this node's serial. The console publishes one clock for every node
     // on the broker, because the whole point is that they agree with each other.
     let _ = client.subscribe(motion::CLOCK_TOPIC, QoS::AtLeastOnce).await;
-
-    let mut health = tokio::time::interval(Duration::from_secs(10));
-    let mut ticker = auto.map(tokio::time::interval);
-    let started = tokio::time::Instant::now();
-    let mut auto_state = false;
+    // And one broker list, retained, which is how a node that walked here after a
+    // failover learns the new order without anybody having found it over mDNS.
+    let _ = client.subscribe(BROKERS_TOPIC, QoS::AtLeastOnce).await;
+    if node.config.audio.is_some() {
+        let _ = client.subscribe(format!("openhaunt/{serial}/audio/+"), QoS::AtLeastOnce).await;
+    }
+    let mut connected = false;
 
     loop {
         tokio::select! {
             event = eventloop.poll() => match event {
                 Ok(Event::Incoming(Packet::Publish(publish))) => {
                     if publish.topic == motion::CLOCK_TOPIC {
-                        take_clock_sample(&node, &publish.payload, publish.retain);
+                        take_clock_sample(node, &publish.payload, publish.retain);
+                    } else if publish.topic == BROKERS_TOPIC {
+                        let body: Value = serde_json::from_slice(&publish.payload).unwrap_or(Value::Null);
+                        let list = brokers::from_json(&body);
+                        if brokers.set(&list, Some(addr)) {
+                            info!("[sim] {serial} told to move: {}", list.join(", "));
+                            let _ = client.publish(&status, QoS::AtLeastOnce, true, "offline").await;
+                            let _ = client.disconnect().await;
+                            return Session::Moved;
+                        }
+                        node.describe(|s| s.brokers = brokers.entries().to_vec());
+                    } else if let Some(verb) = publish.topic.strip_prefix(&format!("openhaunt/{serial}/audio/")) {
+                        if verb != "status" {
+                            let body = serde_json::from_slice(&publish.payload).unwrap_or(Value::Null);
+                            node.audio.command(verb, body).await;
+                        }
                     } else {
-                        apply_output(&node, &publish.topic, &publish.payload);
+                        apply_output(node, &publish.topic, &publish.payload);
                     }
                 }
                 // The one packet worth noticing on its own: until it arrives the
                 // node is configured but not yet talking to anything.
                 Ok(Event::Incoming(Packet::ConnAck(_))) => {
+                    connected = true;
+                    brokers.connected();
+                    info!("[sim] {serial} on {addr}");
                     node.describe(|s| s.mqtt_connected = true);
+                    while let Some(input) = timers.backlog.pop_front() {
+                        publish_input(&client, node, input).await;
+                    }
                 }
                 Ok(_) => {}
                 Err(e) => {
-                    connection_lost(&node, &e);
-                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    connection_lost(node, &e);
+                    if connected {
+                        warn!("[sim] {serial} lost {addr}: {e}");
+                    }
+                    return Session::Lost;
                 }
             },
 
-            Some(input) = inputs.recv() => {
-                publish_input(&client, &node, input).await;
+            changed = told.changed() => {
+                if changed.is_err() {
+                    return Session::Over;
+                }
+                let list = told.borrow_and_update().clone();
+                if brokers.set(&list, if connected { Some(addr) } else { None }) {
+                    let _ = client.disconnect().await;
+                    return Session::Moved;
+                }
+                node.describe(|s| s.brokers = brokers.entries().to_vec());
             }
 
-            _ = health.tick() => {
+            Some(input) = inputs.recv() => {
+                if connected {
+                    publish_input(&client, node, input).await;
+                } else {
+                    if timers.backlog.len() == 32 {
+                        timers.backlog.pop_front();
+                    }
+                    timers.backlog.push_back(input);
+                }
+            }
+
+            // Once a second while something plays, and once more when it goes quiet:
+            // the rule the firmware follows.
+            _ = timers.audio_status.tick(), if node.config.audio.is_some() && connected => {
+                let status = node.audio.status();
+                if status.is_some() || timers.was_playing {
+                    let body = status.clone().unwrap_or_else(|| json!({ "voices": [], "underruns": 0, "master": 1.0, "locked": true }));
+                    let topic = format!("openhaunt/{serial}/audio/status");
+                    let _ = client.publish(topic, QoS::AtLeastOnce, false, body.to_string()).await;
+                }
+                timers.was_playing = status.is_some();
+            }
+
+            _ = timers.health.tick(), if connected => {
                 let payload = json!({
-                    "uptime_s": started.elapsed().as_secs(),
+                    "uptime_s": timers.started.elapsed().as_secs(),
                     "temp_c": 38.5,
                     "poe_class": 3,
                     "errors": [],
@@ -1021,17 +1444,20 @@ async fn run_mqtt(
                 let _ = client.publish(topic, QoS::AtLeastOnce, false, payload.to_string()).await;
             }
 
-            _ = async { ticker.as_mut().unwrap().tick().await }, if ticker.is_some() => {
-                auto_state = !auto_state;
+            _ = async { timers.ticker.as_mut().unwrap().tick().await }, if timers.ticker.is_some() && connected => {
+                timers.auto_state = !timers.auto_state;
                 // Whatever this node said it reads, driven the way its data type
                 // asks — a boolean toggles, a number walks its declared range.
-                if let Some(input) = unprompted(&node, auto_state) {
-                    publish_input(&client, &node, input).await;
+                if let Some(input) = unprompted(node, timers.auto_state) {
+                    publish_input(&client, node, input).await;
                 }
             }
         }
     }
 }
+
+/// Where the console publishes its broker list, retained (doc 15).
+pub const BROKERS_TOPIC: &str = "openhaunt/brokers";
 
 /// The reading or edge a node with `--auto` reports on its own, on the first port
 /// it described as `readonly`. None where the module reads nothing.
@@ -1167,17 +1593,29 @@ async fn listen_for_sacn(
     port: u16,
     stop: &Stopper,
     frames: mpsc::Sender<(u16, Vec<u8>)>,
+    pixels: Arc<pixels::Pixels>,
 ) -> Result<SocketAddr> {
-    let socket = tokio::net::UdpSocket::bind(("0.0.0.0", port)).await?;
+    // Shared, the way a console's sACN input binds it: the Garden's demo runs five V0
+    // nodes on one machine and every one of them listens on 5568. A multicast universe
+    // reaches all of them; a unicast one reaches whichever the OS picks, which on one
+    // machine is as good as a simulator can do.
+    let shared = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, None)?;
+    shared.set_reuse_address(true)?;
+    #[cfg(unix)]
+    shared.set_reuse_port(true)?;
+    shared.set_nonblocking(true)?;
+    shared.bind(&std::net::SocketAddr::from(([0, 0, 0, 0], port)).into())?;
+    let socket = tokio::net::UdpSocket::from_std(shared.into())?;
     let addr = socket.local_addr()?;
     stop.holds(tokio::spawn(async move {
         let mut buffer = vec![0u8; 1500];
         loop {
             let Ok(n) = socket.recv(&mut buffer).await else { break };
             if let Some(frame) = parse_e131(&buffer[..n]) {
-                if frames.send(frame).await.is_err() {
-                    break;
-                }
+                pixels.receive(frame.0, &frame.1);
+                // Nobody reading the gateway's frames is not a reason to stop counting
+                // the strips': a full channel drops, it does not end the node.
+                let _ = frames.try_send(frame);
             }
         }
     }));
@@ -1199,8 +1637,27 @@ pub fn parse_e131(packet: &[u8]) -> Option<(u16, Vec<u8>)> {
 
 // ── mDNS ──────────────────────────────────────────────────────────────────────
 
-fn advertise(config: &NodeConfig, http_addr: SocketAddr, stop: &Stopper) -> Result<()> {
-    let daemon = mdns_sd::ServiceDaemon::new()?;
+fn advertise(config: &NodeConfig, names: &Names, http_addr: SocketAddr, stop: &Stopper) -> Result<()> {
+    // The daemon skips every interface it may not send on and says so only at `debug`,
+    // so a node nobody can find would look exactly like one that is advertising. The
+    // usual cause on a Mac is the Local Network privacy setting of whatever app started
+    // this process; the console warns the same way (`infra::net`).
+    if let Ok(socket) = std::net::UdpSocket::bind(("0.0.0.0", 0)) {
+        if let Err(e) = socket.send_to(&[0u8; 12], ("224.0.0.251", 5353)) {
+            warn!(
+                "[sim] this process may not send multicast ({e}), so nothing will discover {}: \
+                 on macOS, allow Local Network access for the app that started it \
+                 (the terminal, for a sim started from a shell)",
+                config.serial
+            );
+        }
+    }
+    // Said again on a rename: the same daemon, the record replaced.
+    let held = stop.mdns.lock().unwrap().as_ref().map(|(daemon, _)| daemon.clone());
+    let daemon = match held {
+        Some(daemon) => daemon,
+        None => mdns_sd::ServiceDaemon::new()?,
+    };
     let mut txt = std::collections::HashMap::new();
     txt.insert("v".to_string(), "1".to_string());
     txt.insert("fw".to_string(), "0.0.0-sim".to_string());
@@ -1210,7 +1667,9 @@ fn advertise(config: &NodeConfig, http_addr: SocketAddr, stop: &Stopper) -> Resu
     txt.insert("modsn".to_string(), format!("mod-{}", config.serial));
     txt.insert("modrev".to_string(), config.module.rev.clone());
     txt.insert("caps".to_string(), config.module.caps.clone());
-    txt.insert("name".to_string(), config.name.clone());
+    txt.insert("name".to_string(), names.name.clone());
+    // Only that it moved matters to a console: it asks `/info` again.
+    txt.insert("desc".to_string(), format!("{:04x}", names.generation));
     // The one fact worth stating before anybody asks: a mains warning is more use
     // early than correct-and-late.
     if config.module.switches_mains() {
@@ -1400,6 +1859,26 @@ mod tests {
         assert!(silent.ports.is_empty());
         assert_eq!(silent.dmx, None);
         assert!(silent.problems().is_empty(), "saying nothing is not a malformed config");
+    }
+
+    #[test]
+    fn names_are_taken_whole_or_not_at_all() {
+        let mut names = Names { name: "Node".into(), ..Names::default() };
+        let body = json!({ "name": "Hof", "labels": { "ports": { "4": "Ausgang PIR", "9": "x" } } });
+        assert!(names.apply(&body, &[0, 4], &[]).is_err(), "there is no port 9");
+        assert_eq!(names.name, "Node", "and so nothing was taken");
+
+        let body = json!({ "name": "Hof", "labels": { "ports": { "4": "Ausgang PIR" }, "heads": { "1": "LED Streifen Tor" } } });
+        assert_eq!(names.apply(&body, &[0, 4], &[1]), Ok(true));
+        assert_eq!(names.name, "Hof");
+        assert_eq!(names.ports[&4], "Ausgang PIR");
+        assert_eq!(names.heads[&1], "LED Streifen Tor");
+        assert_eq!(names.apply(&body, &[0, 4], &[1]), Ok(false), "the same again is no change");
+
+        assert_eq!(names.apply(&json!({ "labels": { "ports": { "4": "" } } }), &[0, 4], &[1]), Ok(true));
+        assert!(names.ports.is_empty(), "an empty label clears it");
+        let long = "Ä".repeat(16);
+        assert!(names.apply(&json!({ "labels": { "ports": { "0": long } } }), &[0, 4], &[1]).is_err(), "32 bytes");
     }
 
     #[test]

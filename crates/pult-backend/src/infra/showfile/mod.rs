@@ -8,17 +8,33 @@ pub mod oplog;
 pub mod order;
 pub mod recent;
 pub mod travel;
+pub mod upgrade;
 pub mod versions;
+
+pub use upgrade::{NeedsUpgrade, Upgrade};
 
 #[cfg(test)]
 mod tests;
 
+/// Open a showfile, refusing one an upgrade would have to touch first.
 pub async fn open(path: &std::path::Path) -> Result<SqlitePool> {
+    open_with(path, Upgrade::No).await
+}
+
+/// Open a showfile, and say what to do if it is older than this build. See
+/// [`upgrade`]: [`Upgrade::No`] answers [`NeedsUpgrade`], which a caller finds with
+/// `downcast_ref`.
+pub async fn open_with(path: &std::path::Path, upgrade: Upgrade) -> Result<SqlitePool> {
     let opts = SqliteConnectOptions::from_str(&format!("sqlite:{}?mode=rwc", path.display()))?
         .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
         .foreign_keys(true);
     let pool = SqlitePool::connect_with(opts).await?;
-    run_migrations(&pool).await?;
+    if let Err(e) = run_migrations(&pool, upgrade, Some(path)).await {
+        // Let go of the file: a refusal is answered while somebody decides, and the
+        // file is opened again when they have.
+        pool.close().await;
+        return Err(e);
+    }
     reclaim_if_it_is_worth_it(&pool).await;
     Ok(pool)
 }
@@ -62,7 +78,22 @@ pub async fn open_for_writing(path: &std::path::Path) -> Result<SqlitePool> {
         .foreign_keys(true);
     // One, because there is one writer by construction and a second connection here
     // would be a second writer racing it for SQLite's write lock.
-    Ok(sqlx::sqlite::SqlitePoolOptions::new().max_connections(1).connect_with(opts).await?)
+    Ok(one_connection().connect_with(opts).await?)
+}
+
+/// A pool of exactly one connection that is **never recycled**.
+///
+/// `engine::writer` sends `BEGIN`, the batch and `COMMIT` through the pool rather than
+/// through a held connection — it has to, the generated upserts take a pool — so all
+/// of them landing on one connection is what makes the batch a transaction. sqlx's
+/// defaults close a connection 30 minutes after it opened and after 10 idle, and the
+/// replacement is opened between two statements: the open `BEGIN` dies with the old
+/// connection, the batch autocommits row by row on the new one, and `COMMIT` answers
+/// "no transaction is active". At HHG that was the autosave's warning every half hour
+/// all night. For a show in memory it is worse — a new `:memory:` connection is an
+/// empty database.
+fn one_connection() -> sqlx::sqlite::SqlitePoolOptions {
+    sqlx::sqlite::SqlitePoolOptions::new().max_connections(1).max_lifetime(None).idle_timeout(None)
 }
 
 /// Open a migrated in-memory showfile.
@@ -77,24 +108,36 @@ pub async fn open_for_writing(path: &std::path::Path) -> Result<SqlitePool> {
 /// asset store is what says no in that state, since nothing else has to.
 pub async fn open_in_memory() -> Result<SqlitePool> {
     let opts = SqliteConnectOptions::from_str("sqlite::memory:")?.foreign_keys(true);
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(opts)
-        .await?;
-    run_migrations(&pool).await?;
+    let pool = one_connection().connect_with(opts).await?;
+    run_migrations(&pool, Upgrade::No, None).await?;
     Ok(pool)
 }
 
 /// Run migrations against an already-open pool. Test-only.
 #[cfg(test)]
 pub async fn migrate_for_test(pool: &SqlitePool) -> Result<()> {
-    run_migrations(pool).await
+    run_migrations(pool, Upgrade::No, None).await
 }
 
-async fn run_migrations(pool: &SqlitePool) -> Result<()> {
+async fn run_migrations(pool: &SqlitePool, upgrade: Upgrade, path: Option<&std::path::Path>) -> Result<()> {
     // Asked before anything is created, because it is the only moment the answer is
     // still available: after `CREATE TABLE IF NOT EXISTS` every file has tables.
     let existed = has_tables(pool).await?;
+
+    // Before the generated DDL, because a step renames tables that DDL would
+    // otherwise create empty under the new names.
+    if existed {
+        let generation: i64 = sqlx::query_scalar("PRAGMA user_version").fetch_one(pool).await?;
+        if upgrade::upgradable(generation) {
+            match upgrade {
+                Upgrade::No => {
+                    return Err(NeedsUpgrade { from: generation, to: SCHEMA_GENERATION }.into())
+                }
+                Upgrade::InPlace => upgrade::walk(pool, generation, path).await?,
+                Upgrade::Scratch => upgrade::walk(pool, generation, None).await?,
+            }
+        }
+    }
 
     let sql = include_str!("migrations/001_initial.sql");
 
@@ -137,23 +180,36 @@ async fn run_migrations(pool: &SqlitePool) -> Result<()> {
 /// 3. A show became a folder, and the assets moved out of the file into `assets/`
 ///    beside it. The `bytes` column is gone, so a generation 2 file's rows claim
 ///    assets whose bytes nothing can find.
-/// 4. A rig became something you could build: a `SceneObject` gained its catalogue
+/// 4. A rig became something you could build: a `SceneObject` gained its catalog
 ///    piece and a `Fixture` gained a `Mount`, so a placement written before it means
 ///    something else.
 /// 5. `FollowMode::Timecode` is gone, replaced by the `timelines` collection. A cue
 ///    stored with it is a JSON variant nothing in this build can name, and a
 ///    `follow_mode` that fails to parse is exactly the silent `None` the stamp exists
 ///    to catch.
-pub(super) const SCHEMA_GENERATION: i64 = 5;
+/// 6. A timeline's one `audio` file became `clips`, each with its own place, trim and
+///    destination. A generation-5 timeline's file would be dropped without a word.
+/// 7. American spelling, everywhere: `colour` became `color`, `centre` `center` and
+///    `catalogue` `catalog`, in column names and in serialized enum values alike. A
+///    generation-6 `SceneObject::catalogue` would read as a piece with no catalog entry.
+/// 8. A clip goes to a speaker zone rather than to channel numbers: the
+///    `AudioDestination::Station { channels }` variant is gone, so a generation-7 clip
+///    routed to channels is a variant nothing in this build can name.
+/// 9. A pixel strip is one fixture with a cell per pixel, not a fixture per pixel hung
+///    off a scene object: a generation-8 show's cells would sit in the patch as
+///    fixtures of a type nothing makes any more, beside the strip that now draws them.
+/// 10. The arrangements of the panels moved from `layouts` to `workspaces`, and
+///     `layouts` became the 2D drawings. The first generation with a step: see
+///     [`upgrade`].
+pub(super) const SCHEMA_GENERATION: i64 = 10;
 
 /// Say plainly that a showfile is from another build, instead of panicking somewhere
 /// deep in a generated `from_columns`.
 ///
-/// This console does not migrate showfiles. That is a deliberate decision for as long
-/// as it is in development and nobody is carrying a season's work in one: a migration
-/// is a promise about every shape the data has ever had, and keeping that promise cost
-/// more than reseeding a demo show does. What replaces it is a refusal that names what
-/// is wrong.
+/// From generation 9 on a file older than this build is walked up by [`upgrade`]
+/// before it gets here, when somebody asked; what reaches this is a file no step can
+/// reach — older than [`upgrade::FIRST_UPGRADABLE`], or made by a newer build — and
+/// a refusal that names what is wrong.
 ///
 /// Two things can be wrong, and they fail differently, so both are checked.
 ///
@@ -179,18 +235,23 @@ async fn refuse_a_file_this_build_cannot_read(pool: &SqlitePool, existed: bool) 
     }
 
     if generation != SCHEMA_GENERATION {
+        if generation > SCHEMA_GENERATION {
+            anyhow::bail!(
+                "this showfile is generation {generation} and this build reads {SCHEMA_GENERATION}: \
+                 it was made by a newer build. Open it there."
+            );
+        }
         anyhow::bail!(
             "this showfile is generation {generation} and this build reads {SCHEMA_GENERATION}. \
-             Showfiles are not migrated while the console is in development: \
-             start a fresh one."
+             Only generation {} and later can be upgraded: start a fresh one.",
+            upgrade::FIRST_UPGRADABLE
         );
     }
 
     if let Some((table, column)) = a_required_column_nothing_filled_in(pool).await? {
         anyhow::bail!(
             "this showfile predates {table}.{column}, which this build needs a \
-             value for in every row. Showfiles are not migrated while the console \
-             is in development: start a fresh one."
+             value for in every row, and no upgrade step fills it in: start a fresh one."
         );
     }
 

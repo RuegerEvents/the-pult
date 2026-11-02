@@ -45,7 +45,7 @@ pub enum SyncCommand {
         addrs: Vec<SocketAddr>,
         session_id: Uuid,
         show_id: Uuid,
-        reply: oneshot::Sender<Result<SocketAddr, String>>,
+        reply: oneshot::Sender<Result<(SocketAddr, NodeId), String>>,
     },
     /// Update which node is the current leader (for HelloAck).
     SetLeader(NodeId),
@@ -55,6 +55,17 @@ pub enum SyncCommand {
     PeerIds { reply: oneshot::Sender<Vec<NodeId>> },
     /// A peer connection ended. Sent by the peer task as it exits.
     PeerLost(NodeId),
+    /// A write arrived from `from`. The leader passes it on to every other peer.
+    ///
+    /// A session is a star in practice: a follower dials the leader, and two
+    /// followers are linked only if one of them happens to dial the other. Without
+    /// this the wing's writes on the Pi never reached the audio laptop and the
+    /// laptop's never reached the Pi; at the gig (2026-10-27) the laptop went on
+    /// sending a programmer the wing had cleared, and a rename made on the laptop
+    /// was missing from the Pi's copy of the show. Where two followers *are* linked,
+    /// the second copy is dropped as already seen: its vector clock is the one the
+    /// first left at that path.
+    Relay { from: NodeId, msg: SyncMessage },
     /// A heartbeat came back. The only measurement of the link to this peer, and it
     /// belongs to this node: the same link measured from the other end is a
     /// different path and a different number.
@@ -83,6 +94,14 @@ pub enum SyncCommand {
     /// [`SyncCommand::RaisePeerLog`], recomputed from who is watching rather than
     /// counted up and down.
     WatchPeerOutput { node_id: NodeId, output_id: Uuid, focuses: Vec<Option<String>> },
+    TestPeerOutput {
+        node_id: NodeId,
+        output_id: Uuid,
+        test: pult_schema::types::output::ChannelTest,
+    },
+    /// The same, to every peer: an output whose row names no station, which each of
+    /// them runs or not by its own rule.
+    TestEveryPeerOutput { output_id: Uuid, test: pult_schema::types::output::ChannelTest },
     /// Publish what the exchange is doing to every peer.
     ///
     /// Fanned out rather than addressed, because every station of the session wants
@@ -133,6 +152,20 @@ impl SyncHandle {
         session_id: Uuid,
         show_id: Uuid,
     ) -> Result<SocketAddr, String> {
+        self.dial_peer(addrs, session_id, show_id).await.map(|(addr, _)| addr)
+    }
+
+    /// The same, saying who answered as well as where.
+    ///
+    /// For joining a station by its address rather than by its advert, where nothing
+    /// but the handshake can say which node is at the other end — and that node is the
+    /// leader, because a station is only ever pointed at the one it is joining.
+    pub async fn dial_peer(
+        &self,
+        addrs: Vec<SocketAddr>,
+        session_id: Uuid,
+        show_id: Uuid,
+    ) -> Result<(SocketAddr, NodeId), String> {
         let (tx, rx) = oneshot::channel();
         self.0
             .send(SyncCommand::ConnectPeer { addrs, session_id, show_id, reply: tx })
@@ -177,6 +210,28 @@ impl SyncHandle {
         let _ = self.0.send(SyncCommand::WatchPeerOutput { node_id, output_id, focuses }).await;
     }
 
+    /// Force channels on one of a peer's outputs, or with an empty test let go.
+    ///
+    /// A peer that is not connected is simply not told: a test that outlived its
+    /// connection would be a light left on by a console that is no longer there.
+    pub async fn test_peer_output(
+        &self,
+        node_id: NodeId,
+        output_id: Uuid,
+        test: pult_schema::types::output::ChannelTest,
+    ) {
+        let _ = self.0.send(SyncCommand::TestPeerOutput { node_id, output_id, test }).await;
+    }
+
+    /// Force channels on every peer's copy of an output that names no station.
+    pub async fn test_every_peer_output(
+        &self,
+        output_id: Uuid,
+        test: pult_schema::types::output::ChannelTest,
+    ) {
+        let _ = self.0.send(SyncCommand::TestEveryPeerOutput { output_id, test }).await;
+    }
+
     /// How many peers this station is connected to.
     pub async fn peer_count(&self) -> usize {
         let (tx, rx) = oneshot::channel();
@@ -189,7 +244,6 @@ impl SyncHandle {
     }
 
     /// Who this node currently believes leads the session.
-    #[allow(dead_code, reason = "used by the tests")]
     pub async fn leader(&self) -> Option<NodeId> {
         let (tx, rx) = oneshot::channel();
         let _ = self.0.send(SyncCommand::Leader { reply: tx }).await;
@@ -377,7 +431,7 @@ impl SyncManager {
                         Some(cmd) => self.handle_command(cmd).await,
                     }
                 }
-                // A peer finished its handshake, dialled or accepted.
+                // A peer finished its handshake, dialed or accepted.
                 connected = self.connected_rx.recv() => {
                     if let Some((peer_id, sender, bytes)) = connected {
                         info!("[sync] registered peer {}", peer_id.0);
@@ -464,6 +518,24 @@ impl SyncManager {
                     let _ = sender.0.try_send(SyncMessage::OutputWatch { output_id, focuses });
                 }
             }
+            SyncCommand::TestPeerOutput { node_id, output_id, test } => {
+                if let Some(sender) = self.peers.get(&node_id) {
+                    // Dropped if the link is full, like the asks beside it. Unlike them
+                    // this one is re-sent by the page while it is held, so a drop is a
+                    // few seconds of the show instead of a test.
+                    let _ = sender.0.try_send(SyncMessage::OutputTest { output_id, test });
+                }
+            }
+            SyncCommand::TestEveryPeerOutput { output_id, test } => {
+                // Not `fan_out`, which drops a peer whose link is full: a test is
+                // re-sent by the page while it is held, so a full link costs a few
+                // seconds of it and never the peer.
+                for sender in self.peers.values() {
+                    let _ = sender
+                        .0
+                        .try_send(SyncMessage::OutputTest { output_id, test: test.clone() });
+                }
+            }
             SyncCommand::ConnectPeer { addrs, session_id, show_id, reply } => {
                 // Spawned, never awaited *here*. Dialling asks this node's own engine
                 // for its clock and its missed operations, and the engine reaches
@@ -484,9 +556,12 @@ impl SyncManager {
                 let watched = self.watched.clone();
                 let connected = self.connected_tx.clone();
                 tokio::spawn(async move {
-                    let Some((addr, stream)) = dial(&addrs).await else {
-                        let _ = reply.send(Err(format!("nothing answered at any of {addrs:?}")));
-                        return;
+                    let (addr, stream) = match dial(&addrs).await {
+                        Ok(dialed) => dialed,
+                        Err(e) => {
+                            let _ = reply.send(Err(e));
+                            return;
+                        }
                     };
                     match spawn_outbound(
                         stream, node_id, session_id, show_id, engine, watched, on_lost,
@@ -495,7 +570,7 @@ impl SyncManager {
                     {
                         Ok((peer_id, sender, bytes)) => {
                             let _ = connected.send((peer_id, sender, bytes)).await;
-                            let _ = reply.send(Ok(addr));
+                            let _ = reply.send(Ok((addr, peer_id)));
                         }
                         Err(e) => {
                             let _ =
@@ -518,6 +593,16 @@ impl SyncManager {
             }
             SyncCommand::Leader { reply } => {
                 let _ = reply.send(*self.leader.borrow());
+            }
+            SyncCommand::Relay { from, msg } => {
+                if *self.leader.borrow() != self.node_id {
+                    return;
+                }
+                let origin = match &msg {
+                    SyncMessage::SyncedBroadcast { node_id, .. } => Some(*node_id),
+                    _ => None,
+                };
+                self.fan_out_except(msg, &[Some(from), origin]);
             }
             SyncCommand::PeerLatency { node_id, rtt, unanswered } => {
                 self.links.send_modify(|links| {
@@ -611,6 +696,9 @@ impl SyncManager {
 
         self.members.retain(|id| *id != lost);
         let _ = self.leader.send(winner);
+        if let Ok(mut gone) = self.watched.lost_leader.lock() {
+            *gone = Some(lost);
+        }
 
         if winner == self.node_id {
             info!("[sync] leader {} is gone; taking over", lost.0);
@@ -654,13 +742,21 @@ impl SyncManager {
     /// the peer task waits on the engine, and nothing drains anything.
     ///
     /// A peer whose outbox is full is a peer that is not keeping up, and one that far
-    /// behind is not synchronised whatever we do next. Dropping the *message* would
+    /// behind is not synchronized whatever we do next. Dropping the *message* would
     /// leave the two nodes quietly disagreeing, so the connection goes instead: the
     /// peer reconnects and catches up from the oplog, which is a path that already
     /// exists and is already tested.
     fn fan_out(&mut self, msg: SyncMessage) {
+        self.fan_out_except(msg, &[]);
+    }
+
+    /// The same, to every peer but these.
+    fn fan_out_except(&mut self, msg: SyncMessage, not: &[Option<NodeId>]) {
         let mut dead = vec![];
         for (peer_id, sender) in &self.peers {
+            if not.contains(&Some(*peer_id)) {
+                continue;
+            }
             match sender.0.try_send(msg.clone()) {
                 Ok(()) => {}
                 Err(mpsc::error::TrySendError::Full(_)) => {
@@ -700,16 +796,26 @@ const DIAL_BUDGET: std::time::Duration = std::time::Duration::from_secs(3);
 /// caller ranks them by how far they reach and this works down the list.
 /// The budget is split evenly between them, so one address that neither answers nor
 /// refuses cannot spend the whole of it before the one that works is tried.
-async fn dial(addrs: &[SocketAddr]) -> Option<(SocketAddr, tokio::net::TcpStream)> {
+///
+/// What each address said goes into the answer, because "nothing answered" alone is a
+/// refused port, a timeout and a route that does not exist all looking the same.
+async fn dial(addrs: &[SocketAddr]) -> Result<(SocketAddr, tokio::net::TcpStream), String> {
     let each = DIAL_BUDGET / addrs.len().max(1) as u32;
+    let mut said = Vec::new();
     for addr in addrs {
         match tokio::time::timeout(each, tokio::net::TcpStream::connect(addr)).await {
-            Ok(Ok(stream)) => return Some((*addr, stream)),
-            Ok(Err(e)) => debug!("[sync] {addr} did not answer: {e}"),
-            Err(_) => debug!("[sync] {addr} said nothing in {each:?}"),
+            Ok(Ok(stream)) => return Ok((*addr, stream)),
+            Ok(Err(e)) => {
+                debug!("[sync] {addr} did not answer: {e}");
+                said.push(format!("{addr}: {e}"));
+            }
+            Err(_) => {
+                debug!("[sync] {addr} said nothing in {each:?}");
+                said.push(format!("{addr}: nothing in {each:?}"));
+            }
         }
     }
-    None
+    Err(format!("nothing answered ({})", said.join("; ")))
 }
 
 #[cfg(test)]

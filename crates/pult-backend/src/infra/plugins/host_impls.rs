@@ -109,7 +109,7 @@ impl WasiHttpView for PluginCtx {
 
 // ── Outbound HTTP, gated ──────────────────────────────────────────────────────
 
-/// Hooks whose defaults are the crate's own behaviour.
+/// Hooks whose defaults are the crate's own behavior.
 struct DefaultHooks;
 impl WasiHttpHooks for DefaultHooks {}
 
@@ -266,7 +266,10 @@ impl data::Host for PluginCtx {
             Err(e) => return Ok(Err(format!("args are not JSON: {e}"))),
         };
         let result = if rpcs::is_local_rpc(&method) {
-            rpcs::dispatch(&method, args, &self.rpc_deps).await
+            // As the operator this command is running for, so a store made from the
+            // command line is theirs to take back, as its own writes are.
+            let deps = LocalRpcDeps { acting_for: self.user, ..self.rpc_deps.clone() };
+            rpcs::dispatch(&method, args, &deps).await
         } else {
             self.engine.call(method, args).await.map_err(|e| e.to_string())
         };
@@ -424,7 +427,7 @@ impl PluginCtx {
     /// Write one key of a show-scoped store, through the engine's ordinary
     /// write path so replication, persistence and catch-up all follow.
     ///
-    /// **Whether the write is attributed is the whole of the undo behaviour.**
+    /// **Whether the write is attributed is the whole of the undo behavior.**
     /// `Operation::is_undoable` already requires a user, and the History panel
     /// reads `WHERE user_id IS NOT NULL`, so an unattributed write is
     /// non-undoable and invisible to the history with nothing taught about

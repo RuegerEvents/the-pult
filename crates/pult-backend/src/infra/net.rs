@@ -125,6 +125,19 @@ pub fn read(networks: &Networks) -> Vec<NetInterface> {
     found
 }
 
+/// The addresses another machine could reach this one at, in a stable order: what
+/// [`Network::address_changes`] compares. Loopback and interfaces that are down are
+/// not places anything is found.
+fn addresses_of(interfaces: &[NetInterface]) -> Vec<&str> {
+    let mut addresses: Vec<&str> = interfaces
+        .iter()
+        .filter(|i| i.up && !i.loopback)
+        .flat_map(|i| i.addresses.iter().map(String::as_str))
+        .collect();
+    addresses.sort_unstable();
+    addresses
+}
+
 fn is_loopback(name: &str, addresses: &[sysinfo::IpNetwork]) -> bool {
     // By address rather than by name where there is one: `lo`, `lo0` and `Loopback
     // Pseudo-Interface 1` are three spellings of one thing, and the address is the
@@ -140,6 +153,9 @@ fn is_loopback(name: &str, addresses: &[sysinfo::IpNetwork]) -> bool {
 pub struct Network {
     prefs: NetworkPrefs,
     inner: RwLock<Inner>,
+    /// Counts the times this machine's addresses have changed, for what has to start
+    /// again when they do — see [`Network::address_changes`].
+    moved: tokio::sync::watch::Sender<u64>,
 }
 
 #[derive(Debug, Default)]
@@ -147,6 +163,9 @@ struct Inner {
     interfaces: Vec<NetInterface>,
     bindings: BTreeMap<NetService, ServiceBinding>,
     standing: Standing,
+    /// Whether the last look found multicast refused, so the moment it is allowed can
+    /// be told apart from it always having been.
+    multicast_refused: bool,
 }
 
 /// Where this station stands in the session, as the reporter last worked it out.
@@ -185,7 +204,9 @@ impl Network {
                 interfaces: interfaces(),
                 bindings: BTreeMap::new(),
                 standing: Standing::default(),
+                multicast_refused: multicast_refused().is_some(),
             }),
+            moved: Default::default(),
         })
     }
 
@@ -206,14 +227,58 @@ impl Network {
     /// came up starts by itself when somebody plugs it in, and never needs a restart
     /// at twenty-five past seven.
     pub fn observe(&self, found: Vec<NetInterface>) {
-        if let Ok(mut inner) = self.inner.write() {
-            inner.interfaces = found;
+        // macOS refuses a freshly built app the local network for its first few seconds
+        // (seen at every install at the gig), and an mDNS daemon started in that window
+        // stays deaf for good: the Mini showed every node as not on the network after
+        // each restart. Multicast becoming allowed is therefore an address change as far
+        // as the daemons are concerned — they start again on it.
+        let refused = multicast_refused().is_some();
+        let moved = match self.inner.write() {
+            Ok(mut inner) => {
+                let mut moved = addresses_of(&inner.interfaces) != addresses_of(&found);
+                if inner.multicast_refused && !refused {
+                    tracing::info!("[network] multicast is allowed now; discovery starts again");
+                    moved = true;
+                }
+                inner.multicast_refused = refused;
+                inner.interfaces = found;
+                moved
+            }
+            Err(_) => false,
+        };
+        if moved {
+            self.moved.send_modify(|n| *n += 1);
         }
+    }
+
+    /// Ticks whenever an address this machine can be reached at comes or goes.
+    ///
+    /// For an mDNS daemon, which **does not survive it**: `mdns-sd` 0.13 adds a socket
+    /// for an interface that appears, but a daemon that was up when a Mac moved from
+    /// wifi to ethernet went on reporting the node it had found as removed, several
+    /// times a second, and never resolved it again — while `dns-sd` and a fresh daemon
+    /// on the same machine both found it at once. Every node then looked switched off
+    /// and was never told where the broker had moved to. So a browser starts again
+    /// when this ticks, rather than trusting the daemon to follow the cable.
+    pub fn address_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.moved.subscribe()
     }
 
     /// What the reporter last worked out about this station's place in the session.
     pub fn standing(&self) -> Standing {
         self.inner.read().map(|inner| inner.standing).unwrap_or_default()
+    }
+
+    /// The session's half of the standing, the moment it changes. A leader is at the
+    /// top of the sACN ladder rather than in a slot; a follower keeps whatever slot
+    /// the reporter last claimed for it until the reporter claims again.
+    pub fn set_leader(&self, is_leader: bool) {
+        if let Ok(mut inner) = self.inner.write() {
+            inner.standing.is_leader = is_leader;
+            if is_leader {
+                inner.standing.sacn_slot = None;
+            }
+        }
     }
 
     pub fn set_standing(&self, standing: Standing) {
@@ -354,13 +419,18 @@ impl Network {
 /// Loopback is enabled explicitly where the address is a loopback one, because
 /// `mdns-sd` disables it by default — and it is the one interface restriction a test
 /// machine can actually make.
-pub fn restrict_mdns(daemon: &mdns_sd::ServiceDaemon, address: Option<Ipv4Addr>) -> Ipv4Addr {
-    let Some(address) = address else {
-        return crate::infra::local_ipv4();
-    };
+///
+/// Answers the address to advertise where it was told one, and `None` where it was
+/// not — in which case the caller registers with `enable_addr_auto`, so the daemon
+/// puts *each interface's own* address in the record it sends out of that interface.
+/// The old answer here was [`crate::infra::local_ipv4`], which on a lighting network
+/// with no default route is loopback: a peer was told to dial 127.0.0.1.
+pub fn restrict_mdns(daemon: &mdns_sd::ServiceDaemon, address: Option<Ipv4Addr>) -> Option<Ipv4Addr> {
+    say_if_multicast_is_refused();
+    let address = address?;
     if let Err(e) = daemon.disable_interface(mdns_sd::IfKind::All) {
         warn!("[network] could not restrict an mDNS daemon: {e}");
-        return address;
+        return Some(address);
     }
     if address.is_loopback() {
         let _ = daemon.enable_interface(mdns_sd::IfKind::LoopbackV4);
@@ -368,19 +438,56 @@ pub fn restrict_mdns(daemon: &mdns_sd::ServiceDaemon, address: Option<Ipv4Addr>)
     if let Err(e) = daemon.enable_interface(mdns_sd::IfKind::Addr(IpAddr::V4(address))) {
         warn!("[network] could not put an mDNS daemon on {address}: {e}");
     }
-    address
+    Some(address)
 }
 
-/// The address to tell other machines to reach this station at.
+/// Every address another machine could reach this station at, best first, for a
+/// service bound on `bound` — or on every interface, where it was told nothing.
 ///
-/// What a service actually bound where it was told which cable, and otherwise
-/// [`crate::infra::local_ipv4`] — which asks the route table and is therefore the
-/// *house* LAN on a console with two networks. That is the defect this replaces: the
-/// address a peer was told to dial for the show was decided by which cable reaches
-/// the internet. It stays as the fallback because a console that has said nothing
-/// about cables has to keep working exactly as it did.
-pub fn advertised(bound: Option<Ipv4Addr>) -> Ipv4Addr {
-    bound.unwrap_or_else(crate::infra::local_ipv4)
+/// What a service actually bound wins outright: that is task 65's rule, and a door on
+/// the lighting network is not reachable from the house LAN however it is advertised.
+/// Told nothing, it is every IPv4 address on an interface that is up and not loopback,
+/// with `routed` — the address the route table would leave by, when it is not loopback
+/// — first, so a console with one network says exactly what it always said. A
+/// link-local `169.254/16` address comes last: it reaches the segment and nothing else.
+///
+/// **Loopback only when there is nothing else**, and the reason is the whole defect
+/// this exists for. [`crate::infra::local_ipv4`] asks the route table which way a
+/// packet to the internet would leave, and a venue's lighting network has no route to
+/// the internet — so the answer was 127.0.0.1, and every node on that network was told
+/// to dial itself. A machine with no interface but loopback has no remote client to
+/// mislead: whoever is asking is on this machine.
+pub fn reachable(bound: Option<Ipv4Addr>, interfaces: &[NetInterface], routed: Option<Ipv4Addr>) -> Vec<Ipv4Addr> {
+    if let Some(bound) = bound.filter(|b| !b.is_unspecified()) {
+        return vec![bound];
+    }
+    let usable = |ip: &Ipv4Addr| !ip.is_loopback() && !ip.is_unspecified() && !ip.is_broadcast() && !ip.is_multicast();
+    let mut found: Vec<Ipv4Addr> = interfaces
+        .iter()
+        .filter(|i| i.up && !i.loopback)
+        .flat_map(|i| i.ipv4())
+        .filter(usable)
+        .collect();
+    let mut seen = std::collections::BTreeSet::new();
+    found.retain(|ip| seen.insert(*ip));
+    // Stable, so the list a node is handed does not reshuffle between two reports.
+    found.sort_by_key(|ip| (Some(*ip) != routed, ip.is_link_local()));
+    if found.is_empty() {
+        found.push(Ipv4Addr::LOCALHOST);
+    }
+    found
+}
+
+/// [`reachable`] for one of this station's own services, as it stands now.
+pub fn reachable_for(net: &Network, service: &NetService) -> Vec<Ipv4Addr> {
+    let bound = net
+        .bindings()
+        .into_iter()
+        .find(|b| &b.service == service)
+        .and_then(|b| b.bound)
+        .and_then(|b| b.parse::<Ipv4Addr>().ok());
+    let routed = Some(crate::infra::local_ipv4()).filter(|ip| !ip.is_loopback());
+    reachable(bound, &net.interfaces(), routed)
 }
 
 /// Bind a UDP socket on the interface a service was given, or on every one.
@@ -394,3 +501,43 @@ pub async fn udp(address: Option<Ipv4Addr>) -> std::io::Result<tokio::net::UdpSo
 
 #[cfg(test)]
 mod tests;
+
+/// Say so, once per process, if this process may not send multicast at all.
+///
+/// Every mDNS daemon here — the session, the device browser, MVR-xchange — and every
+/// sACN output to a multicast group depends on it, and when it is refused the daemon
+/// says nothing above `debug`: it skips each interface with "No route to host" and
+/// browses an empty network. On macOS that is what the **Local Network** privacy
+/// setting does to a process whose app was never allowed it — found when a station
+/// started from an agent's shell discovered none of the simulators beside it, while
+/// unicast to the same LAN went through. A console in that state looks like a venue
+/// network with nothing on it, so it is a `warn` with the remedy in it.
+pub fn say_if_multicast_is_refused() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        if let Some(e) = multicast_refused() {
+            warn!(
+                "[network] this process may not send multicast ({e}): no mDNS, so no peers or \
+                 OpenHaunt nodes will be found, and multicast sACN will not leave. On macOS, \
+                 allow Local Network access for the app that started the console \
+                 (System Settings → Privacy & Security → Local Network): the-pult \
+                 itself for the desktop app, and the terminal (Terminal, iTerm, an \
+                 editor) for a pult-backend started from a shell"
+            );
+        }
+    });
+}
+
+/// Try one empty mDNS query to the group, on whatever interface the route table picks.
+///
+/// Twelve zero bytes is a DNS header with no questions — what `mdns-sd` itself sends
+/// to test a socket — so a responder that hears it has nothing to answer.
+pub fn multicast_refused() -> Option<std::io::Error> {
+    let socket = std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
+    match socket.send_to(&[0u8; 12], (Ipv4Addr::new(224, 0, 0, 251), 5353)) {
+        Ok(_) => None,
+        // A machine with no network at all is not a refusal: there is nowhere to send.
+        Err(e) if e.kind() == std::io::ErrorKind::NetworkUnreachable => None,
+        Err(e) => Some(e),
+    }
+}

@@ -209,7 +209,7 @@
 			{/each}
 		</div>
 
-		<div class="lines" bind:this={list}>
+		<div class="lines selectable" bind:this={list}>
 			{#if entries.length === 0}
 				<p class="empty">Nothing yet.</p>
 			{/if}

@@ -8,7 +8,7 @@
 //!   canonically equal. Those files use only what the object model covers, so
 //!   anything dropped is a hole in the model.
 //! - For the **corpus** — real files off the Share, which carry vendor attributes and
-//!   spec corners nobody has modelled — the claim is that writing is *stable*: our
+//!   spec corners nobody has modeled — the claim is that writing is *stable*: our
 //!   rewrite of a file and our rewrite of that rewrite agree, and every value we did
 //!   read survives. A stronger claim would fail on files that are not wrong.
 

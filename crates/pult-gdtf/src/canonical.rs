@@ -47,7 +47,7 @@ pub fn canonicalize(xml: &str) -> Result<String, Error> {
     Ok(String::from_utf8(writer.into_inner()).expect("quick-xml writes utf-8"))
 }
 
-/// One element's attributes, sorted by name, with numbers normalised.
+/// One element's attributes, sorted by name, with numbers normalized.
 fn canonical_start(start: &BytesStart<'_>) -> Result<BytesStart<'static>, Error> {
     let name = start.name().as_ref().to_string();
     let mut attributes: Vec<(String, String)> = Vec::new();
@@ -62,7 +62,7 @@ fn canonical_start(start: &BytesStart<'_>) -> Result<BytesStart<'static>, Error>
         if value.is_empty() {
             continue;
         }
-        attributes.push((key, normalise(&value)));
+        attributes.push((key, normalize(&value)));
     }
     attributes.sort();
 
@@ -75,8 +75,8 @@ fn canonical_start(start: &BytesStart<'_>) -> Result<BytesStart<'static>, Error>
 
 /// `1.000000` and `1` are the same number; `{1.0,0.0}` and `{1,0}` are the same
 /// matrix. Applied to every comma- and brace-separated part of a value, so the
-/// structured strings normalise without being parsed as their own types.
-fn normalise(value: &str) -> String {
+/// structured strings normalize without being parsed as their own types.
+fn normalize(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     let mut token = String::new();
     for ch in value.chars() {

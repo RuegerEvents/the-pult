@@ -16,9 +16,13 @@ path = "src/main.rs"
 pult-schema = { path = "../pult-schema" }
 pult-render = { workspace = true }
 pult-audio = { workspace = true }
+# The command wing. `usb` is the host's half: one claimed interface for the process,
+# installed from `main` (see `src/wing.rs`), and no test opens it.
+pult-wing = { workspace = true, features = ["usb"] }
 pult-gdtf = { workspace = true }
 pult-mvr = { workspace = true }
 pult-mvr-xchange = { workspace = true }
+pult-octobanger = { workspace = true }
 tokio = { workspace = true }
 axum = { workspace = true }
 tower = { workspace = true }
@@ -49,6 +53,7 @@ sysinfo = { workspace = true }
 # `infra/interop/gdtf` is here rather than in `pult-gdtf`.
 cpal = { workspace = true }
 symphonia = { workspace = true }
+crossbeam-queue = { workspace = true }
 reqwest = { workspace = true }
 rumqttd = { workspace = true }
 rumqttc = { workspace = true }

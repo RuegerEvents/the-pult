@@ -19,8 +19,7 @@
 	 */
 
 	import Dialog from '$lib/components/Dialog.svelte';
-	import EditToggle from '$lib/components/layout/EditToggle.svelte';
-	import { PANELS, panelHome, type PanelId, type PanelMeta } from '$lib/layout/panels.js';
+	import { PANELS, panelHome, type PanelId, type PanelMeta } from '$lib/workspace/panels.js';
 	import { closeSetup, openSetup, setupSection } from '$lib/stores/setup.js';
 
 	/**
@@ -28,7 +27,7 @@
 	 * then what it is plugged into, then who else is on it, then the show itself.
 	 */
 	const SECTIONS: PanelId[] = (
-		['patch', 'fixturetypes', 'devices', 'outputs', 'network', 'session', 'plugins', 'xchange', 'show', 'settings'] as PanelId[]
+		['patch', 'fixturetypes', 'devices', 'outputs', 'audio', 'network', 'stations', 'plugins', 'xchange', 'show', 'settings'] as PanelId[]
 	).filter((id) => panelHome(PANELS[id]) !== 'workspace');
 
 	const current = $derived(
@@ -36,27 +35,17 @@
 			? ($setupSection as PanelId)
 			: SECTIONS[0]) as PanelId
 	);
-	// Widened to `PanelMeta`, because `PANELS` is `as const satisfies` and the narrowed
-	// member type has no `editable` key at all on the entries that do not set one.
 	const meta: PanelMeta = $derived(PANELS[current]);
 	const Section = $derived(meta.component);
 </script>
 
-<!-- The Edit toggle belongs to the chrome and not to the panel — its own doc says so —
-     and in here *this* is the chrome. Without it every editable section would open
-     read-only with nothing to unlock it: Patch, Devices and Network could still be
-     unlocked from a tile, since the toggle is one store per panel id, but Plugins and
-     Settings live only here and would have been locked for good. -->
-<Dialog title="Setup" size="full" onclose={closeSetup}>
-	{#snippet actions()}
-		{#if meta.editable}
-			<EditToggle panel={current} />
-		{/if}
-	{/snippet}
+<Dialog title="Setup" size="full" bleed onclose={closeSetup}>
 	<div class="setup">
 		<nav>
 			{#each SECTIONS as id (id)}
+				{@const Icon = PANELS[id].icon}
 				<button class="section" class:on={id === current} onclick={() => openSetup(id)}>
+					<Icon size={15} />
 					{PANELS[id].title}
 				</button>
 			{/each}
@@ -90,6 +79,9 @@
 	}
 
 	.section {
+		display: flex;
+		align-items: center;
+		gap: 8px;
 		text-align: left;
 		background: none;
 		border: none;
@@ -107,11 +99,44 @@
 	.section.on {
 		background: var(--bg-raised);
 		color: var(--text-bright);
+		box-shadow: inset 2px 0 0 var(--cat-setup);
+	}
+	.section :global(svg) {
+		color: var(--cat-setup);
+		flex: none;
 	}
 
 	.pane {
 		min-width: 0;
 		overflow: auto;
 		padding: 12px;
+	}
+
+	/* A phone: the sections become a strip across the top, and the section has the
+	   whole width. */
+	@media (max-width: 720px) {
+		.setup {
+			grid-template-columns: none;
+			grid-template-rows: auto minmax(0, 1fr);
+		}
+		nav {
+			flex-direction: row;
+			overflow-x: auto;
+			overflow-y: hidden;
+			scrollbar-width: none;
+			border-right: none;
+			border-bottom: 1px solid var(--line);
+			padding: 4px;
+		}
+		.section {
+			flex: none;
+			white-space: nowrap;
+		}
+		.section.on {
+			box-shadow: inset 0 -2px 0 var(--cat-setup);
+		}
+		.pane {
+			padding: 10px;
+		}
 	}
 </style>

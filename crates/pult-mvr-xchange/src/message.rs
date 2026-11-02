@@ -181,7 +181,7 @@ pub enum Message {
     ///
     /// Kept rather than refused: the protocol is versioned by nothing, groups carry
     /// other people's software, and a console that drops a connection over a message
-    /// it did not recognise is a console that stops working when somebody else ships.
+    /// it did not recognize is a console that stops working when somebody else ships.
     #[serde(other)]
     Unknown,
 }
