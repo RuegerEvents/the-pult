@@ -34,11 +34,11 @@ warn() { printf '\033[33m%s\033[0m\n' "$*" >&2; }
 
 # ── MVR files ────────────────────────────────────────────────────────
 #
-# There is no public collection of MVR files this script can rely on. The spec
-# repository (github.com/mvrdevelopment/spec) publishes the standard as Markdown
-# and no XSD and no samples; MVR-Stash and the vendor example files move around.
-# So this takes them from wherever you have them, and says so when you have not
-# said:
+# The spec repository (github.com/mvrdevelopment/spec) publishes the standard as
+# Markdown and no XSD and no samples, and MVR-Stash and the vendor example files move
+# around. The steadiest public set is the examples gdtf.eu publishes
+# (gdtf.eu/blog/mvr-example-files), under www.gdtf.eu/mvr_files/; CI names those. So
+# this takes them from wherever you say, and says so when you have not said:
 #
 #     PULT_MVR_SAMPLES=~/mvr-corpus scripts/fetch-interop-corpus.sh
 #     PULT_MVR_SAMPLES="https://example.com/a.mvr https://example.com/b.mvr" ...

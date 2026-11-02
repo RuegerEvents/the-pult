@@ -79,22 +79,33 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: testdata/corpus
-          key: interop-corpus-${{ hashFiles('scripts/fetch-interop-corpus.sh') }}
+          key: interop-corpus-${{ hashFiles('scripts/fetch-interop-corpus.sh', '.github/workflows/ci.yml') }}
 
+      # The MVR files are the official examples gdtf.eu publishes
+      # (gdtf.eu/blog/mvr-example-files), so they are named here rather than kept in a
+      # secret: anybody can fetch the same corpus. Given to this step, which is the one
+      # that reads it — it used to be set on the test step, where nothing did.
       - run: scripts/fetch-interop-corpus.sh
         env:
           GDTF_SHARE_USER: ${{ secrets.GDTF_SHARE_USER }}
           GDTF_SHARE_PASSWORD: ${{ secrets.GDTF_SHARE_PASSWORD }}
+          PULT_MVR_SAMPLES: >-
+            https://www.gdtf.eu/mvr_files/Basic_Festival.mvr
+            https://www.gdtf.eu/mvr_files/Capture_Demo.mvr
+            https://www.gdtf.eu/mvr_files/Circle_Stage.mvr
+            https://www.gdtf.eu/mvr_files/Demoshow_grandMA3.mvr
+            https://www.gdtf.eu/mvr_files/Demostage_MVR.mvr
+            https://www.gdtf.eu/mvr_files/Key_Arena_Remake_MVR.mvr
+            https://www.gdtf.eu/mvr_files/Messy_Patch.mvr
+            https://www.gdtf.eu/mvr_files/Midsize_w_GP.mvr
+            https://www.gdtf.eu/mvr_files/Simple_Show.mvr
+            https://www.gdtf.eu/mvr_files/Template_Stage1.mvr
 
       # The ignored tests refuse to pass on an empty corpus rather than skipping
       # quietly, so a job whose secrets are not set fails visibly. Without that this
       # is a green tick that checked nothing.
       - run: cargo test --locked -p pult-gdtf -- --ignored
 
-      # MVR files come from PULT_MVR_SAMPLES rather than from anywhere public, and
-      # there is no public collection to point at. Without them the fetch script says
-      # so and this step fails on an empty corpus, which is the honest outcome: the
-      # reader is only as good as the files it has been pointed at.
+      # An empty corpus still fails here rather than passing quietly: the reader is
+      # only as good as the files it has been pointed at.
       - run: cargo test --locked -p pult-mvr -- --ignored
-        env:
-          PULT_MVR_SAMPLES: ${{ secrets.PULT_MVR_SAMPLES }}

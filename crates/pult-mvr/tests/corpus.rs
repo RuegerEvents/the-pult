@@ -82,6 +82,88 @@ fn every_file_parses_and_says_what_it_holds() {
     }
 }
 
+/// A `Debug` rendering as text and numbers, so two can be compared with a tolerance.
+#[derive(Debug, PartialEq)]
+enum Token {
+    Text(String),
+    Number(f64),
+}
+
+fn tokens(debug: &str) -> Vec<Token> {
+    let mut out = Vec::new();
+    let mut text = String::new();
+    let chars: Vec<char> = debug.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        // A number with a point: a float. Integers — counts, addresses, UUID hex — are
+        // compared as text, exactly, which is what they deserve.
+        let starts = chars[i].is_ascii_digit() || (chars[i] == '-' && chars.get(i + 1).is_some_and(char::is_ascii_digit));
+        let in_word = i > 0 && (chars[i - 1].is_ascii_alphanumeric() || chars[i - 1] == '-' || chars[i - 1] == '_');
+        if starts && !in_word {
+            let mut j = i + 1;
+            while j < chars.len()
+                && (chars[j].is_ascii_digit() || chars[j] == '.' || chars[j] == 'e' || (chars[j] == '-' && chars[j - 1] == 'e'))
+            {
+                j += 1;
+            }
+            let token: String = chars[i..j].iter().collect();
+            let word_follows = chars.get(j).is_some_and(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_');
+            if (token.contains('.') || token.contains('e')) && !word_follows {
+                if let Ok(value) = token.parse::<f64>() {
+                    out.push(Token::Text(std::mem::take(&mut text)));
+                    out.push(Token::Number(value));
+                    i = j;
+                    continue;
+                }
+            }
+            text.push_str(&token);
+            i = j;
+            continue;
+        }
+        text.push(chars[i]);
+        i += 1;
+    }
+    out.push(Token::Text(text));
+    out
+}
+
+/// Where two renderings first differ, beyond 1e-5 of a number (relative, for
+/// coordinates in the thousands of millimeters), or `None`.
+fn first_difference(a: &str, b: &str) -> Option<String> {
+    let (a, b) = (tokens(a), tokens(b));
+    if a.len() != b.len() {
+        return Some(format!("{} parts against {}", a.len(), b.len()));
+    }
+    for (i, (x, y)) in a.iter().zip(&b).enumerate() {
+        let same = match (x, y) {
+            (Token::Number(x), Token::Number(y)) => (x - y).abs() <= 1e-5 * x.abs().max(y.abs()).max(1.0),
+            _ => x == y,
+        };
+        if !same {
+            let context: Vec<String> = a[i.saturating_sub(4)..i].iter().map(|t| format!("{t:?}")).collect();
+            return Some(format!("{x:?} against {y:?}, after {}", context.join(" ")));
+        }
+    }
+    None
+}
+
+/// The comparison above, on its own: noise is the same scene, a moved number, a lost
+/// fixture or a changed name is not. Runs without the corpus.
+#[test]
+fn the_comparison_forgives_noise_and_nothing_else() {
+    let file = r#"Fixture { uuid: "2e149740-6a41", matrix: [[8.535905e-8, 1.0000004], [-6670.873, 5565.0166]], fixture_id: Some(11) }"#;
+    let noise = r#"Fixture { uuid: "2e149740-6a41", matrix: [[0.0, 1.0], [-6670.873, 5565.017]], fixture_id: Some(11) }"#;
+    assert_eq!(first_difference(noise, file), None);
+
+    let moved = r#"Fixture { uuid: "2e149740-6a41", matrix: [[0.0, 1.0], [-6671.873, 5565.0166]], fixture_id: Some(11) }"#;
+    let renumbered = r#"Fixture { uuid: "2e149740-6a41", matrix: [[0.0, 1.0], [-6670.873, 5565.0166]], fixture_id: Some(12) }"#;
+    let other = r#"Fixture { uuid: "2e149740-6a42", matrix: [[0.0, 1.0], [-6670.873, 5565.0166]], fixture_id: Some(11) }"#;
+    let fewer = r#"Fixture { uuid: "2e149740-6a41", matrix: [[0.0, 1.0]], fixture_id: Some(11) }"#;
+    for changed in [moved, renumbered, other, fewer] {
+        assert!(first_difference(changed, file).is_some(), "{changed}");
+    }
+}
+
 fn count(list: Option<&pult_mvr::model::ChildList>) -> usize {
     let Some(list) = list else { return 0 };
     list.items
@@ -102,7 +184,15 @@ fn every_file_rewrites_to_the_same_scene() {
         let bytes = file.write().unwrap_or_else(|e| panic!("{name} does not write: {e}"));
         let again = MvrFile::parse(&bytes).unwrap_or_else(|e| panic!("{name} does not re-read: {e}"));
 
-        assert_eq!(again.scene, file.scene, "{name} changed on the way out");
+        // The same to within 1e-5, not to the last bit: the writer prints six decimals,
+        // so a matrix a drawing program left at `1.0000004` or `8.5e-8` comes back `1`
+        // and `0`, which is the point of writing them that way (gdtf.eu's own example
+        // files carry that noise). Relative for large numbers, so under a tenth of a
+        // millimeter at 6 m — near what an f32 holds there — or a rotation nobody could
+        // see is not the scene changing; a millimeter, a fixture or an address is.
+        if let Some(difference) = first_difference(&format!("{:?}", again.scene), &format!("{:?}", file.scene)) {
+            panic!("{name} changed on the way out: {difference}");
+        }
         assert_eq!(
             again.resources.keys().collect::<Vec<_>>(),
             file.resources.keys().collect::<Vec<_>>(),
