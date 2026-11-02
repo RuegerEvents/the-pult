@@ -10,6 +10,8 @@ bracketed form — so every release needs one and it has to be spelled that way.
 
 ## Unreleased
 
+## 0.2.0
+
 ### Added
 
 - **A node's inputs and outputs have names.** "Ausgang PIR", "Relay Horn", "LED

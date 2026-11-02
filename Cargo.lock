@@ -3875,7 +3875,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "openhaunt-node-sim"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum 0.8.9",
@@ -3895,7 +3895,7 @@ dependencies = [
 
 [[package]]
 name = "openhaunt-node-sim-gui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -4358,7 +4358,7 @@ dependencies = [
 
 [[package]]
 name = "pult-audio"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rten",
  "rten-tensor",
@@ -4369,7 +4369,7 @@ dependencies = [
 
 [[package]]
 name = "pult-backend"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -4426,7 +4426,7 @@ dependencies = [
 
 [[package]]
 name = "pult-codegen"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -4441,7 +4441,7 @@ dependencies = [
 
 [[package]]
 name = "pult-gdtf"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "gdtf",
  "quick-xml 0.42.0",
@@ -4454,7 +4454,7 @@ dependencies = [
 
 [[package]]
 name = "pult-gui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -4470,7 +4470,7 @@ dependencies = [
 
 [[package]]
 name = "pult-macros"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "inventory",
  "proc-macro2",
@@ -4480,7 +4480,7 @@ dependencies = [
 
 [[package]]
 name = "pult-mvr"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "pult-gdtf",
  "quick-xml 0.42.0",
@@ -4492,7 +4492,7 @@ dependencies = [
 
 [[package]]
 name = "pult-mvr-xchange"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -4502,7 +4502,7 @@ dependencies = [
 
 [[package]]
 name = "pult-octobanger"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "thiserror 2.0.18",
@@ -4511,7 +4511,7 @@ dependencies = [
 
 [[package]]
 name = "pult-render"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "ts-rs",
@@ -4520,7 +4520,7 @@ dependencies = [
 
 [[package]]
 name = "pult-render-wasm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "pult-render",
  "serde",
@@ -4532,7 +4532,7 @@ dependencies = [
 
 [[package]]
 name = "pult-schema"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bincode",
@@ -4553,7 +4553,7 @@ dependencies = [
 
 [[package]]
 name = "pult-wing"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "quick-xml 0.42.0",
@@ -8644,7 +8644,7 @@ checksum = "d6bbff5f0aada427a1e5a6da5f1f98158182f26556f345ac9e04d36d0ebed650"
 
 [[package]]
 name = "wing-explorer"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum 0.8.9",
