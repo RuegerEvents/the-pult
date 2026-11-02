@@ -218,6 +218,15 @@ async fn a_restricted_daemon_is_on_the_interface_it_was_told_and_not_the_others(
         eprintln!("this machine does not carry mDNS over loopback; nothing to prove");
         return;
     }
+    // Linux hands a group's traffic to every socket bound to the wildcard address once
+    // any socket on the machine has joined it (`IP_MULTICAST_ALL`, on by default), so
+    // with all three daemons in one process the third hears loopback whatever it was
+    // told — which is the kernel, not the restriction. CI's Ubuntu runner is where
+    // that showed. The half that means something there is the one above.
+    if cfg!(target_os = "linux") {
+        eprintln!("Linux delivers multicast to every wildcard socket; the negative half proves nothing here");
+        return;
+    }
     assert!(
         !found_elsewhere,
         "a daemon left on the other interfaces saw an advertisement made only on loopback, \
