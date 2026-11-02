@@ -73,6 +73,12 @@ jobs:
       # schema — so this has to happen before anything is compiled.
       - run: cargo run -p pult-codegen -- generate
       - run: npm --prefix frontend ci
+      # Nor is the evaluator the page runs (`pult-render` built for a browser): the
+      # build cannot resolve `src/lib/evaluator/` without it, which is how 0.2.0's
+      # first tag failed.
+      - run: rustup target add wasm32-unknown-unknown
+      - run: cargo install wasm-pack --locked
+      - run: scripts/build-evaluator.sh
       - run: npm --prefix frontend run build
 
       - uses: actions/upload-artifact@v4
@@ -98,6 +104,10 @@ jobs:
       - uses: actions/checkout@v4
       - run: rustup toolchain install stable --profile minimal
       - run: rustup target add ${{ matrix.target }}
+      # The station plays and hears sound through cpal, which is ALSA on Linux.
+      - name: Install ALSA headers
+        if: startsWith(matrix.runner, 'ubuntu')
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
 
       # The simulator does not serve a console, but the workspace reads the same
       # directory either way and an absent one is a compile error in rust-embed.
@@ -136,6 +146,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: rustup toolchain install stable --profile minimal
+      # cpal is ALSA on Linux.
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
       - uses: actions/download-artifact@v4
         with:
           name: ${{ env.FRONTEND_ARTIFACT }}
@@ -186,7 +198,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev build-essential curl wget file \
-            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf \
+            libasound2-dev
 
       # Ad-hoc, which satisfies nobody's idea of a trusted developer but does make
       # the bundle internally consistent. Without it Tauri signs the executable and

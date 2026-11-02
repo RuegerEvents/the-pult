@@ -26,6 +26,8 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+      # cpal is ALSA on Linux.
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
 
       # `cargo test` and not `--workspace`: the desktop shells are members so one
       # lockfile covers them, but building them needs webkit2gtk. The default
@@ -51,7 +53,9 @@ jobs:
       - run: npm --prefix frontend ci
       # The vitest half of the evaluator corpus reads the built wasm, and says so
       # loudly rather than passing quietly when it is missing.
-      - run: cargo install wasm-bindgen-cli --locked
+      # wasm-pack, which is what the script runs; it fetches the matching
+      # wasm-bindgen itself.
+      - run: cargo install wasm-pack --locked
       - run: scripts/build-evaluator.sh
       - run: cargo run -p pult-codegen -- generate
       - run: npm --prefix frontend test
