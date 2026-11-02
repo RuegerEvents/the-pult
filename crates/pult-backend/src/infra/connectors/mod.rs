@@ -232,10 +232,65 @@ pub enum OutputCommand {
     Stop,
 }
 
+/// The engine's way in to the output side.
+///
+/// A patch and the outputs' configuration are each a whole picture, so only the newest
+/// one matters, and the engine must never wait for the output side. Both go into
+/// [`Latest`], which keeps the newest of each, and one task hands that to the manager,
+/// waiting for room where the engine would not. The channel used to be offered them
+/// with `try_send`, which **dropped** one when four were queued — at a station's
+/// start, the patch carrying the rig's first fixture, so an output ran an empty
+/// universe until something else changed (`tests/wire.rs`, one run in six).
 #[derive(Clone)]
-pub struct OutputHandle(pub mpsc::Sender<OutputCommand>);
+pub struct OutputHandle {
+    tx: mpsc::Sender<OutputCommand>,
+    latest: std::sync::Arc<std::sync::Mutex<Latest>>,
+    notify: std::sync::Arc<tokio::sync::Notify>,
+}
+
+/// What the engine has handed over and the manager has not yet been given.
+#[derive(Default)]
+struct Latest {
+    patch: Option<OutputCommand>,
+    configure: Option<Vec<OutputConfig>>,
+}
 
 impl OutputHandle {
+    /// A handle onto `tx`, with the task that forwards to it. Needs a runtime.
+    pub fn new(tx: mpsc::Sender<OutputCommand>) -> OutputHandle {
+        let handle = OutputHandle {
+            tx: tx.clone(),
+            latest: Default::default(),
+            notify: Default::default(),
+        };
+        let (latest, notify) = (handle.latest.clone(), handle.notify.clone());
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = notify.notified() => {}
+                    _ = tx.closed() => return,
+                }
+                // Configuration first: a connector it starts takes the current patch
+                // when it does, so the other order would run one pass on the old one.
+                loop {
+                    let next = {
+                        let mut latest = latest.lock().expect("the output slot");
+                        match latest.configure.take() {
+                            Some(outputs) => Some(OutputCommand::Configure(outputs)),
+                            None => latest.patch.take(),
+                        }
+                    };
+                    let Some(cmd) = next else { break };
+                    // The one place that waits, and it is not the engine.
+                    if tx.send(cmd).await.is_err() {
+                        return;
+                    }
+                }
+            }
+        });
+        handle
+    }
+
     /// What these parameters are doing now, as the connectors would draw them. Empty
     /// answers where the output side has gone.
     pub async fn values(
@@ -244,15 +299,15 @@ impl OutputHandle {
     ) -> Vec<Option<pult_schema::types::fixture::ParameterValue>> {
         let n = asks.len();
         let (reply, answer) = tokio::sync::oneshot::channel();
-        if self.0.send(OutputCommand::Values { asks, reply }).await.is_err() {
+        if self.tx.send(OutputCommand::Values { asks, reply }).await.is_err() {
             return vec![None; n];
         }
         answer.await.unwrap_or_else(|_| vec![None; n])
     }
 
-    /// Hand the current patch to the output side. Never blocks the engine: if output
-    /// is behind, the update is dropped, because a connector evaluating from the patch
-    /// it already holds is not stalled by missing one.
+    /// Hand the current patch to the output side. Never blocks the engine, and never
+    /// loses one: a patch the manager has not taken yet is replaced by this one, and
+    /// the fixtures either said moved are both said moved.
     pub fn push(
         &self,
         fixtures: Vec<Fixture>,
@@ -262,19 +317,26 @@ impl OutputHandle {
         masters: Masters,
         changed: Vec<Uuid>,
     ) {
-        let _ = self.0.try_send(OutputCommand::Patch {
-            fixtures,
-            fixture_types,
-            programmer,
-            timelines,
-            masters,
-            changed,
-        });
+        {
+            let mut latest = self.latest.lock().expect("the output slot");
+            let mut changed = changed;
+            if let Some(OutputCommand::Patch { changed: before, .. }) = latest.patch.take() {
+                for id in before {
+                    if !changed.contains(&id) {
+                        changed.push(id);
+                    }
+                }
+            }
+            latest.patch =
+                Some(OutputCommand::Patch { fixtures, fixture_types, programmer, timelines, masters, changed });
+        }
+        self.notify.notify_one();
     }
 
-    /// Hand over the configured outputs. Same rule: never block the engine.
+    /// Hand over the configured outputs. Same rule: never block, never lose the newest.
     pub fn configure(&self, outputs: Vec<OutputConfig>) {
-        let _ = self.0.try_send(OutputCommand::Configure(outputs));
+        self.latest.lock().expect("the output slot").configure = Some(outputs);
+        self.notify.notify_one();
     }
 }
 
@@ -524,7 +586,7 @@ impl OutputManager {
                 watching: None,
                 frame_costs,
             },
-            OutputHandle(tx),
+            OutputHandle::new(tx),
             costs_rx,
         )
     }
@@ -928,6 +990,7 @@ impl OutputManager {
             }
         }
 
+        let mut built: Vec<Uuid> = Vec::new();
         for (id, config) in wanted {
             // What this output should be on and at, worked out before anything is
             // opened so that the two reasons to rebuild — the configuration moved,
@@ -961,12 +1024,19 @@ impl OutputManager {
                             }
                         );
                         self.running.insert(id, Running::new(config, plugin, wire));
+                        built.push(id);
                     }
                     None => {
                         self.running.remove(&id);
                     }
                 },
             }
+        }
+        // A connector starts with no frame due, and was drawn only when the next patch
+        // came — so one added to a rig where nothing was moving stayed silent until a
+        // cue or a fader did. It is drawn now from the patch this manager holds.
+        if !built.is_empty() {
+            self.draw_these(&built, Vec::new()).await;
         }
         self.apply_tests().await;
         self.publish_status().await;

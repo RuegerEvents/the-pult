@@ -1797,7 +1797,7 @@ async fn playback_hands_the_patch_to_the_output_plugins() {
     let pool = Arc::new(showfile::open_in_memory().await.expect("open in-memory showfile"));
     let (mut engine, handle, _broadcast) = ShowEngine::new(NodeId(Uuid::new_v4()), pool, None);
     let (tx, mut output_rx) = tokio::sync::mpsc::channel(8);
-    engine.set_output(OutputHandle(tx));
+    engine.set_output(OutputHandle::new(tx));
     tokio::spawn(engine.run());
 
     let fixture = a_fixture("Spot L", 1);
@@ -1844,7 +1844,7 @@ async fn a_blind_show_hands_the_output_no_programmer() {
     let pool = Arc::new(showfile::open_in_memory().await.expect("open in-memory showfile"));
     let (mut engine, handle, _broadcast) = ShowEngine::new(NodeId(Uuid::new_v4()), pool, None);
     let (tx, mut output_rx) = tokio::sync::mpsc::channel(64);
-    engine.set_output(OutputHandle(tx));
+    engine.set_output(OutputHandle::new(tx));
     tokio::spawn(engine.run());
 
     handle
@@ -1923,7 +1923,7 @@ async fn unpatching_the_last_fixture_tells_the_output_plugins_so() {
     let pool = Arc::new(showfile::open_in_memory().await.expect("open in-memory showfile"));
     let (mut engine, handle, _broadcast) = ShowEngine::new(NodeId(Uuid::new_v4()), pool, None);
     let (tx, mut output_rx) = tokio::sync::mpsc::channel(16);
-    engine.set_output(OutputHandle(tx));
+    engine.set_output(OutputHandle::new(tx));
     tokio::spawn(engine.run());
 
     let fixture = a_fixture("Spot L", 1);
@@ -1972,7 +1972,7 @@ async fn an_idle_show_sends_nothing_to_output() {
     let pool = Arc::new(showfile::open_in_memory().await.expect("open in-memory showfile"));
     let (mut engine, handle, _broadcast) = ShowEngine::new(NodeId(Uuid::new_v4()), pool, None);
     let (tx, mut output_rx) = tokio::sync::mpsc::channel(8);
-    engine.set_output(OutputHandle(tx));
+    engine.set_output(OutputHandle::new(tx));
     tokio::spawn(engine.run());
 
     let fixture = a_fixture("Spot L", 1);
@@ -4975,7 +4975,7 @@ mod pushing_the_rig {
         let pool = Arc::new(showfile::open_in_memory().await.expect("open in-memory showfile"));
         let (mut engine, handle, _broadcast) = ShowEngine::new(NodeId(Uuid::new_v4()), pool, None);
         let (tx, rx) = tokio::sync::mpsc::channel(64);
-        engine.set_output(OutputHandle(tx));
+        engine.set_output(OutputHandle::new(tx));
         tokio::spawn(engine.run());
         (handle, rx)
     }

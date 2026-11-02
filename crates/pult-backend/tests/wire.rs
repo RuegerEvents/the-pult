@@ -182,9 +182,20 @@ async fn a_console_sees_what_a_peers_wire_is_carrying() {
     let mut at_the_booth = booth.updates.0.subscribe();
     watch(&booth, &roof, output, uuid::Uuid::new_v4(), Some("1")).await;
 
-    let view = seen(&mut at_the_booth, &roof, Duration::from_secs(5))
-        .await
-        .expect("the roof answers within five seconds");
+    // The first view can come before the output has put a frame on the wire, and
+    // then honestly shows no universe at all; the one after the first frame is the one
+    // this is about. Waiting on the first alone failed one run in six.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let view = loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let view = seen(&mut at_the_booth, &roof, left).await.expect("the roof answers within five seconds");
+        let SectionBody::Universes(traffic) = &view.sections[0].body else {
+            panic!("Art-Net describes itself as universes");
+        };
+        if traffic.focused.is_some() {
+            break view;
+        }
+    };
     assert_eq!(view.output_id, output);
     assert_eq!(view.focus.as_deref(), Some("1"));
 

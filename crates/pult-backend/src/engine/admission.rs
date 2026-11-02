@@ -19,9 +19,9 @@
 //!
 //! ## Queues bound, they do not drop
 //!
-//! `OutputHandle::push` is the model for *never blocking the engine*, and it drops
-//! when the consumer is behind because a skipped frame is redrawn a fortieth of a
-//! second later. A skipped write is gone. So a full class queue makes its own
+//! `OutputHandle::push` never blocks the engine either, but it can afford not to
+//! because a patch is a whole picture: it keeps only the newest and loses none. A
+//! write is not a picture, and a skipped one is gone. So a full class queue makes its own
 //! senders wait, which is backpressure landing on the source that caused it — which
 //! is the whole point, since the source that caused it is the one that should feel
 //! it.

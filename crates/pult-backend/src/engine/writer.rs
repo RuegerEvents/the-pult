@@ -98,9 +98,9 @@ pub struct WriteHandle {
 ///
 /// Deep enough that an import's thousands of writes do not take turns at the door,
 /// shallow enough that a runaway producer is felt rather than buffered for ever. A
-/// full queue applies backpressure to the *caller* here rather than dropping, unlike
-/// `OutputHandle::push`: a frame that is skipped is redrawn a fortieth of a second
-/// later, and a showfile write that is skipped is gone.
+/// full queue applies backpressure to the *caller* here. `OutputHandle::push` need
+/// not, because a patch is a whole picture and only the newest matters; a showfile
+/// write is not one, and a skipped one is gone.
 const QUEUE_DEPTH: usize = 1024;
 
 impl WriteHandle {

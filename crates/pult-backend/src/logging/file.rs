@@ -8,8 +8,8 @@
 //! this file is this station's own log, and a peer's own file is the authority on
 //! what the peer said. And it **does not block whoever emitted the line** — a
 //! dedicated thread does the writing, fed by a channel that drops rather than waits
-//! if it ever backs up, which is `OutputHandle::push`'s rule for the same reason.
-//! A log that can stall the engine is worse than a log with a gap in it.
+//! if it ever backs up. A log that can stall the engine is worse than a log with a
+//! gap in it.
 
 use std::{
     io::Write,

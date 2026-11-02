@@ -528,6 +528,25 @@ async fn an_output_owned_by_this_station_runs() {
     assert_eq!(recv(&receiver).await[18], 255);
 }
 
+/// The other order: the rig is patched first and the output added to it after, with
+/// nothing moving. A connector starts with no frame due, and was drawn only when the
+/// next patch came, so it stayed silent until a cue or a fader did — the second half of
+/// why `tests/wire.rs` saw an empty wire.
+#[tokio::test]
+async fn an_output_added_to_a_settled_rig_sends_what_it_already_holds() {
+    let (receiver, addr) = a_receiver().await;
+    let node_id = NodeId::new();
+    let (manager, handle, _costs) = OutputManager::new(node_id, an_engine().await, None, crate::infra::net::Network::unconfigured());
+    tokio::spawn(manager.run());
+
+    push_a_patch(&handle, a_dimmer_patch(1.0)).await;
+    let mut output = an_output(OutputKind::Artnet, Some(&addr.to_string()));
+    output.node_id = Some(node_id);
+    handle.configure(vec![output]);
+
+    assert_eq!(recv(&receiver).await[18], 255, "without another patch to wake it");
+}
+
 #[tokio::test]
 async fn renaming_an_output_does_not_interrupt_it() {
     // Rebuilding the plugin would re-open the socket and reset its dedup cache, so
@@ -1110,4 +1129,41 @@ async fn the_row_says_which_universes_are_being_forced() {
         statuses(&engine).await[&id.to_string()].testing.is_empty(),
         "so a channel stuck at full always has a reason on the row, and loses it when it is let go"
     );
+}
+
+/// A patch is a whole picture, so an output side that is behind gets the newest one
+/// and loses nothing: not the patch, not the configuration, and not a fixture an
+/// earlier patch said had moved. With `try_send` into a queue of four, the patch that
+/// carried a station's first fixture was dropped at start-up and its output ran an
+/// empty universe until something else changed.
+#[tokio::test]
+async fn an_output_side_that_is_behind_gets_the_newest_patch_and_every_move() {
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+    let handle = OutputHandle::new(tx);
+    let moved: Vec<Uuid> = (0..10).map(|_| Uuid::new_v4()).collect();
+    for (n, id) in moved.iter().enumerate() {
+        let fixture = Fixture { name: format!("Spot {n}"), ..Fixture::default() };
+        handle.push(vec![fixture], vec![], vec![], vec![], Default::default(), vec![*id]);
+    }
+    handle.configure(vec![]);
+
+    // Nothing has been read: the channel holds one, and the rest waits in the slot.
+    let mut configured = false;
+    let mut said_moved: Vec<Uuid> = Vec::new();
+    let mut last_name = String::new();
+    while let Ok(Some(cmd)) = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await {
+        match cmd {
+            OutputCommand::Configure(_) => configured = true,
+            OutputCommand::Patch { fixtures, changed, .. } => {
+                said_moved.extend(changed);
+                last_name = fixtures[0].name.clone();
+            }
+            _ => {}
+        }
+    }
+    assert!(configured, "the configuration arrives");
+    assert_eq!(last_name, "Spot 9", "and the newest patch is the last one taken");
+    for id in &moved {
+        assert!(said_moved.contains(id), "every fixture that moved is said to have");
+    }
 }
