@@ -1173,9 +1173,11 @@ async fn a_name_given_while_the_node_was_off_is_passed_on_without_asking() {
     })
     .await;
 
-    // Off: its will is heard, so the station knows.
+    // Off: gone from the network, as mDNS says. Not left to its will alone, which a
+    // loaded machine heard after the five seconds `eventually` waits.
     let port = sim.http_addr.port();
     sim.stop.stop().await;
+    h.event(super::DeviceEvent::Removed { serial: "e2e-off".into() }).await;
     eventually("the node to be off", || async { !h.state().await.discovered["e2e-off"].online }).await;
 
     label_in_show(&h, fixture, "Contact:0", "Später").await;
@@ -1217,6 +1219,7 @@ async fn a_node_that_was_reset_is_asked_about_rather_than_overwritten() {
     // Reset at the bench: it comes back knowing nothing.
     let port = sim.http_addr.port();
     sim.stop.stop().await;
+    h.event(super::DeviceEvent::Removed { serial: "e2e-reset".into() }).await;
     eventually("the node to be off", || async { !h.state().await.discovered["e2e-reset"].online }).await;
     let mut config = SimConfig::new(ModuleKind::DigitalIn, "e2e-reset");
     config.node.http_port = port;

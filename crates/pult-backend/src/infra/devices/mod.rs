@@ -983,8 +983,16 @@ impl DeviceManager {
                 if device.online == online && !moved {
                     return;
                 }
+                let back = online && !device.online;
                 device.online = online;
                 self.publish().await;
+                // A node back on the broker may have been renamed here while it was not,
+                // and no mDNS resolve need ever say it is back — so this is where its
+                // names are compared too. Right after adoption it is also the end of the
+                // moment before the node has reached a broker that has only just opened.
+                if back {
+                    self.sync_names(&serial).await;
+                }
             }
             MqttEvent::Vitals { serial, status } => {
                 let before = self.vitals.get(&serial);
