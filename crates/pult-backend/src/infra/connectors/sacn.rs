@@ -95,7 +95,7 @@ pub fn e131_data_packet(
 }
 
 fn flags_and_length(length: usize) -> [u8; 2] {
-    ((0x7000 | (length as u16 & 0x0fff)) as u16).to_be_bytes()
+    (0x7000 | (length as u16 & 0x0fff)).to_be_bytes()
 }
 
 /// One E1.31 data packet, read.

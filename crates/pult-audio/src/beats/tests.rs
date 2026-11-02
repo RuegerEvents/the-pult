@@ -24,7 +24,7 @@ use super::*;
 fn steady(interval: u32, count: u32, bar: u32, from: u32) -> (Vec<u32>, Vec<u32>) {
     let beats: Vec<u32> = (0..count).map(|i| from + i * interval).collect();
     let downbeats: Vec<u32> =
-        beats.iter().copied().enumerate().filter(|(i, _)| *i as u32 % bar == 0).map(|(_, b)| b).collect();
+        beats.iter().copied().enumerate().filter(|(i, _)| (*i as u32).is_multiple_of(bar)).map(|(_, b)| b).collect();
     (beats, downbeats)
 }
 
@@ -165,8 +165,8 @@ fn every_frame_of_a_long_song_is_covered_by_a_chunk() {
             let (_, chunk_frames) = cut(&vec![0.0; frames * MELS], frames, start);
             let from = (start + BORDER as i32).max(0) as usize;
             let to = ((start + chunk_frames as i32 - BORDER as i32).max(0) as usize).min(frames);
-            for frame in from..to {
-                covered[frame] = true;
+            for slot in &mut covered[from..to] {
+                *slot = true;
             }
         }
         assert!(covered.iter().all(|c| *c), "{frames} frames: {:?} uncovered", covered.iter().position(|c| !c));

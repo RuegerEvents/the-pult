@@ -408,6 +408,21 @@ pub fn find_map() -> Option<PathBuf> {
     find_in_ma3("hardware_configurations.xml")
 }
 
+/// The non-zero bytes of a block as `offset:value`, for reading a frame by eye.
+fn hex_of(bytes: &[u8]) -> String {
+    let set: Vec<String> = bytes
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| **b != 0)
+        .map(|(i, b)| format!("{i}:{b:02x}"))
+        .collect();
+    if set.is_empty() {
+        "0".into()
+    } else {
+        format!("[{}]", set.join(","))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -428,20 +443,5 @@ mod tests {
         std::fs::write(&app, b"bootloader").unwrap();
         assert!(read_image(&app).is_err(), "nor the bootloader's bytes under the app's name");
         std::fs::remove_dir_all(&dir).ok();
-    }
-}
-
-/// The non-zero bytes of a block as `offset:value`, for reading a frame by eye.
-fn hex_of(bytes: &[u8]) -> String {
-    let set: Vec<String> = bytes
-        .iter()
-        .enumerate()
-        .filter(|(_, b)| **b != 0)
-        .map(|(i, b)| format!("{i}:{b:02x}"))
-        .collect();
-    if set.is_empty() {
-        "0".into()
-    } else {
-        format!("[{}]", set.join(","))
     }
 }

@@ -497,8 +497,7 @@ async fn the_garden_maze_runs_on_its_sensors() {
             tokio::time::sleep(std::time::Duration::from_millis(60)).await;
         }
     };
-    let walk = |fixture: Uuid, port: u8| {
-        let edge = edge.clone();
+    let walk = move |fixture: Uuid, port: u8| {
         async move {
             edge(fixture, port, true).await;
             edge(fixture, port, false).await;

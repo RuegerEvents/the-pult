@@ -2086,6 +2086,7 @@ pub struct OutputConfig {
     pub interfaces: BTreeMap<NodeId, String>,
     /// What priority byte an sACN output puts in its packets. Ignored by the other
     /// kinds, which have no such field in their protocols.
+    #[serde(default)]
     pub priority: SacnPriority,
 }
 
@@ -2695,10 +2696,11 @@ pub struct Rect {
 /// go from one station; E1.31 has this, which is what makes several stations sending
 /// one universe a defined thing rather than a race. So an sACN output may run
 /// everywhere, and this is what makes that well-defined.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SacnPriority {
     /// Derived from the session: the leader at 100, every other station in a slot
     /// below it. Nobody types a number and a failover is the receiver's arbitration.
+    #[default]
     Auto,
     /// A number per station, for a rig where another desk is already at a known
     /// priority. A station this map does not name takes its `Auto` number rather
@@ -4017,13 +4019,14 @@ pub enum ViewPreset {
 }
 
 /// What a viewport claims about its size.
-#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type")]
 pub enum ViewScale {
     /// Fill the frame, then **snap down to a standard ratio** so the drawing can be
     /// measured with a rule somebody owns. The fitted ratio is almost never a round
     /// number — the sheet this feature was designed against prints 1:35 — and a
     /// drawing at 1:35 is a drawing nobody can check.
+    #[default]
     Fit,
     /// One of [`STANDARD_SCALES`], or any other denominator a person typed.
     Ratio { denominator: u32 },
@@ -4084,6 +4087,7 @@ pub struct ViewportBlock {
     pub view: ViewPreset,
     #[serde(default)]
     pub projection: Projection,
+    #[serde(default)]
     pub scale: ViewScale,
     pub style: ViewStyle,
     /// Which layers this viewport shows. `None` is every layer in the show —

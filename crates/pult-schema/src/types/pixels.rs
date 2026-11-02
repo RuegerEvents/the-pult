@@ -26,7 +26,7 @@ use crate::types::fixture::{
 };
 
 /// Fixed for ever, like every namespace here: changing it re-types every strip.
-const NAMESPACE: Uuid = Uuid::from_u128(0x7069_7865_6c73_4f48_9a1d_6f6f7e2c8a02);
+const NAMESPACE: Uuid = Uuid::from_u128(0x7069_7865_6c73_4f48_9a1d_6f6f_7e2c_8a02);
 
 /// The most pixels the node drives on one output, from its own `max_count`. A strip is
 /// refused past it, and the console never asks for more than the node can take.

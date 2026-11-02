@@ -716,7 +716,7 @@ impl SequenceCounter {
     pub fn next(&mut self, universe: u16) -> u8 {
         match self.counters.iter_mut().find(|(u, _)| *u == universe) {
             Some((_, seq)) => {
-                *seq = if *seq >= 255 { 1 } else { *seq + 1 };
+                *seq = if *seq == u8::MAX { 1 } else { *seq + 1 };
                 *seq
             }
             None => {

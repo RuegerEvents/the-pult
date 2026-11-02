@@ -136,7 +136,7 @@ pub fn gesture_key(op: &Operation) -> Uuid {
 /// Only this user's operations are considered, and only this user's reversals count
 /// against them: two operators each have their own history, so one pressing Ctrl-Z
 /// can never take back work the other is in the middle of.
-pub fn next_to_undo<'a>(log: &'a [Operation], user: Uuid) -> Vec<&'a Operation> {
+pub fn next_to_undo(log: &[Operation], user: Uuid) -> Vec<&Operation> {
     run_at_parity(log, user, 0)
 }
 
@@ -151,7 +151,7 @@ pub fn next_to_undo<'a>(log: &'a [Operation], user: Uuid) -> Vec<&'a Operation> 
 /// been an undo or a redo, not a fresh change. Every editor discards the redo branch
 /// the moment you do something new, for a good reason — putting an old value back on
 /// top of work done since is not what anybody means by redo.
-pub fn next_to_redo<'a>(log: &'a [Operation], user: Uuid) -> Vec<&'a Operation> {
+pub fn next_to_redo(log: &[Operation], user: Uuid) -> Vec<&Operation> {
     let Some(newest) = log.iter().find(|op| op.user_id == Some(user) && op.is_undoable()) else {
         return Vec::new();
     };
@@ -163,13 +163,13 @@ pub fn next_to_redo<'a>(log: &'a [Operation], user: Uuid) -> Vec<&'a Operation> 
 
 /// Every operation of one gesture, newest first, as `oplog::recent_by_people`
 /// returns them.
-fn ops_of<'a>(log: &'a [Operation], user: Uuid, key: Uuid) -> Vec<&'a Operation> {
+fn ops_of(log: &[Operation], user: Uuid, key: Uuid) -> Vec<&Operation> {
     log.iter()
         .filter(|op| op.user_id == Some(user) && op.is_undoable() && gesture_key(op) == key)
         .collect()
 }
 
-fn run_at_parity<'a>(log: &'a [Operation], user: Uuid, parity: usize) -> Vec<&'a Operation> {
+fn run_at_parity(log: &[Operation], user: Uuid, parity: usize) -> Vec<&Operation> {
     let index = Index::of(log, user);
     let mut seen: HashSet<Uuid> = HashSet::new();
     for op in log.iter().filter(|op| op.user_id == Some(user) && op.is_undoable()) {

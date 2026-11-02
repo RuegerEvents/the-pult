@@ -275,7 +275,7 @@ async fn a_required_column_nothing_filled_in(
             .split(',')
             .filter(|def| def.contains("NOT NULL"))
             .filter_map(|def| {
-                def.trim().split_whitespace().next().map(|c| c.trim_matches('"').to_string())
+                def.split_whitespace().next().map(|c| c.trim_matches('"').to_string())
             })
             .collect();
         if required.is_empty() {

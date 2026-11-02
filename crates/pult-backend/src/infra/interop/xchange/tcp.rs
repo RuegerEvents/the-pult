@@ -227,7 +227,7 @@ async fn serve(
             return Ok(());
         }
         decoder.feed(&buf[..read]);
-        while let Some(payload) = decoder.next().map_err(|e| e.to_string())? {
+        while let Some(payload) = decoder.next_message().map_err(|e| e.to_string())? {
             // A file arriving unasked is not something this protocol has a message
             // for, and buffering one would be a way to fill a disk. The only file we
             // accept is the answer to a request we made, which arrives on the socket
@@ -287,7 +287,7 @@ pub async fn send(
                 return Ok(None);
             }
             decoder.feed(&buf[..read]);
-            if let Some(payload) = decoder.next().map_err(|e| e.to_string())? {
+            if let Some(payload) = decoder.next_message().map_err(|e| e.to_string())? {
                 return Ok(Some(payload));
             }
         }

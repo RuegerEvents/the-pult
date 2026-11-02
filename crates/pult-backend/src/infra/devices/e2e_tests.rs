@@ -1226,7 +1226,7 @@ async fn a_node_that_was_reset_is_asked_about_rather_than_overwritten() {
     let conflicts = h.state().await.discovered["e2e-reset"].name_conflicts.clone();
     assert_eq!(conflicts.len(), 1, "{conflicts:?}");
     assert_eq!((conflicts[0].node.as_str(), conflicts[0].show.as_str()), ("", "Nebel"));
-    assert!(node_names(&sim).await.1.ports.get(&6).is_none(), "not written before somebody picks");
+    assert!(!node_names(&sim).await.1.ports.contains_key(&6), "not written before somebody picks");
 }
 
 #[tokio::test]

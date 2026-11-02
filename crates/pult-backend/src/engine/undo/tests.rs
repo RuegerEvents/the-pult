@@ -47,7 +47,7 @@ fn op(user: Option<Uuid>, path: Path, value: serde_json::Value, previous: Option
 
 /// The one operation of an ordinary run, for the tests that are about a single
 /// write. A run of any other length is a failure those tests want to hear about.
-fn only<'a>(run: Vec<&'a Operation>) -> Option<&'a Operation> {
+fn only(run: Vec<&Operation>) -> Option<&Operation> {
     assert!(run.len() <= 1, "expected a single write, got {}", run.len());
     run.into_iter().next()
 }

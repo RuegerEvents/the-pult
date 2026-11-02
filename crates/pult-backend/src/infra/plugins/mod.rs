@@ -432,7 +432,7 @@ impl PluginManager {
             }
         }
         // Give every guest its shutdown call before the station goes.
-        for (_, loaded) in self.plugins.iter_mut() {
+        for loaded in self.plugins.values_mut() {
             if let Some(instance) = loaded.instance.take() {
                 let (tx, rx) = oneshot::channel();
                 if instance.send(Msg::Shutdown { reply: tx }) {
@@ -1195,7 +1195,7 @@ mod tests {
         .unwrap();
         std::fs::create_dir_all(root.join("not-a-plugin")).unwrap();
 
-        let found = discover(&[root.clone()]);
+        let found = discover(std::slice::from_ref(&root));
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].1.as_ref().unwrap().plugin.id, "one");
 

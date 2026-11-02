@@ -50,7 +50,7 @@ impl Outstanding {
         let index = self.0.iter().position(|(s, _)| *s == seq)?;
         let (_, sent_at) = self.0[index];
         self.0.drain(..=index);
-        Some(at.duration_since(sent_at).into())
+        Some(at.duration_since(sent_at))
     }
 
     fn unanswered(&self) -> u32 {

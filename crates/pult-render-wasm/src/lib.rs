@@ -707,9 +707,11 @@ mod tests {
     /// dimmer would be a light the page has decided to turn off.
     #[test]
     fn an_unwatched_or_undriven_parameter_reads_as_absent() {
-        let mut evaluator = Evaluator::default();
-        evaluator.watching = vec!["nobody/Intensity".into()];
-        evaluator.packed = vec![0.0; STRIDE];
+        let mut evaluator = Evaluator {
+            watching: vec!["nobody/Intensity".into()],
+            packed: vec![0.0; STRIDE],
+            ..Evaluator::default()
+        };
         assert_eq!(evaluator.evaluate(1_000.0)[0], NONE);
     }
 

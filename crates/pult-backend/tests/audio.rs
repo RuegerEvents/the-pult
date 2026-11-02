@@ -210,7 +210,7 @@ async fn a_station_chases_timecode_and_fires_what_it_crosses() {
         // A second of slack: the code is a second long and the pass that reads it can
         // fall anywhere in it. What is being asserted is that the playhead went to
         // *a minute* rather than staying near zero.
-        position >= 59_000 && position < 63_000
+        (59_000..63_000).contains(&position)
     })
     .await;
 

@@ -776,7 +776,7 @@ where
     match format {
         SampleFormat::F32 => device
             .build_input_stream(
-                config.clone(),
+                *config,
                 move |data: &[f32], _: &cpal::InputCallbackInfo| take(data),
                 complain,
                 None,

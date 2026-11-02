@@ -90,7 +90,7 @@ fn every_message_survives_the_framing() {
         let framed = frame::encode(Kind::Json, &parsed.to_json().unwrap());
         let mut decoder = Decoder::new(LIMIT);
         decoder.feed(&framed);
-        let Some(Payload::Json(bytes)) = decoder.next().unwrap() else {
+        let Some(Payload::Json(bytes)) = decoder.next_message().unwrap() else {
             panic!("{name}: did not come back out of the framing");
         };
         assert_eq!(Message::from_json(&bytes).unwrap(), parsed, "{name}: changed on the way");
@@ -121,7 +121,7 @@ fn the_bytes_on_the_wire_are_the_bytes_in_the_corpus() {
 
         let mut decoder = Decoder::new(LIMIT);
         decoder.feed(&expected);
-        let got = decoder.next().unwrap().expect("a whole package did not decode");
+        let got = decoder.next_message().unwrap().expect("a whole package did not decode");
         assert_eq!(got.bytes(), &payload[..], "{name}: read differently");
     }
 }
@@ -143,11 +143,11 @@ fn a_stream_cut_anywhere_still_yields_the_same_messages() {
         let mut decoder = Decoder::new(LIMIT);
         let mut out = Vec::new();
         decoder.feed(&stream[..cut]);
-        while let Some(p) = decoder.next().unwrap() {
+        while let Some(p) = decoder.next_message().unwrap() {
             out.push(p);
         }
         decoder.feed(&stream[cut..]);
-        while let Some(p) = decoder.next().unwrap() {
+        while let Some(p) = decoder.next_message().unwrap() {
             out.push(p);
         }
         assert_eq!(out.len(), 2, "cut at {cut} lost or duplicated a message");

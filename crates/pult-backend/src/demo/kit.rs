@@ -564,6 +564,76 @@ pub async fn draw(
     Ok(ids)
 }
 
+// ── Paperwork ────────────────────────────────────────────────────────────────
+
+/// A title block, said shortly.
+///
+/// Seven strings in the order they read on paper. A demo names all of them because an
+/// empty title block is what a broken feature looks like — see
+/// [`super::Seeder::describe_the_production`].
+pub fn production(
+    title: &str,
+    venue: &str,
+    address: &str,
+    dates: &str,
+    designer: &str,
+    contact: &str,
+) -> pult_schema::types::show::Production {
+    pult_schema::types::show::Production {
+        title: title.into(),
+        venue: venue.into(),
+        address: address.into(),
+        dates: dates.into(),
+        designer: designer.into(),
+        contact: contact.into(),
+        // Left empty on purpose: a demo has not been issued to anybody, and inventing
+        // "Rev C" would put a revision on a drawing that has never been revised.
+        revision: String::new(),
+    }
+}
+
+/// Point every rendered viewport in the show at a state worth photographing.
+///
+/// The default sheets are seeded when the show is created, before a demo has built a
+/// single cue — so their picture viewports name no cues and would render whatever the
+/// console happens to be doing, which for a freshly-seeded demo is a dark room. This is
+/// how a demo says "and these are the cues that make it look like something".
+///
+/// Every `Picture` block on every sheet gets the same look, which is right for a demo:
+/// the shots differ by where they are taken from, not by what is on.
+pub async fn posed(into: &Seeder, shots: Vec<pult_schema::types::CueShot>) -> Result<()> {
+    use pult_schema::lifecycle::Lifecycle;
+    use pult_schema::path::PathSegment;
+    use pult_schema::types::{Sheet, SheetBlock, ViewStyle};
+
+    let sheets: Vec<Sheet> = into.rows("sheets").await?;
+    for mut sheet in sheets {
+        let mut touched = false;
+        for block in &mut sheet.blocks {
+            if let SheetBlock::Viewport(viewport) = block {
+                if let ViewStyle::Picture { cues, .. } = &mut viewport.style {
+                    *cues = shots.clone();
+                    touched = true;
+                }
+            }
+        }
+        if !touched {
+            continue;
+        }
+        into.set(
+            vec![
+                PathSegment::Key("sheets".into()),
+                PathSegment::Id(sheet.id),
+                PathSegment::Key("blocks".into()),
+            ],
+            serde_json::to_value(&sheet.blocks)?,
+            Lifecycle::Persisted,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -686,74 +756,4 @@ mod tests {
         let FixtureAddress::Dmx { breaks, .. } = addresses.take(6) else { panic!("a DMX address") };
         assert_eq!((breaks[0].universe, breaks[0].address), (2, 1));
     }
-}
-
-// ── Paperwork ────────────────────────────────────────────────────────────────
-
-/// A title block, said shortly.
-///
-/// Seven strings in the order they read on paper. A demo names all of them because an
-/// empty title block is what a broken feature looks like — see
-/// [`super::Seeder::describe_the_production`].
-pub fn production(
-    title: &str,
-    venue: &str,
-    address: &str,
-    dates: &str,
-    designer: &str,
-    contact: &str,
-) -> pult_schema::types::show::Production {
-    pult_schema::types::show::Production {
-        title: title.into(),
-        venue: venue.into(),
-        address: address.into(),
-        dates: dates.into(),
-        designer: designer.into(),
-        contact: contact.into(),
-        // Left empty on purpose: a demo has not been issued to anybody, and inventing
-        // "Rev C" would put a revision on a drawing that has never been revised.
-        revision: String::new(),
-    }
-}
-
-/// Point every rendered viewport in the show at a state worth photographing.
-///
-/// The default sheets are seeded when the show is created, before a demo has built a
-/// single cue — so their picture viewports name no cues and would render whatever the
-/// console happens to be doing, which for a freshly-seeded demo is a dark room. This is
-/// how a demo says "and these are the cues that make it look like something".
-///
-/// Every `Picture` block on every sheet gets the same look, which is right for a demo:
-/// the shots differ by where they are taken from, not by what is on.
-pub async fn posed(into: &Seeder, shots: Vec<pult_schema::types::CueShot>) -> Result<()> {
-    use pult_schema::lifecycle::Lifecycle;
-    use pult_schema::path::PathSegment;
-    use pult_schema::types::{Sheet, SheetBlock, ViewStyle};
-
-    let sheets: Vec<Sheet> = into.rows("sheets").await?;
-    for mut sheet in sheets {
-        let mut touched = false;
-        for block in &mut sheet.blocks {
-            if let SheetBlock::Viewport(viewport) = block {
-                if let ViewStyle::Picture { cues, .. } = &mut viewport.style {
-                    *cues = shots.clone();
-                    touched = true;
-                }
-            }
-        }
-        if !touched {
-            continue;
-        }
-        into.set(
-            vec![
-                PathSegment::Key("sheets".into()),
-                PathSegment::Id(sheet.id),
-                PathSegment::Key("blocks".into()),
-            ],
-            serde_json::to_value(&sheet.blocks)?,
-            Lifecycle::Persisted,
-        )
-        .await?;
-    }
-    Ok(())
 }

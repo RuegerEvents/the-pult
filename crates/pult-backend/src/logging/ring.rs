@@ -27,6 +27,10 @@ impl LogRing {
         self.lines.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.lines.is_empty()
+    }
+
     pub fn push(&mut self, line: LogLine) {
         if self.lines.len() == self.cap {
             self.lines.pop_front();

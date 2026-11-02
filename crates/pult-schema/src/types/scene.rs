@@ -506,8 +506,8 @@ fn invert(matrix: Matrix4) -> Matrix4 {
     }
     // And the translation, taken back through the inverted basis.
     let t = [matrix[0][3], matrix[1][3], matrix[2][3]];
-    for row in 0..3 {
-        out[row][3] = -(0..3).map(|k| out[row][k] * t[k]).sum::<f32>();
+    for row in out.iter_mut().take(3) {
+        row[3] = -(0..3).map(|k| row[k] * t[k]).sum::<f32>();
     }
     out[3][3] = 1.0;
     out

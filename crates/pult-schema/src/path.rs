@@ -94,13 +94,10 @@ fn match_pattern(pattern: &[&str], path: &[PathSegment]) -> bool {
             false
         }
         (Some(&"*"), Some(_)) => match_pattern(&pattern[1..], &path[1..]),
-        (Some(p), Some(seg)) => {
-            if seg.to_string() == *p {
+        (Some(p), Some(seg))
+            if seg.to_string() == *p => {
                 match_pattern(&pattern[1..], &path[1..])
-            } else {
-                false
             }
-        }
         _ => false,
     }
 }

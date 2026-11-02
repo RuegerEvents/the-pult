@@ -221,8 +221,7 @@ fn index_of(byte: usize, bit: u8) -> u16 {
 /// zero, which against a zeroed baseline is no difference and therefore no event. Use
 /// [`InputState::absorb`] and keep the state.
 pub fn decode(io: &Chunk) -> Result<Vec<Event>, ChunkError> {
-    let mut s = InputState::default();
-    s.seen = Seen { keys: true, faders: true, encoders: true, digital: true };
+    let mut s = InputState { seen: Seen { keys: true, faders: true, encoders: true, digital: true }, ..InputState::default() };
     s.absorb(io)
 }
 

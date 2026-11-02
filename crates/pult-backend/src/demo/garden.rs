@@ -490,7 +490,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
 
     let mut scares = Vec::new();
     let props = ["Coffin lid", "Pneumatic arm", "Spider drop", "Fog burst"];
-    for area in 0..4 {
+    for (area, prop) in props.into_iter().enumerate() {
         let this = node(&format!("Area {}", area + 1));
         let mut rest = a_cue("Rest", 1.0, Vec::new());
         rest.fade_in_ms = 2_000;
@@ -537,7 +537,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
         }
         let (rest_id, scare_id) = (rest.id, scare.id);
         let stack = a_stack(into, &format!("Area {}", area + 1), vec![rest, scare], true).await?;
-        scares.push((stack, rest_id, scare_id, props[area]));
+        scares.push((stack, rest_id, scare_id, prop));
     }
 
     // ── The scares, as timelines ─────────────────────────────────────────────
@@ -574,7 +574,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
         }
     };
     let mut zones = vec![zone("IBC row", "#8b5cf6", vec![1, 2], Vec::new())];
-    for area in 0..4 {
+    for (area, color) in AREA_COLORS.into_iter().enumerate() {
         let speaks = area == 1 || area == 3;
         let nodes = if speaks {
             let this = node(&format!("Area {}", area + 1));
@@ -582,7 +582,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
         } else {
             Vec::new()
         };
-        zones.push(zone(&format!("Area {}", area + 1), AREA_COLORS[area], vec![3 + area as u16], nodes));
+        zones.push(zone(&format!("Area {}", area + 1), color, vec![3 + area as u16], nodes));
     }
     zones.push(zone("Entrance", "#22c55e", vec![7], Vec::new()));
     for each in &zones {
@@ -705,7 +705,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
 
     // Areas 3 and 4: one PIR, which runs the action. A scare already running ignores
     // the next group, so the lockout is the timeline's own length.
-    for area in 2..4 {
+    for (area, &timeline) in scare_timelines.iter().enumerate().skip(2) {
         let this = node(&format!("Area {}", area + 1));
         draw(
             into,
@@ -715,7 +715,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
                 (FlowNodeKind::Condition(TriggerCondition::RisingEdge), 300.0, 40.0),
                 (read(open.id), 40.0, 240.0),
                 (FlowNodeKind::Gate, 560.0, 120.0),
-                (play(scare_timelines[area]), 820.0, 120.0),
+                (play(timeline), 820.0, 120.0),
             ],
             &[(0, 0, 1, 0), (1, 0, 3, 0), (2, 0, 3, 1), (3, 0, 4, 0)],
         )
@@ -792,12 +792,12 @@ pub async fn seed(into: &Seeder) -> Result<()> {
         tiles.push(tile("Reset", None, TileSize::Half, TileTarget::VariableSetter { variable_id: v.id, op: VariableOp::Reset }));
     }
     tiles.push(tile("Areas 3 and 4", None, TileSize::Full, TileTarget::Heading));
-    for area in 2..4 {
+    for (area, &timeline_id) in scare_timelines.iter().enumerate().skip(2) {
         tiles.push(tile(
             &format!("Scare {}", area + 1),
             None,
             TileSize::Half,
-            TileTarget::Timeline { timeline_id: scare_timelines[area], from_start: true },
+            TileTarget::Timeline { timeline_id, from_start: true },
         ));
     }
     tiles.extend([

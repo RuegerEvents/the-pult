@@ -211,7 +211,7 @@ pub fn route_sides(
         }
     }
     let source_channels = source_channels.max(1);
-    let spread = source_channels == 1 || sides.len() % source_channels == 0;
+    let spread = source_channels == 1 || sides.len().is_multiple_of(source_channels);
     let mut routes = Vec::new();
     for (k, outputs) in sides.iter().enumerate() {
         let feed = match (source_channels, spread) {
@@ -305,6 +305,9 @@ impl Deck {
 pub struct Mixer {
     channels: usize,
     sample_rate: u32,
+    // Boxed on purpose: a deck is built and dropped off the audio thread and handed
+    // through `put` as a pointer, so the callback never moves or frees one.
+    #[allow(clippy::vec_box, reason = "decks cross the real-time boundary by pointer")]
     decks: Vec<Box<Deck>>,
 }
 

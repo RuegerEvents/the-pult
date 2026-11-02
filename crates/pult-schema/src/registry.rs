@@ -96,7 +96,7 @@ inventory::collect!(EntityMeta);
 ///   - known SYNCED/LOCAL/PERSISTED field    → that lifecycle
 ///   - unknown name (a registered command)   → Synced
 /// - `[collection, id]`                      → the row's: Persisted if any field is,
-///                                             Synced otherwise
+///   Synced otherwise
 /// - anything else                           → Persisted
 ///
 /// A whole row is how a station replaces its own `stations` row every two seconds,

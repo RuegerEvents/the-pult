@@ -469,7 +469,7 @@ async fn a_field_set_broadcasts_that_field() {
 
     let mut updates = h
         .engine
-        .subscribe_pattern(PathPattern::new(&format!("sequences/{}/name", seq.id)))
+        .subscribe_pattern(PathPattern::new(format!("sequences/{}/name", seq.id)))
         .await;
 
     h.engine
@@ -634,7 +634,7 @@ async fn a_peer_operation_is_applied_and_broadcast_locally() {
 
     let mut updates = h
         .engine
-        .subscribe_pattern(PathPattern::new(&format!("sequences/{}/name", seq.id)))
+        .subscribe_pattern(PathPattern::new(format!("sequences/{}/name", seq.id)))
         .await;
 
     let op = Operation {
@@ -1649,7 +1649,7 @@ async fn playback_output_is_broadcast_to_frontends() {
 
     let mut updates = h
         .engine
-        .subscribe_pattern(PathPattern::new(&format!("fixtures/{}/live_fades", fixture.id)))
+        .subscribe_pattern(PathPattern::new(format!("fixtures/{}/live_fades", fixture.id)))
         .await;
 
     h.engine
@@ -4109,7 +4109,7 @@ mod relative {
 
         let mut updates = h
             .engine
-            .subscribe_pattern(PathPattern::new(&format!("cues/{}/fade_in_ms", cue.id)))
+            .subscribe_pattern(PathPattern::new(format!("cues/{}/fade_in_ms", cue.id)))
             .await;
         h.engine
             .set(

@@ -1,0 +1,9 @@
+# What `cargo clippy -- -D warnings` holds the workspace to, where the default is a
+# judgement this code makes differently.
+#
+# A constructor for a node, a deck or a demo rig takes what it is made of, and a
+# struct to carry eight arguments to one call site is a second name for the same list.
+too-many-arguments-threshold = 10
+# The types it would flag are the ones a reader wants written out where they are
+# used — a map of fixture to parameter to value — rather than behind an alias.
+type-complexity-threshold = 500

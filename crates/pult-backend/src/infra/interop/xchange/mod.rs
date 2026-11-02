@@ -855,7 +855,7 @@ impl XchangeManager {
             return;
         }
         let station_name =
-            self.stations.get(&owner).map(|k| k.name.clone()).unwrap_or_else(String::new);
+            self.stations.get(&owner).map(|k| k.name.clone()).unwrap_or_default();
         let ours = owner == self.station_uuid();
         // Never overwrite one of our own: what this station holds is what the cache
         // says it holds, and a copy of our own commit coming back round from a host
@@ -992,11 +992,8 @@ impl XchangeManager {
             // operator asked for this.
             warn!("[xchange] could not apply {file_uuid}: {why}");
         }
-        match reply {
-            Some(reply) => {
-                let _ = reply.send(outcome);
-            }
-            None => {}
+        if let Some(reply) = reply {
+            let _ = reply.send(outcome);
         }
         self.publish().await;
     }
@@ -1305,7 +1302,7 @@ impl XchangeManager {
         let mut commits: Vec<XchangeCommit> = self.commits.values().cloned().collect();
         // Newest first: a commit list is read from the top, and the one somebody wants
         // is almost always the one that just arrived.
-        commits.sort_by(|a, b| b.at_ms.cmp(&a.at_ms));
+        commits.sort_by_key(|c| std::cmp::Reverse(c.at_ms));
 
         XchangeState {
             running: self.is_running(),

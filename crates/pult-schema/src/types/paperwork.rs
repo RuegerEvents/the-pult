@@ -133,7 +133,7 @@ pub enum Projection {
 }
 
 /// What a viewport claims about its size.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[serde(tag = "type")]
 pub enum ViewScale {
@@ -141,16 +141,12 @@ pub enum ViewScale {
     /// measured with a rule somebody owns. The fitted ratio is almost never a round
     /// number — the sheet this feature was designed against prints 1:35 — and a
     /// drawing at 1:35 is a drawing nobody can check.
+    #[default]
     Fit,
     /// One of [`STANDARD_SCALES`], or any other denominator a person typed.
     Ratio { denominator: u32 },
 }
 
-impl Default for ViewScale {
-    fn default() -> Self {
-        ViewScale::Fit
-    }
-}
 
 /// The ratios a rule is cut for, smallest denominator first.
 ///
@@ -1187,7 +1183,7 @@ fn structure_group_name(from: Uuid, objects: &HashMap<Uuid, &SceneObject>) -> St
         if hops > 64 {
             break;
         }
-        next = object.parent.and_then(|p| objects.get(&p)).map(|o| *o);
+        next = object.parent.and_then(|p| objects.get(&p)).copied();
     }
     best.name.clone()
 }

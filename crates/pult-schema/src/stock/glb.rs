@@ -231,7 +231,7 @@ pub fn write(mesh: &Mesh) -> Vec<u8> {
     }
     let indices_length = binary.len() - indices_at;
     // Every chunk is four-byte aligned, and so is every view inside it.
-    while binary.len() % 4 != 0 {
+    while !binary.len().is_multiple_of(4) {
         binary.push(0);
     }
 
@@ -279,7 +279,7 @@ pub fn write(mesh: &Mesh) -> Vec<u8> {
     });
 
     let mut json_bytes = serde_json::to_vec(&sorted(document)).expect("a document we built");
-    while json_bytes.len() % 4 != 0 {
+    while !json_bytes.len().is_multiple_of(4) {
         json_bytes.push(b' ');
     }
 

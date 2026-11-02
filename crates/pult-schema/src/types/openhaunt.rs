@@ -27,7 +27,7 @@ pub const MODULE_FLAG_MAINS: u32 = 1 << 6;
 
 /// Namespace for OpenHaunt fixture type ids. Arbitrary, and fixed forever:
 /// changing it orphans every fixture patched against the old ids.
-const NAMESPACE: Uuid = Uuid::from_u128(0x0e6f_9f31_5f24_4f3a_9f1d_6f6f7e2c8a01);
+const NAMESPACE: Uuid = Uuid::from_u128(0x0e6f_9f31_5f24_4f3a_9f1d_6f6f_7e2c_8a01);
 
 // ── What a node says about itself ─────────────────────────────────────────────
 

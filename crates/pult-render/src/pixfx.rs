@@ -228,7 +228,7 @@ fn strike_lit(b: i64, window_ms: f32, tw_ms: f32, probability: f32) -> bool {
 pub fn render(params: &PixelParams, phase: f32, now_ms: i64, count: u16) -> Vec<u8> {
     let p = params.clamped();
     let k = p.brightness;
-    const TWO_PI: f32 = 6.283_185_307_18;
+    const TWO_PI: f32 = 6.283_185_5;
     let mut rgb = vec![0u8; 3 * count as usize];
 
     let units = micro_cycles(p.speed, now_ms);

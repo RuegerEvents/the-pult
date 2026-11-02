@@ -570,7 +570,7 @@ impl<'a> Planner<'a> {
         let Some(modes) = self.modes_by_type.get(&fixture_type_id).cloned() else {
             return wanted;
         };
-        if modes.is_empty() || modes.iter().any(|name| *name == wanted) {
+        if modes.is_empty() || modes.contains(&wanted) {
             return wanted;
         }
         if let Some(trimmed) = modes.iter().find(|name| name.trim() == wanted.trim()) {

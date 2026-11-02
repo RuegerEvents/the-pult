@@ -287,16 +287,14 @@ impl Bundle {
             // of tables whose names have not moved, so they are still worth having.
         }
 
-        if let Ok(row) = sqlx::query("SELECT name, created_at FROM show LIMIT 1")
+        if let Ok(Some(row)) = sqlx::query("SELECT name, created_at FROM show LIMIT 1")
             .fetch_optional(&pool)
             .await
         {
-            if let Some(row) = row {
-                if let Ok(name) = row.try_get::<String, _>("name") {
-                    summary.name = name;
-                }
-                summary.created_at = row.try_get::<String, _>("created_at").ok();
+            if let Ok(name) = row.try_get::<String, _>("name") {
+                summary.name = name;
             }
+            summary.created_at = row.try_get::<String, _>("created_at").ok();
         }
         summary.fixtures = count(&pool, "fixtures").await;
         summary.cues = count(&pool, "cues").await;

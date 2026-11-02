@@ -145,7 +145,7 @@ impl Controller {
 
     /// Whether a channel is on in a frame. Channel 1 is the first.
     pub fn on(&self, channel: usize, frame: usize) -> bool {
-        channel >= 1 && channel <= 8 && self.frames.get(frame).is_some_and(|f| f >> (channel - 1) & 1 == 1)
+        (1..=8).contains(&channel) && self.frames.get(frame).is_some_and(|f| f >> (channel - 1) & 1 == 1)
     }
 
     /// Whether a channel is ever on in the sequence.

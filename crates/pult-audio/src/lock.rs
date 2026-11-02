@@ -82,7 +82,7 @@ mod tests {
 
         // Ahead of it: run slow.
         let Chase::Varispeed(slow) = chase(10_000, 10_500) else { panic!("should varispeed") };
-        assert!(slow < 1.0 && slow >= 1.0 - MAX_RATIO);
+        assert!((1.0 - MAX_RATIO..1.0).contains(&slow));
     }
 
     /// The cap is the audible one, and it is what actually decides the speed for

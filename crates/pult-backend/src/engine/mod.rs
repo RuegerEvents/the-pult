@@ -662,6 +662,12 @@ impl EngineHandle {
 #[derive(Clone)]
 pub struct UpdateBroadcast(pub broadcast::Sender<(Path, serde_json::Value)>);
 
+impl Default for UpdateBroadcast {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl UpdateBroadcast {
     pub fn new() -> Self {
         let (tx, _) = broadcast::channel(1024);

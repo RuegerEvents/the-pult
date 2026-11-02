@@ -10,7 +10,7 @@
 //! `plugins.rs` does: a plain `cargo test` on a machine without the
 //! `wasm32-wasip2` target stays green, and CI builds them first.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use pult_backend::{Config, Running};
@@ -641,12 +641,12 @@ async fn a_watch_that_was_put_down_says_nothing_more() {
     let _ = std::fs::remove_dir_all(&show);
 }
 
-async fn start_with(show: &PathBuf, plugin_dirs: Vec<PathBuf>) -> Running {
+async fn start_with(show: &Path, plugin_dirs: Vec<PathBuf>) -> Running {
     pult_backend::start(Config {
         port: 0,
         sync_port: 0,
         plugin_data: Some(station_store_file().clone()),
-        show: Some(show.clone()),
+        show: Some(show.to_path_buf()),
         // Told, rather than taken from the machine: a test must not write its
         // station's id into the operator's own configuration directory.
         identity: Some(show.with_extension("node")),

@@ -498,11 +498,9 @@ mod tests {
     /// operator can then edit rather than three numbers welded to their emitters.
     #[test]
     fn a_color_the_mix_can_derive_carries_no_overrides() {
-        let rgb = vec![
-            additive("Red", [1.0, 0.0, 0.0]),
+        let rgb = [additive("Red", [1.0, 0.0, 0.0]),
             additive("Green", [0.0, 1.0, 0.0]),
-            additive("Blue", [0.0, 0.0, 1.0]),
-        ];
+            additive("Blue", [0.0, 0.0, 1.0])];
         let color = unmix(&rgb.iter().cloned().zip([1.0, 0.5, 0.25]).collect::<Vec<_>>());
         assert_eq!(color.overrides, BTreeMap::new());
         assert_eq!((color.r, color.g, color.b), (1.0, 0.5, 0.25));

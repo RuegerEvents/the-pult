@@ -39,10 +39,11 @@ use uuid::Uuid;
 use crate::{events::operation::NodeId, pult_commands, PultSchema};
 
 /// Where a timeline's position comes from.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub enum TimelineSource {
     /// The console's own clock, moved by the transport commands.
+    #[default]
     Internal,
     /// Linear timecode arriving on an audio input.
     ///
@@ -58,11 +59,6 @@ pub enum TimelineSource {
     Ltc { fps: LtcRate, offset_frames: i64 },
 }
 
-impl Default for TimelineSource {
-    fn default() -> Self {
-        TimelineSource::Internal
-    }
-}
 
 /// The frame rates timecode is actually generated at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

@@ -161,7 +161,7 @@ impl Decoder {
     ///
     /// `Ok(None)` means "not yet"; an error means the stream is not this protocol and
     /// the connection carrying it is not recoverable.
-    pub fn next(&mut self) -> Result<Option<Payload>, FrameError> {
+    pub fn next_message(&mut self) -> Result<Option<Payload>, FrameError> {
         loop {
             if self.buf.len() < HEADER_BYTES {
                 return Ok(None);
@@ -240,7 +240,7 @@ mod tests {
         let mut decoder = Decoder::new(LIMIT);
         decoder.feed(bytes);
         let mut out = Vec::new();
-        while let Some(payload) = decoder.next()? {
+        while let Some(payload) = decoder.next_message()? {
             out.push(payload);
         }
         Ok(out)
@@ -283,10 +283,10 @@ mod tests {
         let mut decoder = Decoder::new(LIMIT);
         for byte in &framed[..framed.len() - 1] {
             decoder.feed(&[*byte]);
-            assert_eq!(decoder.next().unwrap(), None);
+            assert_eq!(decoder.next_message().unwrap(), None);
         }
         decoder.feed(&framed[framed.len() - 1..]);
-        assert!(decoder.next().unwrap().is_some());
+        assert!(decoder.next_message().unwrap().is_some());
     }
 
     #[test]
@@ -302,14 +302,14 @@ mod tests {
         let framed = encode(Kind::File, &[0u8; 64]);
         let mut decoder = Decoder::new(8);
         decoder.feed(&framed[..28]);
-        assert_eq!(decoder.next(), Err(FrameError::TooLarge { declared: 64, limit: 8 }));
+        assert_eq!(decoder.next_message(), Err(FrameError::TooLarge { declared: 64, limit: 8 }));
     }
 
     #[test]
     fn something_that_is_not_this_protocol_says_so() {
         let mut decoder = Decoder::new(LIMIT);
         decoder.feed(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n padding padding");
-        assert!(matches!(decoder.next(), Err(FrameError::BadHeader(_))));
+        assert!(matches!(decoder.next_message(), Err(FrameError::BadHeader(_))));
     }
 
     #[test]

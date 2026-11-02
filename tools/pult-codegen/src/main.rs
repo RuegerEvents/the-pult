@@ -45,7 +45,7 @@ fn generate_ts_bindings(workspace: &PathBuf) -> Result<()> {
     for entry in fs::read_dir(&out_dir)? {
         let entry = entry?;
         let path = entry.path();
-        if path.extension().map_or(false, |e| e == "ts") {
+        if path.extension().is_some_and(|e| e == "ts") {
             fs::remove_file(&path)?;
         }
     }
@@ -94,7 +94,7 @@ fn generate_ts_bindings(workspace: &PathBuf) -> Result<()> {
     for entry in fs::read_dir(&out_dir)? {
         let entry = entry?;
         let path = entry.path();
-        if path.extension().map_or(false, |e| e == "ts") {
+        if path.extension().is_some_and(|e| e == "ts") {
             if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
                 if stem != "index" {
                     modules.push(stem.to_owned());
@@ -183,7 +183,7 @@ fn replace_word(source: &str, word: &str, with: &str) -> String {
 /// how long an `f34-2m` is, and the one the browser drew would be the one an
 /// operator saw. So the Rust table is the source and this is a reading of it, like
 /// everything else in `generated/`.
-fn generate_catalog(workspace: &PathBuf) -> Result<()> {
+fn generate_catalog(workspace: &Path) -> Result<()> {
     use pult_schema::types::catalog::CATALOG;
 
     let out_dir = workspace.join("frontend/src/lib/generated");
@@ -231,7 +231,7 @@ fn generate_catalog(workspace: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn generate_frontend_proxy(workspace: &PathBuf) -> Result<()> {
+fn generate_frontend_proxy(workspace: &Path) -> Result<()> {
     let out_path = workspace.join("frontend/src/lib/ws/data.ts");
 
     // Collect entities that have a table (excludes purely in-memory types), sorted for determinism.
@@ -334,7 +334,7 @@ fn generate_frontend_proxy(workspace: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn generate_sql_migration(workspace: &PathBuf) -> Result<()> {
+fn generate_sql_migration(workspace: &Path) -> Result<()> {
     let migration_path = workspace.join(
         "crates/pult-backend/src/infra/showfile/migrations/001_initial.sql",
     );

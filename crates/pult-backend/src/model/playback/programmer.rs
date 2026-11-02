@@ -51,9 +51,7 @@ pub enum Held {
 pub fn held_by_the_programmer(view: &ShowView<'_>, at: &Key) -> Option<Held> {
     let entry = view
         .programmer
-        .iter()
-        .filter(|entry| entry.fixture_id == at.0 && parameter_key(&entry.parameter_kind) == at.1)
-        .next_back()?;
+        .iter().rfind(|entry| entry.fixture_id == at.0 && parameter_key(&entry.parameter_kind) == at.1)?;
     Some(hold(entry, view.speed_masters))
 }
 

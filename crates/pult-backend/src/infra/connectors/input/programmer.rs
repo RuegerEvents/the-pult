@@ -247,8 +247,9 @@ impl InputManager {
             if keys.contains_key(&row.asset) {
                 continue;
             }
-            match assets.get(&row.asset).await {
-                Ok(Some(asset)) => match pult_render::decode(&asset.bytes) {
+            // Not here yet: split when it is.
+            if let Ok(Some(asset)) = assets.get(&row.asset).await {
+                match pult_render::decode(&asset.bytes) {
                     Ok(track) => {
                         keys.insert(
                             row.asset.clone(),
@@ -256,9 +257,7 @@ impl InputManager {
                         );
                     }
                     Err(e) => warn!("[take] {} is not a take this build can read: {e}", row.name),
-                },
-                // Not here yet: split when it is.
-                _ => {}
+                }
             }
         }
         keys

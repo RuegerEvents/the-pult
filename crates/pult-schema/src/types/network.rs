@@ -247,11 +247,12 @@ pub const SACN_PRIORITY_MAX: u8 = 200;
 /// go from one station; E1.31 has this, which is what makes several stations sending
 /// one universe a defined thing rather than a race. So an sACN output may run
 /// everywhere, and this is what makes that well-defined.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub enum SacnPriority {
     /// Derived from the session: the leader at 100, every other station in a slot
     /// below it. Nobody types a number and a failover is the receiver's arbitration.
+    #[default]
     Auto,
     /// A number per station, for a rig where another desk is already at a known
     /// priority. A station this map does not name takes its `Auto` number rather
@@ -260,11 +261,6 @@ pub enum SacnPriority {
     Manual(BTreeMap<NodeId, u8>),
 }
 
-impl Default for SacnPriority {
-    fn default() -> Self {
-        SacnPriority::Auto
-    }
-}
 
 impl SacnPriority {
     /// The byte this station sends at, given the slot it holds.
@@ -311,7 +307,7 @@ pub fn claim_slot(me: NodeId, remembered: Option<u8>, others: &[(NodeId, u8)]) -
     let blocked: BTreeSet<u8> =
         others.iter().filter(|(id, _)| *id < me).map(|(_, slot)| *slot).collect();
     if let Some(slot) = remembered {
-        if !blocked.contains(&slot) && slot >= SACN_PRIORITY_FLOOR && slot < SACN_PRIORITY_LEADER {
+        if !blocked.contains(&slot) && (SACN_PRIORITY_FLOOR..SACN_PRIORITY_LEADER).contains(&slot) {
             return slot;
         }
     }

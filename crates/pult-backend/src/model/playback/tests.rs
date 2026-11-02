@@ -272,7 +272,7 @@ fn apply(fixtures: &mut [Fixture], effects: &[PlaybackEffect]) {
 fn at(
     playback: &mut Playback,
     at_ms: u64,
-    fixtures: &mut Vec<Fixture>,
+    fixtures: &mut [Fixture],
     sequences: &[Sequence],
     cues: &[Cue],
     programmer: &[ProgrammerValue],
@@ -295,7 +295,7 @@ fn at(
 fn pass(
     playback: &mut Playback,
     after_ms: u64,
-    fixtures: &mut Vec<Fixture>,
+    fixtures: &mut [Fixture],
     sequences: &[Sequence],
     cues: &[Cue],
     programmer: &[ProgrammerValue],

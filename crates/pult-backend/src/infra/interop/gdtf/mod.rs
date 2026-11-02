@@ -300,7 +300,7 @@ fn crowded_out(gdtf: &GdtfType) -> std::collections::BTreeSet<String> {
         let mut here: BTreeMap<String, String> = BTreeMap::new();
         for channel in &channels {
             let Some(attribute) = channel.attribute.and_then(|node| node.last()) else { continue };
-            if fine.contains(&*attribute) || attributes::color_channel(attribute).is_some() {
+            if fine.contains(attribute) || attributes::color_channel(attribute).is_some() {
                 continue;
             }
             let Some(kind) = attributes::kind_for(attribute) else { continue };

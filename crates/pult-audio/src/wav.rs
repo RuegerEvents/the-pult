@@ -1,9 +1,9 @@
 //! A clip, as a file a node keeps in its own flash.
 //!
-//! An OpenHaunt node plays RIFF WAVE in one of two encodings: 16-bit PCM (format tag
-//! 1) and IMA ADPCM (format tag 0x11, Microsoft's block layout, which is what `ffmpeg
-//! -c:a adpcm_ima_wav` writes). Both are written here, and **written deterministically**:
-//! the node names a clip by the sha256 of its bytes, so the same region of the same file
+//! An OpenHaunt node plays RIFF WAVE in one of two encodings: 16-bit PCM (format
+//! tag 1) and IMA ADPCM (format tag 0x11, Microsoft's block layout, which is what
+//! `ffmpeg -c:a adpcm_ima_wav` writes). Both are written here, and **written
+//! deterministically**: the node names a clip by the sha256 of its bytes, so the same region of the same file
 //! has to come out as the same bytes on every station and after every restart, or each
 //! of them would upload its own copy.
 //!

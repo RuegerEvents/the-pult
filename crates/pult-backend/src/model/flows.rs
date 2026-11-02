@@ -610,12 +610,11 @@ impl Flows {
                     // The pulse goes on only while the level on port 1 is true, read
                     // as it stood before this pass wrote anything. A pulse arriving on
                     // the level port is a drawing the editor refuses, and stops here.
-                    FlowNodeKind::Gate if edge.to_port == 0 => {
-                        if self.port_level(graph, target.id, 1, &mut HashSet::new()) {
+                    FlowNodeKind::Gate if edge.to_port == 0
+                        && self.port_level(graph, target.id, 1, &mut HashSet::new()) => {
                             lit.insert(target.id);
                             queue.push(target.id);
                         }
-                    }
                     // Nothing else takes a pulse. The editor will not draw such an
                     // edge, and an imported graph that has one simply stops here.
                     _ => {}

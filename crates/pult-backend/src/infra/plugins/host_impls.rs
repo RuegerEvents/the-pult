@@ -235,11 +235,10 @@ impl data::Host for PluginCtx {
         let task = tokio::spawn(async move {
             use futures::StreamExt;
             while let Some((path, value)) = stream.next().await {
-                if pattern.matches(&path) {
-                    if tx.send(InstanceMsg::Update { token, path, value }).is_err() {
+                if pattern.matches(&path)
+                    && tx.send(InstanceMsg::Update { token, path, value }).is_err() {
                         break;
                     }
-                }
             }
         });
         self.subs.insert(token, task.abort_handle());
@@ -334,13 +333,13 @@ impl peers::Host for PluginCtx {
         method: String,
         args: String,
     ) -> wasmtime::Result<Result<String, String>> {
-        if !self.deps.iter().any(|d| *d == plugin) {
+        if !self.deps.contains(&plugin) {
             return Ok(Err(format!(
                 "{:?} is not in this plugin's [dependencies]",
                 plugin
             )));
         }
-        if plugin == self.plugin_id || self.chain.iter().any(|c| *c == plugin) {
+        if plugin == self.plugin_id || self.chain.contains(&plugin) {
             return Ok(Err(format!("call cycle: {} is already on the call chain", plugin)));
         }
         if self.chain.len() + 1 >= MAX_CALL_DEPTH {
@@ -443,9 +442,7 @@ impl PluginCtx {
         value: Value,
     ) -> Result<(), String> {
         let rows = self.show_store_rows(&store.id).await;
-        if let Err(reason) = within_quota(store, &rows, key, &value) {
-            return Err(reason);
-        }
+        within_quota(store, &rows, key, &value)?;
 
         let id = PluginDatum::id_for(&self.plugin_id, &store.id, key);
         let existing = rows.iter().any(|d| d.id == id);

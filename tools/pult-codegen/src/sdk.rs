@@ -174,12 +174,11 @@ fn collect_render_reexports(
                 collect_render_reexports(tree, prefix, out);
             }
         }
-        syn::UseTree::Name(n) => {
-            if prefix.first().map(String::as_str) == Some("pult_render") {
+        syn::UseTree::Name(n)
+            if prefix.first().map(String::as_str) == Some("pult_render") => {
                 let module = prefix.get(1).cloned().unwrap_or_default();
                 out.insert(n.ident.to_string(), module);
             }
-        }
         _ => {}
     }
 }
@@ -573,7 +572,14 @@ fn render_schema(source: &Source, wanted: &BTreeSet<String>) -> Result<(String, 
                     .iter()
                     .map(|v| {
                         let ident = &v.ident;
-                        let attrs = keep_attrs(&v.attrs);
+                        // `#[default]` names the variant `derive(Default)` picks, and is
+                        // not an attribute at all without that derive — which the mirror
+                        // drops for a type holding one whose `Default` is written by hand.
+                        let default_ok = defaults.contains(name);
+                        let attrs: Vec<TokenStream> = keep_attrs(&v.attrs)
+                            .into_iter()
+                            .filter(|a| default_ok || a.to_string() != "# [default]")
+                            .collect();
                         let body = match &v.fields {
                             Fields::Unit => quote!(),
                             Fields::Named(named) => {
