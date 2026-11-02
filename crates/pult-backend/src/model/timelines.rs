@@ -281,10 +281,14 @@ impl Timelines {
                 // must stop on time rather than whenever something else wakes the
                 // engine.
                 let end = end_of(timeline).filter(|end| *end > position);
-                let next = match (event, end) {
-                    (Some(a), Some(b)) => a.min(b),
-                    (a, b) => a.or(b)?,
-                };
+                // So is the next grid segment on a timeline that drives a master: the
+                // tempo steps when the playhead crosses it, and a song with no event
+                // near the change otherwise kept the old tempo until something else
+                // happened to wake the engine.
+                let segment = timeline
+                    .speed_master
+                    .and_then(|_| timeline.grid.iter().map(|s| s.at_ms as u64).filter(|at| *at > position).min());
+                let next = [event, end, segment].into_iter().flatten().min()?;
                 let ahead = next.saturating_sub(position);
                 Some(wall_ms + (ahead as f64 / timeline.rate as f64) as u64)
             })
@@ -721,6 +725,24 @@ mod tests {
         assert_eq!(crossed[0].t0, 20_000, "the downbeat, not the pass");
 
         assert!(timelines.pass(22_000, &[timeline]).masters.is_empty());
+    }
+
+    /// The engine has no tick, so a segment boundary is a deadline like an event: a
+    /// station sleeping until the next Go would otherwise step the tempo whenever
+    /// something unrelated woke it.
+    #[test]
+    fn the_next_grid_segment_wakes_the_engine() {
+        let master = Uuid::from_u128(42);
+        let timelines = Timelines::default();
+        let timeline = with_grid(playing(a_timeline(vec![]), 10_000, 0), master);
+        // Played at 10 s with segments at 0 and 10 s: at 12 s the next is the second,
+        // which the playhead reaches at 20 s.
+        assert_eq!(timelines.next_deadline(12_000, std::slice::from_ref(&timeline)), Some(20_000));
+
+        // A grid with no master to drive is no reason to wake.
+        let mut no_master = timeline.clone();
+        no_master.speed_master = None;
+        assert_eq!(timelines.next_deadline(12_000, &[no_master]), None);
     }
 
     /// A locate restates the tempo even into the same segment: the playhead is
