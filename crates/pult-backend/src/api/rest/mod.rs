@@ -7,6 +7,11 @@
 //! `/api/config` is the third thing here, and the smallest: it is how a page that
 //! has just been loaded finds out what it loaded from.
 
+// A handler here answers `Result<_, Response>`, which is how axum is written: the error
+// is the response itself, sent as it is, and boxing it would be a heap allocation to
+// say "404". Clippy from 1.99 flags every such function.
+#![allow(clippy::result_large_err, reason = "the error is the handler's own Response")]
+
 use axum::{
     body::Bytes,
     extract::{FromRef, Path, State},
@@ -531,7 +536,6 @@ async fn preferences() -> Json<serde_json::Value> {
 /// Change them. Answers with what was actually stored, which is not always what was
 /// asked for: a depth outside what the console will do comes back at the nearest
 /// value that is.
-#[allow(clippy::result_large_err, reason = "the error is the handler's own `Response`, returned as it is")]
 async fn set_preferences(Json(body): Json<serde_json::Value>) -> Result<Json<serde_json::Value>, Response> {
     // Read, change, write. Building a fresh `Preferences` from the body would
     // quietly drop every setting this route does not mention — the per-plugin

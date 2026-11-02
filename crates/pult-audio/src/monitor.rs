@@ -106,8 +106,10 @@ pub fn decode(bytes: &[u8]) -> Result<Chunk, ChunkError> {
         return Err(ChunkError::Short);
     }
     let samples = body[..frames * channels * 2]
-        .chunks_exact(2)
-        .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / i16::MAX as f32)
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&b| i16::from_le_bytes(b) as f32 / i16::MAX as f32)
         .collect();
     Ok(Chunk { at_ms, channels, sample_rate, loading, samples })
 }

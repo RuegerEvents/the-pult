@@ -276,7 +276,7 @@ fn read_data(fmt: &[u8], fact: Option<u32>, data: &[u8]) -> Result<Wav, WavError
             encoding: Encoding::Pcm16,
             channels,
             sample_rate,
-            samples: data.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect(),
+            samples: data.as_chunks::<2>().0.iter().map(|&b| i16::from_le_bytes(b)).collect(),
         }),
         0x11 => {
             let mut samples = Vec::new();
